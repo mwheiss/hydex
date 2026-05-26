@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::exec::is_likely_sandbox_denied;
 use codex_exec_server::ExecProcess;
 use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
 use codex_exec_server::ReadResponse as ExecReadResponse;
@@ -21,7 +22,6 @@ use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_sandboxing::SandboxType;
-use codex_sandboxing::is_filesystem_sandbox_violation;
 use codex_sandboxing::record_filesystem_sandbox_violation;
 use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
@@ -298,7 +298,7 @@ impl UnifiedExecProcess {
             aggregated_output: StreamOutput::new(text.to_string()),
             ..Default::default()
         };
-        if is_filesystem_sandbox_violation(sandbox_type, &exec_output) {
+        if is_likely_sandbox_denied(sandbox_type, &exec_output) {
             record_filesystem_sandbox_violation(sandbox_type, &exec_output);
             let snippet = formatted_truncate_text(
                 text,

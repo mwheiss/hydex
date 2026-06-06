@@ -13,6 +13,7 @@ pub(super) use details::plugin_detail_status_label;
 pub(super) use details::plugin_display_name;
 pub(super) use details::plugin_metadata_items;
 pub(super) use details::plugin_request_name;
+pub(super) use details::plugin_shows_as_installed;
 pub(super) use details::plugin_status_label;
 pub(super) use details::plugin_uninstall_id;
 pub(super) use details::preferred_local_plugin_sources;

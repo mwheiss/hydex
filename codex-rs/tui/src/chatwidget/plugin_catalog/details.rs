@@ -60,9 +60,9 @@ pub(in super::super) fn plugin_brief_description_without_marketplace(
 
 pub(in super::super) fn plugin_status_label(plugin: &PluginSummary) -> &'static str {
     if plugin.availability == PluginAvailability::DisabledByAdmin {
-        return "Disabled by admin";
+        return "Disabled";
     }
-    if plugin.installed {
+    if plugin_shows_as_installed(plugin) {
         if plugin.enabled {
             "Installed"
         } else {
@@ -72,7 +72,7 @@ pub(in super::super) fn plugin_status_label(plugin: &PluginSummary) -> &'static 
         match plugin.install_policy {
             PluginInstallPolicy::NotAvailable => "Not installable",
             PluginInstallPolicy::Available => "Available",
-            PluginInstallPolicy::InstalledByDefault => "Available by default",
+            PluginInstallPolicy::InstalledByDefault => "Installed",
         }
     }
 }
@@ -80,6 +80,9 @@ pub(in super::super) fn plugin_status_label(plugin: &PluginSummary) -> &'static 
 pub(in super::super) fn plugin_detail_status_label(plugin: &PluginSummary) -> &'static str {
     if plugin.availability == PluginAvailability::DisabledByAdmin {
         return "Disabled by admin";
+    }
+    if plugin.install_policy == PluginInstallPolicy::InstalledByDefault {
+        return "Installed by admin";
     }
     if plugin.installed {
         if plugin.enabled {
@@ -91,9 +94,13 @@ pub(in super::super) fn plugin_detail_status_label(plugin: &PluginSummary) -> &'
         match plugin.install_policy {
             PluginInstallPolicy::NotAvailable => "Not installable",
             PluginInstallPolicy::Available => "Can be installed",
-            PluginInstallPolicy::InstalledByDefault => "Available by default",
+            PluginInstallPolicy::InstalledByDefault => "Installed by admin",
         }
     }
+}
+
+pub(in super::super) fn plugin_shows_as_installed(plugin: &PluginSummary) -> bool {
+    plugin.installed || plugin.install_policy == PluginInstallPolicy::InstalledByDefault
 }
 
 pub(in super::super) fn plugin_detail_location(plugin: &PluginDetail) -> Option<PluginLocation> {

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::details::plugin_display_name;
 use super::details::plugin_remote_identity;
+use super::details::plugin_shows_as_installed;
 use crate::bottom_pane::SelectionTab;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginMarketplaceEntry;
@@ -153,8 +154,10 @@ fn plugin_entry_preferred(
     candidate: &(&PluginMarketplaceEntry, &PluginSummary, String),
     existing: &(&PluginMarketplaceEntry, &PluginSummary, String),
 ) -> bool {
-    if candidate.1.installed != existing.1.installed {
-        return candidate.1.installed;
+    let candidate_shows_as_installed = plugin_shows_as_installed(candidate.1);
+    let existing_shows_as_installed = plugin_shows_as_installed(existing.1);
+    if candidate_shows_as_installed != existing_shows_as_installed {
+        return candidate_shows_as_installed;
     }
 
     let candidate_is_local_share =
@@ -173,10 +176,8 @@ pub(in super::super) fn sort_plugin_entries(
     entries: &mut [(&PluginMarketplaceEntry, &PluginSummary, String)],
 ) {
     entries.sort_by(|left, right| {
-        right
-            .1
-            .installed
-            .cmp(&left.1.installed)
+        plugin_shows_as_installed(right.1)
+            .cmp(&plugin_shows_as_installed(left.1))
             .then_with(|| {
                 left.2
                     .to_ascii_lowercase()

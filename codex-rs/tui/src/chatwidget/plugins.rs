@@ -27,6 +27,7 @@ use super::plugin_catalog::plugin_entries_for_marketplaces;
 use super::plugin_catalog::plugin_metadata_items;
 use super::plugin_catalog::plugin_remote_section_error;
 use super::plugin_catalog::plugin_request_name;
+use super::plugin_catalog::plugin_shows_as_installed;
 use super::plugin_catalog::plugin_status_label;
 use super::plugin_catalog::plugin_tab_id_matching_saved_id;
 use super::plugin_catalog::plugin_uninstall_id;
@@ -39,6 +40,8 @@ use crate::app_event::AppEvent;
 use crate::app_event::PluginLocation;
 use crate::app_event::PluginRemoteSectionError;
 use crate::bottom_pane::ColumnWidthMode;
+use crate::bottom_pane::SELECTION_TOGGLE_BLOCKED_PREFIX;
+use crate::bottom_pane::SELECTION_TOGGLE_UNAVAILABLE_PREFIX;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionRowDisplay;
@@ -1609,7 +1612,7 @@ impl ChatWidget {
         let total = all_entries.len();
         let installed = all_entries
             .iter()
-            .filter(|(_, plugin, _)| plugin.installed)
+            .filter(|(_, plugin, _)| plugin_shows_as_installed(plugin))
             .count();
         let name_column_width = all_entries
             .iter()
@@ -1620,7 +1623,7 @@ impl ChatWidget {
             .max();
         let installed_entries = all_entries
             .iter()
-            .filter(|(_, plugin, _)| plugin.installed)
+            .filter(|(_, plugin, _)| plugin_shows_as_installed(plugin))
             .cloned()
             .collect();
 
@@ -1670,7 +1673,7 @@ impl ChatWidget {
         let curated_total = curated_entries.len();
         let curated_installed = curated_entries
             .iter()
-            .filter(|(_, plugin, _)| plugin.installed)
+            .filter(|(_, plugin, _)| plugin_shows_as_installed(plugin))
             .count();
         let curated_has_entries = !curated_entries.is_empty();
         let by_openai_section_error =
@@ -1760,7 +1763,7 @@ impl ChatWidget {
             let marketplace_total = entries.len();
             let marketplace_installed = entries
                 .iter()
-                .filter(|(_, plugin, _)| plugin.installed)
+                .filter(|(_, plugin, _)| plugin_shows_as_installed(plugin))
                 .count();
             let tab_id = marketplace_tab_id(marketplace);
             let can_remove_marketplace =
@@ -1993,6 +1996,13 @@ impl ChatWidget {
                 is_disabled: true,
                 ..Default::default()
             });
+        } else if plugin.summary.install_policy == PluginInstallPolicy::InstalledByDefault {
+            items.push(SelectionItem {
+                name: "Installed by admin".to_string(),
+                description: Some("This plugin is installed by your workspace admin.".to_string()),
+                is_disabled: true,
+                ..Default::default()
+            });
         } else if plugin.summary.install_policy == PluginInstallPolicy::NotAvailable {
             items.push(SelectionItem {
                 name: "Install plugin".to_string(),
@@ -2097,7 +2107,8 @@ impl ChatWidget {
                 plugin_detail_request_for_entry(marketplace, plugin, preferred_local_sources);
             let can_view_details = plugin_detail_request.is_some();
             let disabled_by_admin = plugin.availability == PluginAvailability::DisabledByAdmin;
-            let can_toggle_plugin = plugin.installed && !disabled_by_admin;
+            let shows_as_installed = plugin_shows_as_installed(plugin);
+            let can_toggle_plugin = shows_as_installed && !disabled_by_admin;
             let selected_status_label = format!("{status_label:<status_label_width$}");
             let selected_description = if can_toggle_plugin {
                 let toggle_action = if plugin.enabled { "disable" } else { "enable" };
@@ -2108,12 +2119,14 @@ impl ChatWidget {
                 } else {
                     format!("{selected_status_label}   Space to {toggle_action}.")
                 }
-            } else if plugin.installed && can_view_details {
-                format!("{selected_status_label}   Press Enter to view plugin details.")
-            } else if plugin.installed {
-                format!("{selected_status_label}   Plugin details are unavailable.")
             } else if disabled_by_admin && can_view_details {
                 format!("{selected_status_label}   Press Enter to view plugin details.")
+            } else if disabled_by_admin {
+                format!("{selected_status_label}   Plugin details are unavailable.")
+            } else if shows_as_installed && can_view_details {
+                format!("{selected_status_label}   Press Enter to view plugin details.")
+            } else if shows_as_installed {
+                format!("{selected_status_label}   Plugin details are unavailable.")
             } else if can_view_details {
                 format!("{selected_status_label}   Press Enter to install or view plugin details.")
             } else {
@@ -2161,13 +2174,19 @@ impl ChatWidget {
                 } else {
                     Vec::new()
                 };
-            let is_disabled = !can_view_details && !plugin.installed;
+            let is_disabled = !can_view_details && !shows_as_installed;
             let disabled_reason = is_disabled.then(|| "plugin details are unavailable".to_string());
 
             items.push(SelectionItem {
                 name: display_name,
                 toggle,
-                toggle_placeholder: (!can_toggle_plugin).then_some("[-] "),
+                toggle_placeholder: if plugin.availability == PluginAvailability::DisabledByAdmin {
+                    Some(SELECTION_TOGGLE_BLOCKED_PREFIX)
+                } else if can_toggle_plugin {
+                    None
+                } else {
+                    Some(SELECTION_TOGGLE_UNAVAILABLE_PREFIX)
+                },
                 description: Some(description),
                 selected_description: Some(selected_description),
                 search_value: Some(search_value),

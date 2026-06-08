@@ -1043,8 +1043,7 @@ async fn plugin_detail_local_plugins_do_not_offer_tui_share_actions() {
     let cwd = chat.config.cwd.clone();
     chat.on_plugins_loaded(cwd.to_path_buf(), Ok(response));
     chat.add_plugins_output();
-    let mut detail =
-        plugins_test_detail(summary.clone(), Some("Workspace docs."), &[], &[], &[], &[]);
+    let mut detail = plugins_test_detail(summary, Some("Workspace docs."), &[], &[], &[], &[]);
     detail.marketplace_path = Some(plugins_test_personal_marketplace_path());
     chat.on_plugin_detail_loaded(cwd.to_path_buf(), Ok(PluginReadResponse { plugin: detail }));
 
@@ -2088,11 +2087,8 @@ async fn plugins_popup_remote_section_error_snapshot() {
             message: "Sign in to ChatGPT to load workspace plugins.".to_string(),
         }],
     );
-    for _ in 0..4 {
-        chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    }
-
-    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    let popup =
+        select_plugins_tab_containing(&mut chat, /*width*/ 100, "Workspace unavailable.");
     let error_row = popup
         .lines()
         .find(|line| line.contains("Workspace unavailable"))
@@ -2118,18 +2114,16 @@ async fn plugins_popup_empty_remote_sections_render_empty_tabs() {
     );
     chat.on_plugin_remote_sections_loaded(cwd.to_path_buf(), Vec::new(), Vec::new());
 
-    for _ in 0..4 {
-        chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    }
-    let workspace_popup = render_bottom_popup(&chat, /*width*/ 100);
+    let workspace_popup =
+        select_plugins_tab_containing(&mut chat, /*width*/ 100, "Workspace.");
     assert!(
         workspace_popup.contains("Workspace.")
             && workspace_popup.contains("No workspace plugins available"),
         "expected successful empty Workspace section, got:\n{workspace_popup}"
     );
 
-    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    let shared_popup = render_bottom_popup(&chat, /*width*/ 100);
+    let shared_popup =
+        select_plugins_tab_containing(&mut chat, /*width*/ 100, "Shared with me.");
     assert!(
         shared_popup.contains("Shared with me.")
             && shared_popup.contains("No shared plugins available"),
@@ -2185,10 +2179,8 @@ async fn plugins_popup_preserves_remote_section_tab_after_loading_finishes() {
             plugins_test_curated_marketplace(Vec::new()),
         ])),
     );
-    for _ in 0..4 {
-        chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    }
-    let loading_popup = render_bottom_popup(&chat, /*width*/ 100);
+    let loading_popup =
+        select_plugins_tab_containing(&mut chat, /*width*/ 100, "Loading Workspace plugins.");
     assert!(
         loading_popup.contains("Loading Workspace plugins."),
         "expected Workspace loading tab before remote sections resolve, got:\n{loading_popup}"
@@ -2855,6 +2847,19 @@ async fn plugins_popup_search_no_matches_and_backspace_restores_results() {
         !restored.contains("no matches"),
         "did not expect the no-matches state after clearing the query, got:\n{restored}"
     );
+}
+
+fn select_plugins_tab_containing(chat: &mut ChatWidget, width: u16, visible_text: &str) -> String {
+    for _ in 0..8 {
+        let popup = render_bottom_popup(chat, width);
+        if popup.contains(visible_text) {
+            return popup;
+        }
+        chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    }
+
+    let popup = render_bottom_popup(chat, width);
+    panic!("expected plugins tab containing {visible_text:?}, got:\n{popup}");
 }
 
 #[tokio::test]

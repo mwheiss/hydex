@@ -210,12 +210,12 @@ async fn plugins_popup_snapshot_shows_all_marketplaces_and_sorts_installed_then_
     );
     assert!(
         plugins_test_popup_row_position(&popup, "Alpha Sync")
-            < plugins_test_popup_row_position(&popup, "Bravo Search")
+            < plugins_test_popup_row_position(&popup, "Starter")
+            && plugins_test_popup_row_position(&popup, "Starter")
+                < plugins_test_popup_row_position(&popup, "Bravo Search")
             && plugins_test_popup_row_position(&popup, "Bravo Search")
-                < plugins_test_popup_row_position(&popup, "Hidden Repo Plugin")
-            && plugins_test_popup_row_position(&popup, "Hidden Repo Plugin")
-                < plugins_test_popup_row_position(&popup, "Starter"),
-        "expected /plugins rows to sort installed plugins first, then alphabetically, got:\n{popup}"
+                < plugins_test_popup_row_position(&popup, "Hidden Repo Plugin"),
+        "expected /plugins rows to sort installed and default plugins first, then alphabetically, got:\n{popup}"
     );
 }
 

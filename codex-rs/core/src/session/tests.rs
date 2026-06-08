@@ -5063,6 +5063,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         resolved_turn_environments,
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
+        /*parent_turn_id*/ None,
         skills_outcome,
     );
 
@@ -6007,6 +6008,7 @@ async fn submit_with_id_captures_current_span_trace_context() {
                 id: "sub-1".into(),
                 op: Op::Interrupt,
                 client_user_message_id: None,
+                parent_turn_id: None,
                 trace: None,
             })
             .await
@@ -6079,6 +6081,7 @@ fn submission_dispatch_span_prefers_submission_trace_context() {
             id: "sub-1".into(),
             op: Op::Interrupt,
             client_user_message_id: None,
+            parent_turn_id: None,
             trace: Some(submission_trace),
         })
     });
@@ -6106,6 +6109,7 @@ fn submission_dispatch_span_uses_debug_for_realtime_audio() {
             },
         }),
         client_user_message_id: None,
+        parent_turn_id: None,
         trace: None,
     });
 
@@ -6171,6 +6175,7 @@ async fn user_turn_updates_approvals_reviewer() {
                 ..Default::default()
             },
         },
+        /*parent_turn_id*/ None,
         /*client_user_message_id*/ None,
     )
     .await;
@@ -6179,6 +6184,24 @@ async fn user_turn_updates_approvals_reviewer() {
     assert_eq!(
         state.session_configuration.approvals_reviewer,
         codex_config::types::ApprovalsReviewer::AutoReview
+    );
+}
+
+#[tokio::test]
+async fn new_turn_carries_parent_turn_id() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    let turn_context = session
+        .new_turn_with_sub_id_and_parent_turn_id(
+            "child-turn".to_string(),
+            SessionSettingsUpdate::default(),
+            Some("parent-turn-1".to_string()),
+        )
+        .await
+        .expect("child turn context should build");
+
+    assert_eq!(
+        turn_context.parent_turn_id.as_deref(),
+        Some("parent-turn-1")
     );
 }
 
@@ -6418,6 +6441,7 @@ async fn spawn_task_turn_span_inherits_dispatch_trace_context() {
         id: "sub-1".into(),
         op: Op::Interrupt,
         client_user_message_id: None,
+        parent_turn_id: None,
         trace: Some(submission_trace.clone()),
     });
     let dispatch_span_id = dispatch_span.context().span().span_context().span_id();
@@ -7101,6 +7125,7 @@ where
         resolved_turn_environments,
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
+        /*parent_turn_id*/ None,
         skills_outcome,
     ));
 

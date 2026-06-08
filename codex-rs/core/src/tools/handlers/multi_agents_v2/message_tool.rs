@@ -99,8 +99,18 @@ pub(crate) async fn handle_message_string_tool(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication =
-        communication_from_tool_message(author, receiver_agent_path.clone(), message);
+    let parent_turn_id = match mode {
+        MessageDeliveryMode::QueueOnly => None,
+        MessageDeliveryMode::TriggerTurn => {
+            direct_parent_turn_id_for_receiver(&session, turn.as_ref(), receiver_thread_id).await
+        }
+    };
+    let communication = communication_from_tool_message(
+        author,
+        receiver_agent_path.clone(),
+        message,
+        parent_turn_id,
+    );
     let result = session
         .services
         .agent_control

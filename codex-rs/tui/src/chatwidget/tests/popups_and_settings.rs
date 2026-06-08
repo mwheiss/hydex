@@ -485,11 +485,11 @@ async fn marketplace_add_success_refreshes_to_new_marketplace_tab() {
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
     chat.add_plugins_output();
-    for _ in 0..4 {
-        chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    }
-
-    let reopened_popup = render_bottom_popup(&chat, /*width*/ 100);
+    let reopened_popup = select_plugins_tab_containing(
+        &mut chat,
+        /*width*/ 100,
+        "Installed 0 of 1 Debug Marketplace plugins.",
+    );
     assert!(
         reopened_popup.contains("Installed 0 of 1 Debug Marketplace plugins.")
             && !reopened_popup.contains("installed successfully"),

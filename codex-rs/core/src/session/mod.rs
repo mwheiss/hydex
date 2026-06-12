@@ -146,6 +146,7 @@ use codex_thread_store::LiveThreadInitGuard;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
+use codex_thread_store::StoredThread;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -1099,6 +1100,13 @@ impl Session {
 
     pub(crate) fn live_thread(&self) -> Option<&LiveThread> {
         self.services.live_thread.as_ref()
+    }
+
+    pub(crate) fn subscribe_thread_metadata_updated(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<StoredThread>> {
+        self.live_thread()
+            .map(LiveThread::subscribe_metadata_updated)
     }
 
     /// Flush rollout writes and return the final durability-barrier result.

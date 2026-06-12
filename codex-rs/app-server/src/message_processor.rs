@@ -461,7 +461,9 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             outgoing.clone(),
             Arc::clone(&config),
+            Arc::clone(&thread_store),
             thread_state_manager.clone(),
+            thread_catalog_subscriptions.clone(),
             state_db.clone(),
             Arc::clone(&goal_service),
         );
@@ -492,7 +494,6 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
             pending_thread_unloads,
-            Arc::clone(&thread_store),
             thread_state_manager,
             thread_watch_manager,
             thread_catalog_subscriptions,

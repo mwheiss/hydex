@@ -101,6 +101,13 @@ pub struct UnifiedExecRuntime<'a> {
     shell_mode: UnifiedExecShellMode,
 }
 
+/// Lifecycle callback surface that lets unified exec mirror its generic spawn
+/// lifecycle into a resolved plugin-script execution.
+///
+/// Implementations must preserve the caller-provided callback order: unified
+/// exec invokes the generic `SpawnLifecycle` first, then forwards the matching
+/// plugin callback. Terminal callbacks may be repeated by cleanup paths, so
+/// implementations must keep cancellation and finish handling idempotent.
 trait PluginScriptLifecycle: Send + Sync {
     fn mark_started(&self);
     fn mark_cancelled(&self);

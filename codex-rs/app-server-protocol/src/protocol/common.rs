@@ -831,6 +831,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadRealtimeAppendTextResponse,
     },
+    #[experimental("thread/realtime/appendHandoff")]
+    ThreadRealtimeAppendHandoff => "thread/realtime/appendHandoff" {
+        params: v2::ThreadRealtimeAppendHandoffParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadRealtimeAppendHandoffResponse,
+    },
     #[experimental("thread/realtime/appendSpeech")]
     ThreadRealtimeAppendSpeech => "thread/realtime/appendSpeech" {
         params: v2::ThreadRealtimeAppendSpeechParams,
@@ -3206,6 +3212,31 @@ mod tests {
                 "params": {
                     "threadId": "thr_123",
                     "text": "Short voice update"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_thread_realtime_append_handoff() -> Result<()> {
+        let request = ClientRequest::ThreadRealtimeAppendHandoff {
+            request_id: RequestId::Integer(10),
+            params: v2::ThreadRealtimeAppendHandoffParams {
+                thread_id: "thr_123".to_string(),
+                handoff_id: "handoff_123".to_string(),
+                output_text: "Exact voice output".to_string(),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "thread/realtime/appendHandoff",
+                "id": 10,
+                "params": {
+                    "threadId": "thr_123",
+                    "handoffId": "handoff_123",
+                    "outputText": "Exact voice output"
                 }
             }),
             serde_json::to_value(&request)?,

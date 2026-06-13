@@ -168,6 +168,7 @@ Example with notification opt-out:
 - `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, optionally pass `model` and `version` to override configured realtime selection for this session only, and pass `includeStartupContext: false` to omit Codex's generated startup context. By default, automatic Codex text follows the protocol's speakable output path. Pass `codexResponsesAsItems: true` to send automatic Codex responses as realtime conversation items instead, and optionally pass `codexResponseItemPrefix` to prepend experiment instructions to those items. Returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`.
 - `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
 - `thread/realtime/appendText` — append text input to the active realtime session with a required `role` of `user` or `developer` (experimental); returns `{}`. Older clients that omit `role` default to `user`.
+- `thread/realtime/appendHandoff` — append an exact `conversation.handoff.append` payload to an active v1 realtime session (experimental); requires `handoffId` and forwards `outputText` unchanged, including empty output. V2 sessions and output above the 1,000-token limit emit an asynchronous `error` notification.
 - `thread/realtime/appendSpeech` — append text that the realtime model should speak to the user (experimental); returns `{}`.
 - `thread/realtime/stop` — stop the active realtime session for the thread (experimental); returns `{}`.
 - `review/start` — kick off Codex’s automated reviewer for a thread; responds like `turn/start` and emits `item/started`/`item/completed` notifications with `enteredReviewMode` and `exitedReviewMode` items, plus a final assistant `agentMessage` containing the review.
@@ -890,6 +891,25 @@ behavior. Call
 `thread/realtime/appendText` to append app-provided realtime text items, or
 `thread/realtime/appendSpeech` when the app decides a realtime update should be
 spoken.
+
+V1 clients that directly control the underlying realtime operations can call
+`thread/realtime/appendText` with `role: "developer"` for
+`conversation.item.create`, then `thread/realtime/appendHandoff` for an exact
+`conversation.handoff.append`. These two raw operations share a FIFO, so the
+requests are forwarded in order.
+
+```json
+{ "method": "thread/realtime/appendText", "id": 41, "params": {
+    "threadId": "thr_123",
+    "role": "developer",
+    "text": "The background task reached the test phase."
+} }
+{ "method": "thread/realtime/appendHandoff", "id": 42, "params": {
+    "threadId": "thr_123",
+    "handoffId": "handoff_456",
+    "outputText": "All tests passed."
+} }
+```
 
 ```javascript
 await pc.setRemoteDescription({

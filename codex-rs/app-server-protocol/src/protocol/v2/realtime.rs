@@ -155,6 +155,22 @@ pub struct ThreadRealtimeAppendTextParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeAppendTextResponse {}
 
+/// EXPERIMENTAL - append a raw handoff output to a V1 realtime conversation.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeAppendHandoffParams {
+    pub thread_id: String,
+    pub handoff_id: String,
+    pub output_text: String,
+}
+
+/// EXPERIMENTAL - response for appending a raw V1 handoff output.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeAppendHandoffResponse {}
+
 /// EXPERIMENTAL - append speakable text to thread realtime.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

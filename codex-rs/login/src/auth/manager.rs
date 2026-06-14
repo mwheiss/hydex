@@ -20,7 +20,7 @@ use tokio::sync::watch;
 
 use codex_agent_identity::decode_agent_identity_jwt;
 use codex_agent_identity::fetch_agent_identity_jwks;
-use codex_app_server_protocol::AuthMode;
+pub use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::AuthMode as ApiAuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;
@@ -60,14 +60,12 @@ pub enum CodexAuth {
     ChatgptAuthTokens(ChatgptAuthTokens),
     AgentIdentity(AgentIdentityAuth),
     PersonalAccessToken(PersonalAccessTokenAuth),
-    BedrockApiKey(BedrockApiKeyAuth),
 }
 
 impl PartialEq for CodexAuth {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::PersonalAccessToken(a), Self::PersonalAccessToken(b)) => a == b,
-            (Self::BedrockApiKey(a), Self::BedrockApiKey(b)) => a == b,
             _ => self.api_auth_mode() == other.api_auth_mode(),
         }
     }
@@ -244,12 +242,9 @@ impl CodexAuth {
             return Self::from_personal_access_token(personal_access_token).await;
         }
         if auth_mode == ApiAuthMode::BedrockApiKey {
-            let Some(auth) = auth_dot_json.bedrock_api_key else {
-                return Err(std::io::Error::other(
-                    "Bedrock API key auth is missing a Bedrock API key.",
-                ));
-            };
-            return Ok(Self::BedrockApiKey(auth));
+            return Err(std::io::Error::other(
+                "Amazon Bedrock API key auth is provider-specific",
+            ));
         }
 
         let storage_mode = auth_dot_json.storage_mode(auth_credentials_store_mode);
@@ -275,7 +270,9 @@ impl CodexAuth {
             ApiAuthMode::PersonalAccessToken => {
                 unreachable!("personal access token mode is handled above")
             }
-            ApiAuthMode::BedrockApiKey => unreachable!("bedrock api key mode is handled above"),
+            ApiAuthMode::BedrockApiKey => {
+                unreachable!("bedrock api key mode is rejected above")
+            }
         }
     }
 
@@ -320,7 +317,6 @@ impl CodexAuth {
             Self::Chatgpt(_) | Self::ChatgptAuthTokens(_) => AuthMode::Chatgpt,
             Self::AgentIdentity(_) => AuthMode::AgentIdentity,
             Self::PersonalAccessToken(_) => AuthMode::PersonalAccessToken,
-            Self::BedrockApiKey(_) => AuthMode::BedrockApiKey,
         }
     }
 
@@ -331,7 +327,6 @@ impl CodexAuth {
             Self::ChatgptAuthTokens(_) => ApiAuthMode::ChatgptAuthTokens,
             Self::AgentIdentity(_) => ApiAuthMode::AgentIdentity,
             Self::PersonalAccessToken(_) => ApiAuthMode::PersonalAccessToken,
-            Self::BedrockApiKey(_) => ApiAuthMode::BedrockApiKey,
         }
     }
 
@@ -366,8 +361,7 @@ impl CodexAuth {
             Self::Chatgpt(_)
             | Self::ChatgptAuthTokens(_)
             | Self::AgentIdentity(_)
-            | Self::PersonalAccessToken(_)
-            | Self::BedrockApiKey(_) => None,
+            | Self::PersonalAccessToken(_) => None,
         }
     }
 
@@ -396,9 +390,6 @@ impl CodexAuth {
                 "agent identity auth does not expose a bearer token",
             )),
             Self::PersonalAccessToken(auth) => Ok(auth.access_token().to_string()),
-            Self::BedrockApiKey(_) => Err(std::io::Error::other(
-                "Bedrock API key auth does not expose a Codex bearer token",
-            )),
         }
     }
 
@@ -471,10 +462,7 @@ impl CodexAuth {
         let state = match self {
             Self::Chatgpt(auth) => &auth.state,
             Self::ChatgptAuthTokens(auth) => &auth.state,
-            Self::ApiKey(_)
-            | Self::AgentIdentity(_)
-            | Self::PersonalAccessToken(_)
-            | Self::BedrockApiKey(_) => return None,
+            Self::ApiKey(_) | Self::AgentIdentity(_) | Self::PersonalAccessToken(_) => return None,
         };
         #[expect(clippy::unwrap_used)]
         state.auth_dot_json.lock().unwrap().clone()
@@ -756,6 +744,19 @@ pub fn load_auth_dot_json(
     storage.load()
 }
 
+fn load_stored_bedrock_api_key(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<Option<BedrockApiKeyAuth>> {
+    load_auth_dot_json(
+        codex_home,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+    .map(|auth| auth.and_then(|auth| auth.bedrock_api_key))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthConfig {
     pub codex_home: PathBuf,
@@ -767,7 +768,7 @@ pub struct AuthConfig {
 }
 
 pub async fn enforce_login_restrictions(config: &AuthConfig) -> std::io::Result<()> {
-    let Some(auth) = load_auth(
+    let auth = load_auth(
         &config.codex_home,
         /*enable_codex_api_key_env*/ true,
         config.auth_credentials_store_mode,
@@ -775,13 +776,23 @@ pub async fn enforce_login_restrictions(config: &AuthConfig) -> std::io::Result<
         config.chatgpt_base_url.as_deref(),
         config.keyring_backend_kind,
     )
-    .await?
-    else {
+    .await?;
+    let stored_bedrock_api_key = load_stored_bedrock_api_key(
+        &config.codex_home,
+        config.auth_credentials_store_mode,
+        config.keyring_backend_kind,
+    )?;
+    let auth_mode = auth.as_ref().map(CodexAuth::auth_mode).or_else(|| {
+        stored_bedrock_api_key
+            .as_ref()
+            .map(|_| AuthMode::BedrockApiKey)
+    });
+    let Some(auth_mode) = auth_mode else {
         return Ok(());
     };
 
     if let Some(required_method) = config.forced_login_method {
-        let method_violation = match (required_method, auth.auth_mode()) {
+        let method_violation = match (required_method, auth_mode) {
             (ForcedLoginMethod::Api, AuthMode::ApiKey)
             | (ForcedLoginMethod::Api, AuthMode::BedrockApiKey) => None,
             (ForcedLoginMethod::Chatgpt, AuthMode::Chatgpt)
@@ -813,8 +824,11 @@ pub async fn enforce_login_restrictions(config: &AuthConfig) -> std::io::Result<
     }
 
     if let Some(expected_account_ids) = config.forced_chatgpt_workspace_id.as_deref() {
-        let chatgpt_account_id = match &auth {
-            CodexAuth::ApiKey(_) | CodexAuth::BedrockApiKey(_) => return Ok(()),
+        let Some(auth) = auth.as_ref() else {
+            return Ok(());
+        };
+        let chatgpt_account_id = match auth {
+            CodexAuth::ApiKey(_) => return Ok(()),
             CodexAuth::AgentIdentity(_) | CodexAuth::PersonalAccessToken(_) => {
                 auth.get_account_id()
             }
@@ -929,7 +943,10 @@ async fn load_auth(
         AuthCredentialsStoreMode::Ephemeral,
         AuthKeyringBackendKind::default(),
     );
-    if let Some(auth_dot_json) = ephemeral_storage.load()? {
+    if let Some(auth_dot_json) = ephemeral_storage
+        .load()?
+        .filter(|auth| !auth.is_bedrock_api_key())
+    {
         let auth = CodexAuth::from_auth_dot_json(
             codex_home,
             auth_dot_json,
@@ -971,7 +988,8 @@ async fn load_auth(
         keyring_backend_kind,
     );
     let auth_dot_json = match storage.load()? {
-        Some(auth) => auth,
+        Some(auth) if !auth.is_bedrock_api_key() => auth,
+        Some(_) => return Ok(None),
         None => return Ok(None),
     };
 
@@ -1228,6 +1246,7 @@ impl AuthDotJson {
 #[derive(Clone)]
 struct CachedAuth {
     auth: Option<CodexAuth>,
+    bedrock_api_key: Option<BedrockApiKeyAuth>,
     /// Permanent refresh failure cached for the current auth snapshot so
     /// later refresh attempts for the same credentials fail fast without network.
     permanent_refresh_failure: Option<AuthScopedRefreshFailure>,
@@ -1246,6 +1265,7 @@ impl Debug for CachedAuth {
                 "auth_mode",
                 &self.auth.as_ref().map(CodexAuth::api_auth_mode),
             )
+            .field("has_bedrock_api_key", &self.bedrock_api_key.is_some())
             .field(
                 "permanent_refresh_failure",
                 &self
@@ -1571,6 +1591,13 @@ impl AuthManager {
         chatgpt_base_url: Option<String>,
         keyring_backend_kind: AuthKeyringBackendKind,
     ) -> Self {
+        let bedrock_api_key = load_stored_bedrock_api_key(
+            &codex_home,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+        )
+        .ok()
+        .flatten();
         let managed_auth = load_auth(
             &codex_home,
             enable_codex_api_key_env,
@@ -1587,6 +1614,7 @@ impl AuthManager {
             codex_home,
             inner: RwLock::new(CachedAuth {
                 auth: managed_auth,
+                bedrock_api_key,
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
@@ -1604,6 +1632,7 @@ impl AuthManager {
     pub fn from_auth_for_testing(auth: CodexAuth) -> Arc<Self> {
         let cached = CachedAuth {
             auth: Some(auth),
+            bedrock_api_key: None,
             permanent_refresh_failure: None,
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
@@ -1626,6 +1655,7 @@ impl AuthManager {
     pub fn from_auth_for_testing_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<Self> {
         let cached = CachedAuth {
             auth: Some(auth),
+            bedrock_api_key: None,
             permanent_refresh_failure: None,
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
@@ -1649,6 +1679,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(CachedAuth {
                 auth: None,
+                bedrock_api_key: None,
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
@@ -1667,6 +1698,14 @@ impl AuthManager {
     /// Current cached auth (clone) without attempting a refresh.
     pub fn auth_cached(&self) -> Option<CodexAuth> {
         self.inner.read().ok().and_then(|c| c.auth.clone())
+    }
+
+    /// Current managed Amazon Bedrock API key without applying Codex auth precedence.
+    pub fn bedrock_api_key_auth_cached(&self) -> Option<BedrockApiKeyAuth> {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|cached| cached.bedrock_api_key.clone())
     }
 
     /// Subscribes to cached auth changes that can affect request recovery.
@@ -1707,7 +1746,8 @@ impl AuthManager {
     pub async fn reload(&self) -> bool {
         tracing::info!("Reloading auth");
         let new_auth = self.load_auth_from_storage().await;
-        self.set_cached_auth(new_auth)
+        let new_bedrock_api_key = self.load_bedrock_api_key_from_storage();
+        self.set_cached_auth_state(new_auth, new_bedrock_api_key)
     }
 
     async fn reload_if_account_id_matches(
@@ -1761,7 +1801,6 @@ impl AuthManager {
                     _ => false,
                 },
                 (ApiAuthMode::PersonalAccessToken, ApiAuthMode::PersonalAccessToken) => a == b,
-                (ApiAuthMode::BedrockApiKey, ApiAuthMode::BedrockApiKey) => a == b,
                 _ => false,
             },
             _ => false,
@@ -1808,6 +1847,43 @@ impl AuthManager {
         .await
         .ok()
         .flatten()
+    }
+
+    fn load_bedrock_api_key_from_storage(&self) -> Option<BedrockApiKeyAuth> {
+        load_stored_bedrock_api_key(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            self.keyring_backend_kind,
+        )
+        .ok()
+        .flatten()
+    }
+
+    fn set_cached_auth_state(
+        &self,
+        new_auth: Option<CodexAuth>,
+        new_bedrock_api_key: Option<BedrockApiKeyAuth>,
+    ) -> bool {
+        if let Ok(mut guard) = self.inner.write() {
+            let previous = guard.auth.as_ref();
+            let auth_changed = !Self::auths_equal(previous, new_auth.as_ref());
+            let auth_changed_for_refresh =
+                !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
+            let bedrock_auth_changed = guard.bedrock_api_key != new_bedrock_api_key;
+            if auth_changed_for_refresh {
+                guard.permanent_refresh_failure = None;
+            }
+            let changed = auth_changed || bedrock_auth_changed;
+            tracing::info!("Reloaded auth, changed: {changed}");
+            guard.auth = new_auth;
+            guard.bedrock_api_key = new_bedrock_api_key;
+            if auth_changed_for_refresh || bedrock_auth_changed {
+                self.auth_change_tx.send_modify(|revision| *revision += 1);
+            }
+            changed
+        } else {
+            false
+        }
     }
 
     fn set_cached_auth(&self, new_auth: Option<CodexAuth>) -> bool {
@@ -2030,8 +2106,7 @@ impl AuthManager {
             }
             CodexAuth::ApiKey(_)
             | CodexAuth::AgentIdentity(_)
-            | CodexAuth::PersonalAccessToken(_)
-            | CodexAuth::BedrockApiKey(_) => Ok(()),
+            | CodexAuth::PersonalAccessToken(_) => Ok(()),
         };
         if let Err(RefreshTokenError::Permanent(error)) = &result {
             self.record_permanent_refresh_failure_if_unchanged(&attempted_auth, error);

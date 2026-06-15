@@ -18,6 +18,8 @@ pub use manager::SandboxTransformRequest;
 pub use manager::SandboxType;
 pub use manager::SandboxablePreference;
 pub use manager::compatibility_sandbox_policy_for_permission_profile;
+#[cfg(target_os = "linux")]
+pub use manager::ensure_legacy_landlock_supports_managed_mitm;
 pub use manager::get_platform_sandbox;
 pub use manager::prepare_managed_network_child;
 

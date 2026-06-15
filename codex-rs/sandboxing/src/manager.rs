@@ -98,7 +98,7 @@ fn with_managed_mitm_ca_proxy_dirs_denied(
     managed_mitm_ca_dirs.sort();
     managed_mitm_ca_dirs.dedup();
     if managed_mitm_ca_dirs.iter().any(|path| {
-        managed_mitm_ca_dir_has_writable_ancestor(
+        managed_mitm_ca_dir_overlaps_writable_path(
             &file_system_sandbox_policy,
             path.as_path(),
             sandbox_policy_cwd,
@@ -124,7 +124,7 @@ fn with_managed_mitm_ca_proxy_dirs_denied(
     )
 }
 
-fn managed_mitm_ca_dir_has_writable_ancestor(
+fn managed_mitm_ca_dir_overlaps_writable_path(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     managed_mitm_ca_dir: &Path,
     sandbox_policy_cwd: &Path,
@@ -133,21 +133,22 @@ fn managed_mitm_ca_dir_has_writable_ancestor(
         return true;
     }
     let managed_mitm_ca_dir_canonical = managed_mitm_ca_dir.canonicalize().ok();
-    let has_explicit_writable_ancestor = file_system_sandbox_policy
+    let has_explicit_writable_overlap = file_system_sandbox_policy
         .get_writable_roots_with_cwd(sandbox_policy_cwd)
         .into_iter()
         .any(|root| {
             let root = root.root;
             managed_mitm_ca_dir.starts_with(root.as_path())
+                || root.as_path().starts_with(managed_mitm_ca_dir)
                 || managed_mitm_ca_dir_canonical
                     .as_ref()
                     .is_some_and(|managed_dir| {
-                        root.as_path()
-                            .canonicalize()
-                            .is_ok_and(|root| managed_dir.starts_with(root))
+                        root.as_path().canonicalize().is_ok_and(|root| {
+                            managed_dir.starts_with(&root) || root.starts_with(managed_dir)
+                        })
                     })
         });
-    if has_explicit_writable_ancestor {
+    if has_explicit_writable_overlap {
         return true;
     }
 
@@ -543,16 +544,31 @@ fn ensure_linux_bubblewrap_is_supported(
     managed_mitm_ca_active: bool,
     is_wsl1: bool,
 ) -> Result<(), SandboxTransformError> {
+    ensure_legacy_landlock_supports_managed_mitm(
+        file_system_sandbox_policy,
+        use_legacy_landlock,
+        managed_mitm_ca_active,
+    )?;
+    let requires_bubblewrap = !use_legacy_landlock
+        && (!file_system_sandbox_policy.has_full_disk_write_access() || allow_network_for_proxy);
+    if is_wsl1 && requires_bubblewrap {
+        return Err(SandboxTransformError::Wsl1UnsupportedForBubblewrap);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn ensure_legacy_landlock_supports_managed_mitm(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    use_legacy_landlock: bool,
+    managed_mitm_ca_active: bool,
+) -> Result<(), SandboxTransformError> {
     if use_legacy_landlock
         && managed_mitm_ca_active
         && file_system_sandbox_policy.kind == FileSystemSandboxKind::Restricted
     {
         return Err(SandboxTransformError::LegacyLandlockUnsupportedWithManagedMitm);
-    }
-    let requires_bubblewrap = !use_legacy_landlock
-        && (!file_system_sandbox_policy.has_full_disk_write_access() || allow_network_for_proxy);
-    if is_wsl1 && requires_bubblewrap {
-        return Err(SandboxTransformError::Wsl1UnsupportedForBubblewrap);
     }
 
     Ok(())

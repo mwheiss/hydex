@@ -1085,6 +1085,11 @@ fn append_mount_target_parent_dir_args(args: &mut Vec<String>, mount_target: &Pa
         .collect();
     mount_target_dirs.reverse();
     for mount_target_dir in mount_target_dirs {
+        // These directories only make a narrower mount target reachable below
+        // a denied parent. Keep them traversable but not listable; the real
+        // readable/writable descendant is mounted over the final target later.
+        args.push("--perms".to_string());
+        args.push("111".to_string());
         args.push("--dir".to_string());
         args.push(path_to_string(&mount_target_dir));
     }
@@ -2635,6 +2640,11 @@ mod tests {
             .windows(2)
             .position(|window| window == ["--dir", active_dir_str.as_str()])
             .expect("active bundle parent should be recreated");
+        let active_dir_perms_index = args
+            .args
+            .windows(4)
+            .position(|window| window == ["--perms", "111", "--dir", active_dir_str.as_str()])
+            .expect("active bundle parent should be execute-only");
         let active_placeholder_index = args
             .args
             .windows(3)
@@ -2667,7 +2677,8 @@ mod tests {
             .expect("active bundle should be rebound read-only from a preserved descriptor");
 
         assert!(
-            blocked_mask_index < active_dir_index
+            blocked_mask_index < active_dir_perms_index
+                && active_dir_perms_index < active_dir_index
                 && active_dir_index < active_placeholder_index
                 && active_placeholder_index < blocked_remount_index
                 && blocked_remount_index < active_bind_index,

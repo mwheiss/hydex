@@ -17,6 +17,8 @@ use codex_core::spawn::CODEX_SANDBOX_ENV_VAR;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+#[cfg(target_os = "linux")]
+use codex_sandboxing::ensure_legacy_landlock_supports_managed_mitm;
 use codex_sandboxing::landlock::allow_network_for_proxy;
 use codex_sandboxing::landlock::create_linux_sandbox_command_args_for_permission_profile;
 use codex_sandboxing::prepare_managed_network_child;
@@ -263,11 +265,28 @@ async fn run_command_under_sandbox(
         reason = "the concrete proxy type is not a direct dependency of codex-cli"
     )]
     let network_child_env = network.as_ref().map(|network| network.child_env_snapshot());
+    let effective_permission_profile = config.permissions.effective_permission_profile();
+    #[cfg(target_os = "linux")]
+    if matches!(&sandbox_type, SandboxType::Landlock) {
+        let file_system_sandbox_policy = effective_permission_profile.file_system_sandbox_policy();
+        #[expect(
+            clippy::redundant_closure_for_method_calls,
+            reason = "the concrete snapshot type is not a direct dependency of codex-cli"
+        )]
+        let managed_mitm_ca_active = network_child_env
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.has_managed_mitm_ca());
+        ensure_legacy_landlock_supports_managed_mitm(
+            &file_system_sandbox_policy,
+            config.features.use_legacy_landlock(),
+            managed_mitm_ca_active,
+        )?;
+    }
     let runtime_permission_profile = prepare_managed_network_child(
         network_child_env.as_ref(),
         &mut env,
         cwd.as_path(),
-        config.permissions.effective_permission_profile(),
+        effective_permission_profile,
         sandbox_policy_cwd.as_path(),
         cfg!(target_os = "windows") && matches!(sandbox_type, SandboxType::Windows),
     )?;

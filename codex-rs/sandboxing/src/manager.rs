@@ -78,12 +78,8 @@ fn with_managed_mitm_ca_proxy_dirs_denied(
     let (mut file_system_sandbox_policy, network_sandbox_policy) =
         permission_profile.to_runtime_permissions();
 
-    // Seatbelt and bubblewrap can enforce a per-invocation parent deny with a
-    // narrower read-only file carveback. The Windows elevated sandbox uses a
-    // persistent shared principal for read grants, so applying the same shape
-    // there would expose an earlier command's carveback to later commands.
-    // Disabled, external, unrestricted, and unsupported platform profiles keep
-    // their existing filesystem semantics.
+    // Seatbelt and bubblewrap can apply the parent deny plus file carveback per
+    // invocation. Windows read grants persist; other profile kinds stay unchanged.
     if !cfg!(any(target_os = "linux", target_os = "macos"))
         || file_system_sandbox_policy.kind != FileSystemSandboxKind::Restricted
     {
@@ -133,6 +129,9 @@ fn managed_mitm_ca_dir_has_writable_ancestor(
     managed_mitm_ca_dir: &Path,
     sandbox_policy_cwd: &Path,
 ) -> bool {
+    if file_system_sandbox_policy.has_full_disk_write_access() {
+        return true;
+    }
     let managed_mitm_ca_dir_canonical = managed_mitm_ca_dir.canonicalize().ok();
     let has_explicit_writable_ancestor = file_system_sandbox_policy
         .get_writable_roots_with_cwd(sandbox_policy_cwd)
@@ -193,6 +192,7 @@ pub fn prepare_managed_network_child(
     command_cwd: &Path,
     permission_profile: PermissionProfile,
     sandbox_policy_cwd: &Path,
+    persistent_windows_sandbox: bool,
 ) -> Result<PermissionProfile, SandboxTransformError> {
     let managed_mitm_ca_trust_bundle_paths = network
         .and_then(NetworkProxyChildEnvSnapshot::managed_mitm_ca_trust_bundle_path)
@@ -203,9 +203,6 @@ pub fn prepare_managed_network_child(
         &managed_mitm_ca_trust_bundle_paths,
         sandbox_policy_cwd,
     )?;
-    let persistent_windows_sandbox = cfg!(target_os = "windows")
-        && permission_profile.file_system_sandbox_policy().kind
-            == FileSystemSandboxKind::Restricted;
     if persistent_windows_sandbox
         && network.is_some_and(|network| network.requires_child_specific_mitm_ca_bundle(env))
     {
@@ -423,6 +420,7 @@ impl SandboxManager {
             command.cwd.as_path(),
             effective_permission_profile,
             sandbox_policy_cwd,
+            cfg!(target_os = "windows") && sandbox == SandboxType::WindowsRestrictedToken,
         )?;
         let (effective_file_system_policy, effective_network_policy) =
             effective_permission_profile.to_runtime_permissions();

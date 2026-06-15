@@ -456,6 +456,33 @@ fn managed_mitm_ca_proxy_dir_rejects_explicit_writable_ancestor() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn managed_mitm_ca_proxy_dir_rejects_full_disk_write() {
+    let proxy_dir = TempDir::new().expect("create proxy dir");
+    let managed_bundle_path =
+        AbsolutePathBuf::from_absolute_path(proxy_dir.path().join("ca-bundle-active.pem"))
+            .expect("absolute managed bundle path");
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Root,
+            },
+            access: FileSystemAccessMode::Write,
+        }]),
+        NetworkSandboxPolicy::Restricted,
+    );
+
+    assert!(matches!(
+        with_managed_mitm_ca_proxy_dirs_denied(
+            permission_profile,
+            std::slice::from_ref(&managed_bundle_path),
+            proxy_dir.path(),
+        ),
+        Err(super::SandboxTransformError::ManagedMitmCaPathUnderWritableRoot)
+    ));
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 fn managed_mitm_ca_proxy_dir_rejects_platform_default_writable_ancestor() {
     let proxy_dir = tempfile::tempdir_in("/private/tmp").expect("create proxy dir");

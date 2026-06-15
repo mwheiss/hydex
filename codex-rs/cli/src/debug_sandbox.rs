@@ -269,6 +269,7 @@ async fn run_command_under_sandbox(
         cwd.as_path(),
         config.permissions.effective_permission_profile(),
         sandbox_policy_cwd.as_path(),
+        cfg!(target_os = "windows") && matches!(sandbox_type, SandboxType::Windows),
     )?;
 
     let mut child = match sandbox_type {

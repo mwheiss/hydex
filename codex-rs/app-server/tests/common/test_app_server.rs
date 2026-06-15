@@ -1047,6 +1047,7 @@ impl TestAppServer {
         self.send_request("thread/realtime/appendHandoff", params)
             .await
     }
+
     /// Send a `thread/realtime/appendSpeech` JSON-RPC request (v2).
     pub async fn send_thread_realtime_append_speech_request(
         &mut self,

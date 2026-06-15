@@ -465,6 +465,7 @@ impl RealtimeE2eHarness {
         let _: ThreadRealtimeAppendHandoffResponse = to_response(response)?;
         Ok(())
     }
+
     async fn append_speech(&mut self, thread_id: String, text: &str) -> Result<()> {
         let request_id = self
             .mcp

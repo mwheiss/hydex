@@ -801,20 +801,6 @@ impl NetworkProxy {
         self.child_env_snapshot().apply_to_env(env);
     }
 
-    /// Rewrites readable child-selected CA bundles into immutable managed MITM bundles.
-    pub fn prepare_child_env<F>(
-        &self,
-        env: &mut HashMap<String, String>,
-        cwd: &Path,
-        can_read_path: F,
-    ) -> Vec<AbsolutePathBuf>
-    where
-        F: Fn(&Path) -> bool,
-    {
-        self.child_env_snapshot()
-            .prepare_child_env(env, cwd, can_read_path)
-    }
-
     pub async fn replace_config_state(&self, new_state: ConfigState) -> Result<()> {
         let current_cfg = self.state.current_cfg().await?;
         anyhow::ensure!(

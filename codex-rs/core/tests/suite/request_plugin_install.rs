@@ -43,9 +43,9 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
-const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
 const LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME: &str = "list_available_plugins_to_install";
 const REQUEST_PLUGIN_INSTALL_TOOL_NAME: &str = "request_plugin_install";
+const REQUEST_PLUGIN_INSTALLS_TOOL_NAME: &str = "request_plugin_installs";
 const DISCOVERABLE_GMAIL_ID: &str = "connector_68df038e0ba48191908c8434991bbac2";
 
 fn tool_names(body: &Value) -> Vec<String> {
@@ -133,23 +133,6 @@ async fn mount_recommendations(server: &wiremock::MockServer, response: Response
         .await;
 }
 
-fn assert_legacy_tools(body: &Value) {
-    let tools = tool_names(body);
-    assert!(!tools.iter().any(|name| name == TOOL_SEARCH_TOOL_NAME));
-    assert!(
-        tools
-            .iter()
-            .any(|name| name == LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME),
-        "legacy mode should expose {LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}: {tools:?}"
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|name| name == REQUEST_PLUGIN_INSTALL_TOOL_NAME),
-        "legacy mode should expose {REQUEST_PLUGIN_INSTALL_TOOL_NAME}: {tools:?}"
-    );
-}
-
 async fn build_test(
     server: &wiremock::MockServer,
     apps_server: &AppsTestServer,
@@ -209,7 +192,25 @@ async fn explicit_false_preserves_legacy_workflow() -> Result<()> {
             .contains("<recommended_plugins>")
     );
     let body = request.body_json();
-    assert_legacy_tools(&body);
+    let tools = tool_names(&body);
+    assert!(
+        tools
+            .iter()
+            .any(|name| name == LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME),
+        "tools list should include {LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}: {tools:?}"
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|name| name == REQUEST_PLUGIN_INSTALLS_TOOL_NAME),
+        "tools list should include {REQUEST_PLUGIN_INSTALLS_TOOL_NAME}: {tools:?}"
+    );
+    assert!(
+        !tools
+            .iter()
+            .any(|name| name == REQUEST_PLUGIN_INSTALL_TOOL_NAME),
+        "tools list should hide legacy {REQUEST_PLUGIN_INSTALL_TOOL_NAME}: {tools:?}"
+    );
     let list_description =
         function_tool_description(&body, LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME)
             .expect("description");
@@ -224,7 +225,7 @@ async fn explicit_false_preserves_legacy_workflow() -> Result<()> {
     ));
 
     let description =
-        function_tool_description(&body, REQUEST_PLUGIN_INSTALL_TOOL_NAME).expect("description");
+        function_tool_description(&body, REQUEST_PLUGIN_INSTALLS_TOOL_NAME).expect("description");
     assert!(description.contains(
         "Use this tool only after `list_available_plugins_to_install` returns one or more plugins or connectors that exactly match the user's explicit request."
     ));
@@ -236,32 +237,24 @@ async fn explicit_false_preserves_legacy_workflow() -> Result<()> {
     assert!(!description.contains("tool_search fails to find a good match"));
 
     let parameters =
-        function_tool_parameters(&body, REQUEST_PLUGIN_INSTALL_TOOL_NAME).expect("parameters");
-    let variants = parameters
-        .get("oneOf")
-        .and_then(Value::as_array)
-        .expect("request_plugin_install should expose oneOf parameters");
-    assert_eq!(variants.len(), 2);
-    assert!(variants.iter().any(|variant| {
-        variant.pointer("/properties/entries").is_some()
-            && variant.pointer("/properties/categories").is_none()
-    }));
-    assert!(variants.iter().any(|variant| {
-        variant.pointer("/properties/categories").is_some()
-            && variant.pointer("/properties/entries").is_none()
-    }));
-    assert!(variants.iter().all(|variant| {
-        variant.pointer("/properties/suggest_reason").is_none()
-            && variant.pointer("/properties/title").is_none()
-    }));
-    assert!(variants.iter().all(|variant| {
-        variant
+        function_tool_parameters(&body, REQUEST_PLUGIN_INSTALLS_TOOL_NAME).expect("parameters");
+    assert_eq!(
+        parameters.get("type").and_then(Value::as_str),
+        Some("object")
+    );
+    assert!(parameters.pointer("/properties/entries").is_some());
+    assert!(parameters.pointer("/properties/categories").is_some());
+    assert!(parameters.pointer("/properties/suggest_reason").is_none());
+    assert!(
+        parameters
             .pointer("/properties/entries/items/properties/tool_name")
             .is_none()
-            && variant
-                .pointer("/properties/entries/items/properties/description")
-                .is_none()
-    }));
+    );
+    assert!(
+        parameters
+            .pointer("/properties/entries/items/properties/description")
+            .is_none()
+    );
 
     let output = requests[1]
         .function_call_output_text(call_id)
@@ -347,6 +340,11 @@ async fn endpoint_mode_injects_candidates_hides_list_and_rejects_invented_ids() 
     );
     assert!(
         tools
+            .iter()
+            .any(|name| name == REQUEST_PLUGIN_INSTALLS_TOOL_NAME)
+    );
+    assert!(
+        !tools
             .iter()
             .any(|name| name == REQUEST_PLUGIN_INSTALL_TOOL_NAME)
     );
@@ -535,6 +533,11 @@ async fn endpoint_mode_with_no_eligible_candidates_exposes_no_suggestion_tools()
         !tools
             .iter()
             .any(|name| name == REQUEST_PLUGIN_INSTALL_TOOL_NAME)
+    );
+    assert!(
+        !tools
+            .iter()
+            .any(|name| name == REQUEST_PLUGIN_INSTALLS_TOOL_NAME)
     );
     Ok(())
 }

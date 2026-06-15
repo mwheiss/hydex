@@ -1,22 +1,75 @@
 use codex_tools::JsonSchema;
 use codex_tools::LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME;
 use codex_tools::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
+use codex_tools::REQUEST_PLUGIN_INSTALLS_TOOL_NAME;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+use super::request_plugin_install::MAX_REQUEST_PLUGIN_INSTALLS_ENTRIES;
 use crate::tools::router::ToolSuggestPresentation;
 
 pub(crate) fn create_request_plugin_install_tool(
     presentation: ToolSuggestPresentation,
 ) -> ToolSpec {
-    let description = match presentation {
-        ToolSuggestPresentation::ListTool => format!(
-            "# Request plugin/connector install\n\nUse this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns one or more plugins or connectors that exactly match the user's explicit request.\n\nDo not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target. Pass only exact `tool_type` and `tool_id` values returned by `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}`; Codex resolves picker labels and metadata from that known tool list.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+    let (properties, required, description) = match presentation {
+        ToolSuggestPresentation::ListTool => (
+            BTreeMap::from([
+                (
+                    "tool_type".to_string(),
+                    JsonSchema::string(Some(
+                        "Type of discoverable tool to suggest. Use \"connector\" or \"plugin\"."
+                            .to_string(),
+                    )),
+                ),
+                (
+                    "action_type".to_string(),
+                    JsonSchema::string(Some(
+                        "Suggested action for the tool. Use \"install\".".to_string(),
+                    )),
+                ),
+                (
+                    "tool_id".to_string(),
+                    JsonSchema::string(Some("Connector or plugin id to suggest.".to_string())),
+                ),
+                (
+                    "suggest_reason".to_string(),
+                    JsonSchema::string(Some(
+                        "Concise one-line user-facing reason why this plugin or connector can help with the current request."
+                            .to_string(),
+                    )),
+                ),
+            ]),
+            vec![
+                "tool_type".to_string(),
+                "action_type".to_string(),
+                "tool_id".to_string(),
+                "suggest_reason".to_string(),
+            ],
+            format!(
+                "# Request plugin/connector install\n\nUse this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns a plugin or connector that exactly matches the user's explicit request.\n\nDo not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Pass the returned `tool_type` through directly, and pass the returned `id` as `tool_id`.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+            ),
         ),
-        ToolSuggestPresentation::RecommendationContext =>
-            "# Suggest a recommended plugin installation\n\nSuggest installing one or more plugins from the developer `<recommended_plugins>` list when they would help with the user's current request. Briefly explain why in `suggest_reason`.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.".to_string(),
+        ToolSuggestPresentation::RecommendationContext => (
+            BTreeMap::from([
+                (
+                    "plugin_id".to_string(),
+                    JsonSchema::string(Some(
+                        "Plugin id from the `<recommended_plugins>` list.".to_string(),
+                    )),
+                ),
+                (
+                    "suggest_reason".to_string(),
+                    JsonSchema::string(Some(
+                        "Concise one-line user-facing reason why this plugin can help with the current request."
+                            .to_string(),
+                    )),
+                ),
+            ]),
+            vec!["plugin_id".to_string(), "suggest_reason".to_string()],
+            "# Suggest a recommended plugin installation\n\nSuggest installing a plugin from the `<recommended_plugins>` list when it would help with the user's current request. Briefly explain why in `suggest_reason`.".to_string(),
+        ),
     };
 
     ToolSpec::Function(ResponsesApiTool {
@@ -24,18 +77,77 @@ pub(crate) fn create_request_plugin_install_tool(
         description,
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::one_of(
-            vec![flat_picker_schema(), categorized_picker_schema()],
-            Some(
-                "Use the flat picker shape for one or more exact targets, or the categorized picker shape for grouped exact install candidates."
-                    .to_string(),
-            ),
-        ),
+        parameters: JsonSchema::object(properties, Some(required), Some(false.into())),
         output_schema: None,
     })
 }
 
-fn flat_picker_schema() -> JsonSchema {
+pub(crate) fn create_request_plugin_installs_tool(
+    presentation: ToolSuggestPresentation,
+) -> ToolSpec {
+    let description = request_plugin_installs_description(
+        presentation,
+        RequestPluginInstallsSchema::MultipleEntries,
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: REQUEST_PLUGIN_INSTALLS_TOOL_NAME.to_string(),
+        description,
+        strict: false,
+        defer_loading: None,
+        parameters: picker_schema(),
+        output_schema: None,
+    })
+}
+
+pub(crate) fn create_request_plugin_installs_tool_for_tui(
+    presentation: ToolSuggestPresentation,
+) -> ToolSpec {
+    let description =
+        request_plugin_installs_description(presentation, RequestPluginInstallsSchema::SingleEntry);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: REQUEST_PLUGIN_INSTALLS_TOOL_NAME.to_string(),
+        description,
+        strict: false,
+        defer_loading: None,
+        parameters: single_entry_picker_schema(),
+        output_schema: None,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum RequestPluginInstallsSchema {
+    SingleEntry,
+    MultipleEntries,
+}
+
+fn request_plugin_installs_description(
+    presentation: ToolSuggestPresentation,
+    schema: RequestPluginInstallsSchema,
+) -> String {
+    match (presentation, schema) {
+        (ToolSuggestPresentation::ListTool, RequestPluginInstallsSchema::SingleEntry) => format!(
+            "# Request plugin/connector install\n\nUse this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns a connector that exactly matches the user's explicit request.\n\nDo not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with exactly one `entries` item. Pass only exact `tool_type` and `tool_id` values returned by `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}`; Codex resolves picker labels and metadata from that known tool list.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+        ),
+        (ToolSuggestPresentation::ListTool, RequestPluginInstallsSchema::MultipleEntries) => format!(
+            "# Request plugin/connector install\n\nUse this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns one or more plugins or connectors that exactly match the user's explicit request.\n\nDo not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target, with at most {MAX_REQUEST_PLUGIN_INSTALLS_ENTRIES} entries total. Pass only exact `tool_type` and `tool_id` values returned by `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}`; Codex resolves picker labels and metadata from that known tool list.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+        ),
+        (
+            ToolSuggestPresentation::RecommendationContext,
+            RequestPluginInstallsSchema::SingleEntry,
+        ) =>
+            "# Suggest a recommended plugin installation\n\nSuggest installing exactly one connector from the `<recommended_plugins>` list when it would help with the user's current request.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools.".to_string(),
+        (
+            ToolSuggestPresentation::RecommendationContext,
+            RequestPluginInstallsSchema::MultipleEntries,
+        ) => format!(
+            "# Suggest recommended plugin installations\n\nSuggest installing one or more plugins from the `<recommended_plugins>` list when they would help with the user's current request. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target, with at most {MAX_REQUEST_PLUGIN_INSTALLS_ENTRIES} entries total.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+        ),
+    }
+}
+
+fn picker_schema() -> JsonSchema {
     JsonSchema::object(
         BTreeMap::from([
             ("action_type".to_string(), install_action_schema()),
@@ -46,16 +158,6 @@ fn flat_picker_schema() -> JsonSchema {
                     Some("Flat list of exact install candidates.".to_string()),
                 ),
             ),
-        ]),
-        Some(vec!["action_type".to_string(), "entries".to_string()]),
-        Some(false.into()),
-    )
-}
-
-fn categorized_picker_schema() -> JsonSchema {
-    JsonSchema::object(
-        BTreeMap::from([
-            ("action_type".to_string(), install_action_schema()),
             (
                 "categories".to_string(),
                 JsonSchema::array(
@@ -64,7 +166,49 @@ fn categorized_picker_schema() -> JsonSchema {
                 ),
             ),
         ]),
-        Some(vec!["action_type".to_string(), "categories".to_string()]),
+        Some(vec!["action_type".to_string()]),
+        Some(false.into()),
+    )
+}
+
+fn single_entry_picker_schema() -> JsonSchema {
+    JsonSchema::object(
+        BTreeMap::from([
+            ("action_type".to_string(), install_action_schema()),
+            (
+                "entries".to_string(),
+                JsonSchema::array(
+                    connector_picker_entry_schema(),
+                    Some("Exactly one connector install candidate.".to_string()),
+                ),
+            ),
+        ]),
+        Some(vec!["action_type".to_string(), "entries".to_string()]),
+        Some(false.into()),
+    )
+}
+
+fn connector_picker_entry_schema() -> JsonSchema {
+    JsonSchema::object(
+        BTreeMap::from([
+            (
+                "tool_id".to_string(),
+                JsonSchema::string(Some(
+                    "Exact connector id returned by list_available_plugins_to_install.".to_string(),
+                )),
+            ),
+            (
+                "tool_type".to_string(),
+                JsonSchema::string_enum(
+                    vec![json!("connector")],
+                    Some(
+                        "Use the connector type returned by list_available_plugins_to_install."
+                            .to_string(),
+                    ),
+                ),
+            ),
+        ]),
+        Some(vec!["tool_id".to_string(), "tool_type".to_string()]),
         Some(false.into()),
     )
 }
@@ -127,12 +271,57 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn create_request_plugin_install_tool_uses_expected_wire_shape() {
+    fn create_request_plugin_installs_tool_uses_expected_wire_shape() {
         let expected_description = concat!(
             "# Request plugin/connector install\n\n",
             "Use this tool only after `list_available_plugins_to_install` returns one or more plugins or connectors that exactly match the user's explicit request.\n\n",
-            "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target. Pass only exact `tool_type` and `tool_id` values returned by `list_available_plugins_to_install`; Codex resolves picker labels and metadata from that known tool list.\n\n",
+            "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target, with at most 16 entries total. Pass only exact `tool_type` and `tool_id` values returned by `list_available_plugins_to_install`; Codex resolves picker labels and metadata from that known tool list.\n\n",
             "When this tool returns, the user-visible install picker has resolved and is no longer visible.\n\n",
+            "IMPORTANT: DO NOT call this tool in parallel with other tools.",
+        );
+
+        assert_eq!(
+            create_request_plugin_installs_tool(ToolSuggestPresentation::ListTool),
+            ToolSpec::Function(ResponsesApiTool {
+                name: "request_plugin_installs".to_string(),
+                description: expected_description.to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: picker_schema(),
+                output_schema: None,
+            })
+        );
+    }
+
+    #[test]
+    fn create_request_plugin_installs_tool_for_tui_uses_single_entry_shape() {
+        let expected_description = concat!(
+            "# Request plugin/connector install\n\n",
+            "Use this tool only after `list_available_plugins_to_install` returns a connector that exactly matches the user's explicit request.\n\n",
+            "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with exactly one `entries` item. Pass only exact `tool_type` and `tool_id` values returned by `list_available_plugins_to_install`; Codex resolves picker labels and metadata from that known tool list.\n\n",
+            "When this tool returns, the user-visible install picker has resolved and is no longer visible.\n\n",
+            "IMPORTANT: DO NOT call this tool in parallel with other tools.",
+        );
+
+        assert_eq!(
+            create_request_plugin_installs_tool_for_tui(ToolSuggestPresentation::ListTool),
+            ToolSpec::Function(ResponsesApiTool {
+                name: "request_plugin_installs".to_string(),
+                description: expected_description.to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: single_entry_picker_schema(),
+                output_schema: None,
+            })
+        );
+    }
+
+    #[test]
+    fn create_request_plugin_install_tool_preserves_legacy_wire_shape() {
+        let expected_description = concat!(
+            "# Request plugin/connector install\n\n",
+            "Use this tool only after `list_available_plugins_to_install` returns a plugin or connector that exactly matches the user's explicit request.\n\n",
+            "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Pass the returned `tool_type` through directly, and pass the returned `id` as `tool_id`.\n\n",
             "IMPORTANT: DO NOT call this tool in parallel with other tools.",
         );
 
@@ -143,12 +332,69 @@ mod tests {
                 description: expected_description.to_string(),
                 strict: false,
                 defer_loading: None,
-                parameters: JsonSchema::one_of(
-                    vec![flat_picker_schema(), categorized_picker_schema()],
-                    Some(
-                        "Use the flat picker shape for one or more exact targets, or the categorized picker shape for grouped exact install candidates."
-                            .to_string(),
+                parameters: JsonSchema::object(BTreeMap::from([
+                    (
+                        "action_type".to_string(),
+                        JsonSchema::string(Some(
+                            "Suggested action for the tool. Use \"install\".".to_string(),
+                        )),
                     ),
+                    (
+                        "suggest_reason".to_string(),
+                        JsonSchema::string(Some(
+                            "Concise one-line user-facing reason why this plugin or connector can help with the current request."
+                                .to_string(),
+                        )),
+                    ),
+                    (
+                        "tool_id".to_string(),
+                        JsonSchema::string(Some("Connector or plugin id to suggest.".to_string())),
+                    ),
+                    (
+                        "tool_type".to_string(),
+                        JsonSchema::string(Some(
+                            "Type of discoverable tool to suggest. Use \"connector\" or \"plugin\"."
+                                .to_string(),
+                        )),
+                    ),
+                ]), Some(vec![
+                    "tool_type".to_string(),
+                    "action_type".to_string(),
+                    "tool_id".to_string(),
+                    "suggest_reason".to_string(),
+                ]), Some(false.into())),
+                output_schema: None,
+            })
+        );
+    }
+
+    #[test]
+    fn recommendation_context_uses_simplified_plugin_wire_shape() {
+        assert_eq!(
+            create_request_plugin_install_tool(ToolSuggestPresentation::RecommendationContext),
+            ToolSpec::Function(ResponsesApiTool {
+                name: "request_plugin_install".to_string(),
+                description: "# Suggest a recommended plugin installation\n\nSuggest installing a plugin from the `<recommended_plugins>` list when it would help with the user's current request. Briefly explain why in `suggest_reason`.".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::from([
+                        (
+                            "plugin_id".to_string(),
+                            JsonSchema::string(Some(
+                                "Plugin id from the `<recommended_plugins>` list.".to_string(),
+                            )),
+                        ),
+                        (
+                            "suggest_reason".to_string(),
+                            JsonSchema::string(Some(
+                                "Concise one-line user-facing reason why this plugin can help with the current request."
+                                    .to_string(),
+                            )),
+                        ),
+                    ]),
+                    Some(vec!["plugin_id".to_string(), "suggest_reason".to_string()]),
+                    Some(false.into()),
                 ),
                 output_schema: None,
             })
@@ -156,15 +402,17 @@ mod tests {
     }
 
     #[test]
-    fn recommendation_context_changes_only_the_description() {
-        let mut expected = create_request_plugin_install_tool(ToolSuggestPresentation::ListTool);
+    fn plural_developer_recommendations_change_only_the_description() {
+        let mut expected = create_request_plugin_installs_tool(ToolSuggestPresentation::ListTool);
         let recommendations =
-            create_request_plugin_install_tool(ToolSuggestPresentation::RecommendationContext);
+            create_request_plugin_installs_tool(ToolSuggestPresentation::RecommendationContext);
 
         let ToolSpec::Function(expected_function) = &mut expected else {
             panic!("expected function tool specs");
         };
-        expected_function.description = "# Suggest a recommended plugin installation\n\nSuggest installing one or more plugins from the developer `<recommended_plugins>` list when they would help with the user's current request. Briefly explain why in `suggest_reason`.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.".to_string();
+        expected_function.description = format!(
+            "# Suggest recommended plugin installations\n\nSuggest installing one or more plugins from the `<recommended_plugins>` list when they would help with the user's current request. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target, with at most {MAX_REQUEST_PLUGIN_INSTALLS_ENTRIES} entries total.\n\nWhen this tool returns, the user-visible install picker has resolved and is no longer visible.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+        );
 
         assert_eq!(recommendations, expected);
     }

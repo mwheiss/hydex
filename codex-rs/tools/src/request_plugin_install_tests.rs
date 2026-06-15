@@ -4,9 +4,131 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[test]
-fn request_plugin_install_result_keeps_model_response_minimal() {
+fn build_request_plugin_install_elicitation_request_preserves_legacy_shape() {
+    let connector = DiscoverableTool::Connector(Box::new(AppInfo {
+        id: "connector_calendar".to_string(),
+        name: "Google Calendar".to_string(),
+        description: Some("Plan events and schedules.".to_string()),
+        logo_url: None,
+        logo_url_dark: None,
+        distribution_channel: None,
+        branding: None,
+        app_metadata: None,
+        labels: None,
+        install_url: Some("https://chatgpt.com/apps/google-calendar".to_string()),
+        is_accessible: false,
+        is_enabled: true,
+        plugin_display_names: Vec::new(),
+    }));
+
+    let request = build_request_plugin_install_elicitation_request(
+        "codex-apps",
+        "thread-1".to_string(),
+        "turn-1".to_string(),
+        "Plan and reference events from your calendar",
+        &connector,
+    );
+
+    assert_eq!(
+        request,
+        McpServerElicitationRequestParams {
+            thread_id: "thread-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            server_name: "codex-apps".to_string(),
+            request: McpServerElicitationRequest::Form {
+                meta: Some(json!(RequestPluginInstallMeta {
+                    codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
+                    persist: REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE,
+                    tool_type: DiscoverableToolType::Connector,
+                    suggest_type: DiscoverableToolAction::Install,
+                    suggest_reason: "Plan and reference events from your calendar",
+                    tool_id: "connector_calendar",
+                    tool_name: "Google Calendar",
+                    install_url: Some("https://chatgpt.com/apps/google-calendar"),
+                    remote_plugin_id: None,
+                    app_connector_ids: None,
+                })),
+                message: "Plan and reference events from your calendar".to_string(),
+                requested_schema: empty_elicitation_schema(),
+            },
+        },
+    );
+}
+
+#[test]
+fn build_request_plugin_install_elicitation_request_preserves_legacy_plugin_metadata() {
+    let plugin = DiscoverableTool::Plugin(Box::new(DiscoverablePluginInfo {
+        id: "sample@openai-curated-remote".to_string(),
+        remote_plugin_id: Some("plugins~Plugin_sample".to_string()),
+        name: "Sample Plugin".to_string(),
+        description: Some("Includes skills, MCP servers, and apps.".to_string()),
+        has_skills: true,
+        mcp_server_names: vec!["sample-docs".to_string()],
+        app_connector_ids: vec!["connector_calendar".to_string()],
+    }));
+
+    let request = build_request_plugin_install_elicitation_request(
+        "codex-apps",
+        "thread-1".to_string(),
+        "turn-1".to_string(),
+        "Use the sample plugin's skills and MCP server",
+        &plugin,
+    );
+
+    assert_eq!(
+        request,
+        McpServerElicitationRequestParams {
+            thread_id: "thread-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            server_name: "codex-apps".to_string(),
+            request: McpServerElicitationRequest::Form {
+                meta: Some(json!(RequestPluginInstallMeta {
+                    codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
+                    persist: REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE,
+                    tool_type: DiscoverableToolType::Plugin,
+                    suggest_type: DiscoverableToolAction::Install,
+                    suggest_reason: "Use the sample plugin's skills and MCP server",
+                    tool_id: "sample@openai-curated-remote",
+                    tool_name: "Sample Plugin",
+                    install_url: None,
+                    remote_plugin_id: Some("plugins~Plugin_sample"),
+                    app_connector_ids: Some(&["connector_calendar".to_string()]),
+                })),
+                message: "Use the sample plugin's skills and MCP server".to_string(),
+                requested_schema: empty_elicitation_schema(),
+            },
+        },
+    );
+}
+
+#[test]
+fn request_plugin_install_result_preserves_legacy_shape() {
     assert_eq!(
         json!(RequestPluginInstallResult {
+            completed: true,
+            user_confirmed: true,
+            tool_type: DiscoverableToolType::Connector,
+            action_type: DiscoverableToolAction::Install,
+            tool_id: "connector_calendar".to_string(),
+            tool_name: "Google Calendar".to_string(),
+            suggest_reason: "Plan and reference events from your calendar".to_string(),
+        }),
+        json!({
+            "completed": true,
+            "user_confirmed": true,
+            "tool_type": "connector",
+            "action_type": "install",
+            "tool_id": "connector_calendar",
+            "tool_name": "Google Calendar",
+            "suggest_reason": "Plan and reference events from your calendar",
+        }),
+    );
+}
+
+#[test]
+fn request_plugin_installs_result_keeps_model_response_minimal() {
+    assert_eq!(
+        json!(RequestPluginInstallsResult {
             completed: false,
             user_confirmed: false,
             action_type: DiscoverableToolAction::Install,
@@ -34,8 +156,8 @@ fn request_plugin_install_result_keeps_model_response_minimal() {
 }
 
 #[test]
-fn build_request_plugin_install_elicitation_request_uses_flat_entries_shape() {
-    let args = RequestPluginInstallArgs {
+fn build_request_plugin_installs_elicitation_request_uses_flat_entries_shape() {
+    let args = RequestPluginInstallsArgs {
         action_type: DiscoverableToolAction::Install,
         entries: Some(vec![RequestPluginInstallPickerEntry {
             tool_id: "connector_2128aebfecb84f64a069897515042a44".to_string(),
@@ -66,7 +188,7 @@ fn build_request_plugin_install_elicitation_request_uses_flat_entries_shape() {
         tool: &connector,
     }];
 
-    let request = build_request_plugin_install_elicitation_request(
+    let request = build_request_plugin_installs_elicitation_request(
         "codex-apps",
         "thread-1".to_string(),
         "turn-1".to_string(),
@@ -81,7 +203,7 @@ fn build_request_plugin_install_elicitation_request_uses_flat_entries_shape() {
             turn_id: Some("turn-1".to_string()),
             server_name: "codex-apps".to_string(),
             request: McpServerElicitationRequest::Form {
-                meta: Some(json!(RequestPluginInstallMeta {
+                meta: Some(json!(RequestPluginInstallsMeta {
                     codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
                     persist: Some(REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE),
                     suggest_type: DiscoverableToolAction::Install,
@@ -111,8 +233,8 @@ fn build_request_plugin_install_elicitation_request_uses_flat_entries_shape() {
 }
 
 #[test]
-fn build_request_plugin_install_elicitation_request_injects_plugin_metadata() {
-    let args = RequestPluginInstallArgs {
+fn build_request_plugin_installs_elicitation_request_injects_plugin_metadata() {
+    let args = RequestPluginInstallsArgs {
         action_type: DiscoverableToolAction::Install,
         entries: Some(vec![RequestPluginInstallPickerEntry {
             tool_id: "sample@openai-curated-remote".to_string(),
@@ -134,7 +256,7 @@ fn build_request_plugin_install_elicitation_request_injects_plugin_metadata() {
         tool: &plugin,
     }];
 
-    let request = build_request_plugin_install_elicitation_request(
+    let request = build_request_plugin_installs_elicitation_request(
         "codex-apps",
         "thread-1".to_string(),
         "turn-1".to_string(),
@@ -149,7 +271,7 @@ fn build_request_plugin_install_elicitation_request_injects_plugin_metadata() {
             turn_id: Some("turn-1".to_string()),
             server_name: "codex-apps".to_string(),
             request: McpServerElicitationRequest::Form {
-                meta: Some(json!(RequestPluginInstallMeta {
+                meta: Some(json!(RequestPluginInstallsMeta {
                     codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
                     persist: Some(REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE),
                     suggest_type: DiscoverableToolAction::Install,
@@ -177,8 +299,8 @@ fn build_request_plugin_install_elicitation_request_injects_plugin_metadata() {
 }
 
 #[test]
-fn build_request_plugin_install_elicitation_request_uses_categories_shape() {
-    let args = RequestPluginInstallArgs {
+fn build_request_plugin_installs_elicitation_request_uses_categories_shape() {
+    let args = RequestPluginInstallsArgs {
         action_type: DiscoverableToolAction::Install,
         entries: None,
         categories: Some(vec![RequestPluginInstallPickerCategory {
@@ -212,7 +334,7 @@ fn build_request_plugin_install_elicitation_request_uses_categories_shape() {
         tool: &connector,
     }];
 
-    let request = build_request_plugin_install_elicitation_request(
+    let request = build_request_plugin_installs_elicitation_request(
         "codex-apps",
         "thread-1".to_string(),
         "turn-1".to_string(),
@@ -227,7 +349,7 @@ fn build_request_plugin_install_elicitation_request_uses_categories_shape() {
             turn_id: Some("turn-1".to_string()),
             server_name: "codex-apps".to_string(),
             request: McpServerElicitationRequest::Form {
-                meta: Some(json!(RequestPluginInstallMeta {
+                meta: Some(json!(RequestPluginInstallsMeta {
                     codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
                     persist: Some(REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE),
                     suggest_type: DiscoverableToolAction::Install,

@@ -20,6 +20,42 @@ const REQUEST_PLUGIN_INSTALL_MESSAGE: &str = "Choose integrations";
 
 #[derive(Debug, Deserialize)]
 pub struct RequestPluginInstallArgs {
+    pub tool_type: DiscoverableToolType,
+    pub action_type: DiscoverableToolAction,
+    pub tool_id: String,
+    pub suggest_reason: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RequestPluginInstallResult {
+    pub completed: bool,
+    pub user_confirmed: bool,
+    pub tool_type: DiscoverableToolType,
+    pub action_type: DiscoverableToolAction,
+    pub tool_id: String,
+    pub tool_name: String,
+    pub suggest_reason: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RequestPluginInstallMeta<'a> {
+    pub codex_approval_kind: &'static str,
+    pub persist: &'static str,
+    pub tool_type: DiscoverableToolType,
+    pub suggest_type: DiscoverableToolAction,
+    pub suggest_reason: &'a str,
+    pub tool_id: &'a str,
+    pub tool_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_plugin_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_connector_ids: Option<&'a [String]>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequestPluginInstallsArgs {
     pub action_type: DiscoverableToolAction,
     pub entries: Option<Vec<RequestPluginInstallPickerEntry>>,
     pub categories: Option<Vec<RequestPluginInstallPickerCategory>>,
@@ -38,7 +74,7 @@ pub struct RequestPluginInstallPickerCategory {
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct RequestPluginInstallResult {
+pub struct RequestPluginInstallsResult {
     pub completed: bool,
     pub user_confirmed: bool,
     pub action_type: DiscoverableToolAction,
@@ -60,7 +96,7 @@ pub struct RequestPluginInstallEntryResult {
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct RequestPluginInstallMeta<'a> {
+pub struct RequestPluginInstallsMeta<'a> {
     pub codex_approval_kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persist: Option<&'static str>,
@@ -98,12 +134,12 @@ pub struct RequestPluginInstallCategoryMeta<'a> {
     pub entries: Vec<RequestPluginInstallEntryMeta<'a>>,
 }
 
-pub fn build_request_plugin_install_elicitation_request<'a>(
+pub fn build_request_plugin_install_elicitation_request(
     server_name: &str,
     thread_id: String,
     turn_id: String,
-    args: &'a RequestPluginInstallArgs,
-    resolved_entries: &'a [RequestPluginInstallResolvedPickerEntry<'a>],
+    suggest_reason: &str,
+    tool: &DiscoverableTool,
 ) -> McpServerElicitationRequestParams {
     McpServerElicitationRequestParams {
         thread_id,
@@ -111,17 +147,43 @@ pub fn build_request_plugin_install_elicitation_request<'a>(
         server_name: server_name.to_string(),
         request: McpServerElicitationRequest::Form {
             meta: Some(json!(build_request_plugin_install_meta(
+                suggest_reason,
+                tool,
+            ))),
+            message: suggest_reason.to_string(),
+            requested_schema: empty_elicitation_schema(),
+        },
+    }
+}
+
+pub fn build_request_plugin_installs_elicitation_request<'a>(
+    server_name: &str,
+    thread_id: String,
+    turn_id: String,
+    args: &'a RequestPluginInstallsArgs,
+    resolved_entries: &'a [RequestPluginInstallResolvedPickerEntry<'a>],
+) -> McpServerElicitationRequestParams {
+    McpServerElicitationRequestParams {
+        thread_id,
+        turn_id: Some(turn_id),
+        server_name: server_name.to_string(),
+        request: McpServerElicitationRequest::Form {
+            meta: Some(json!(build_request_plugin_installs_meta(
                 args,
                 resolved_entries
             ))),
             message: REQUEST_PLUGIN_INSTALL_MESSAGE.to_string(),
-            requested_schema: McpElicitationSchema {
-                schema_uri: None,
-                type_: McpElicitationObjectType::Object,
-                properties: BTreeMap::new(),
-                required: None,
-            },
+            requested_schema: empty_elicitation_schema(),
         },
+    }
+}
+
+fn empty_elicitation_schema() -> McpElicitationSchema {
+    McpElicitationSchema {
+        schema_uri: None,
+        type_: McpElicitationObjectType::Object,
+        properties: BTreeMap::new(),
+        required: None,
     }
 }
 
@@ -145,9 +207,35 @@ pub fn verified_connector_install_completed(
 }
 
 fn build_request_plugin_install_meta<'a>(
-    args: &'a RequestPluginInstallArgs,
-    resolved_entries: &'a [RequestPluginInstallResolvedPickerEntry<'a>],
+    suggest_reason: &'a str,
+    tool: &'a DiscoverableTool,
 ) -> RequestPluginInstallMeta<'a> {
+    let (tool_type, remote_plugin_id, app_connector_ids) = match tool {
+        DiscoverableTool::Connector(_) => (DiscoverableToolType::Connector, None, None),
+        DiscoverableTool::Plugin(plugin) => (
+            DiscoverableToolType::Plugin,
+            plugin.remote_plugin_id.as_deref(),
+            Some(plugin.app_connector_ids.as_slice()),
+        ),
+    };
+    RequestPluginInstallMeta {
+        codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
+        persist: REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE,
+        tool_type,
+        suggest_type: DiscoverableToolAction::Install,
+        suggest_reason,
+        tool_id: tool.id(),
+        tool_name: tool.name(),
+        install_url: tool.install_url(),
+        remote_plugin_id,
+        app_connector_ids,
+    }
+}
+
+fn build_request_plugin_installs_meta<'a>(
+    args: &'a RequestPluginInstallsArgs,
+    resolved_entries: &'a [RequestPluginInstallResolvedPickerEntry<'a>],
+) -> RequestPluginInstallsMeta<'a> {
     let entries = args.entries.as_ref().map(|_| {
         resolved_entries
             .iter()
@@ -172,7 +260,7 @@ fn build_request_plugin_install_meta<'a>(
             .collect()
     });
 
-    RequestPluginInstallMeta {
+    RequestPluginInstallsMeta {
         codex_approval_kind: REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
         persist: Some(REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE),
         suggest_type: args.action_type,

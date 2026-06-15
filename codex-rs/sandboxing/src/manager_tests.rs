@@ -5,6 +5,7 @@ use super::SandboxType;
 use super::SandboxablePreference;
 use super::can_read_path_with_policy;
 use super::get_platform_sandbox;
+use super::with_managed_mitm_ca_proxy_dirs_denied;
 use super::with_managed_mitm_ca_readable_roots;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -246,22 +247,51 @@ fn transform_additional_permissions_preserves_denied_entries() {
 }
 
 #[test]
-fn managed_mitm_ca_bundle_becomes_readable_for_restricted_sandbox() {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn managed_mitm_ca_bundle_is_only_readable_carveback_in_proxy_dir() {
     let cwd = TempDir::new().expect("create cwd");
     let cwd =
         AbsolutePathBuf::from_absolute_path(canonicalize(cwd.path()).expect("canonicalize cwd"))
             .expect("absolute cwd");
     let managed_bundle_dir = TempDir::new().expect("create managed bundle dir");
-    let managed_bundle_path =
-        AbsolutePathBuf::from_absolute_path(managed_bundle_dir.path().join("ca-bundle.pem"))
-            .expect("absolute managed bundle path");
+    let managed_bundle_dir = AbsolutePathBuf::from_absolute_path(
+        canonicalize(managed_bundle_dir.path()).expect("canonicalize managed bundle dir"),
+    )
+    .expect("absolute managed bundle dir");
+    let managed_bundle_path = managed_bundle_dir.join("ca-bundle-active.pem");
+    let previous_bundle_path = managed_bundle_dir.join("ca-bundle-previous.pem");
+    let managed_ca_key_path = managed_bundle_dir.join("ca.key");
     let permission_profile = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: cwd.clone() },
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Root,
+            },
             access: FileSystemAccessMode::Read,
         }]),
         NetworkSandboxPolicy::Restricted,
     );
+
+    let permission_profile = with_managed_mitm_ca_proxy_dirs_denied(
+        permission_profile,
+        std::slice::from_ref(&managed_bundle_path),
+        cwd.as_path(),
+    )
+    .expect("managed bundle directory should be outside writable roots");
+    let (file_system_sandbox_policy, _) = permission_profile.to_runtime_permissions();
+    let read_deny_matcher =
+        ReadDenyMatcher::new(&file_system_sandbox_policy, cwd.as_path()).expect("deny matcher");
+    for path in [
+        &managed_bundle_path,
+        &previous_bundle_path,
+        &managed_ca_key_path,
+    ] {
+        assert!(!can_read_path_with_policy(
+            &file_system_sandbox_policy,
+            Some(&read_deny_matcher),
+            path.as_path(),
+            cwd.as_path(),
+        ));
+    }
 
     let permission_profile = with_managed_mitm_ca_readable_roots(
         permission_profile,
@@ -274,17 +304,126 @@ fn managed_mitm_ca_bundle_becomes_readable_for_restricted_sandbox() {
         file_system_sandbox_policy,
         FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: cwd },
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Root,
+                },
                 access: FileSystemAccessMode::Read,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path {
-                    path: managed_bundle_path,
+                    path: managed_bundle_dir,
+                },
+                access: FileSystemAccessMode::Deny,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: managed_bundle_path.clone(),
                 },
                 access: FileSystemAccessMode::Read,
             },
         ])
     );
+    assert!(
+        file_system_sandbox_policy
+            .can_read_path_with_cwd(managed_bundle_path.as_path(), cwd.as_path(),)
+    );
+    assert!(
+        !file_system_sandbox_policy
+            .can_read_path_with_cwd(previous_bundle_path.as_path(), cwd.as_path(),)
+    );
+    assert!(
+        !file_system_sandbox_policy
+            .can_read_path_with_cwd(managed_ca_key_path.as_path(), cwd.as_path(),)
+    );
+}
+
+#[test]
+fn managed_mitm_ca_proxy_dir_deny_preserves_profiles_without_restricted_filesystem() {
+    let managed_bundle_dir = TempDir::new().expect("create managed bundle dir");
+    let managed_bundle_path =
+        AbsolutePathBuf::from_absolute_path(managed_bundle_dir.path().join("ca-bundle.pem"))
+            .expect("absolute managed bundle path");
+
+    for permission_profile in [
+        PermissionProfile::Disabled,
+        PermissionProfile::from_runtime_permissions(
+            &FileSystemSandboxPolicy::unrestricted(),
+            NetworkSandboxPolicy::Restricted,
+        ),
+        PermissionProfile::External {
+            network: NetworkSandboxPolicy::Restricted,
+        },
+    ] {
+        assert_eq!(
+            with_managed_mitm_ca_proxy_dirs_denied(
+                permission_profile.clone(),
+                std::slice::from_ref(&managed_bundle_path),
+                managed_bundle_dir.path(),
+            )
+            .expect("profile should remain supported"),
+            permission_profile,
+        );
+    }
+}
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn managed_mitm_ca_proxy_dir_rejects_explicit_writable_ancestor() {
+    let writable_root = TempDir::new().expect("create writable root");
+    let proxy_dir = writable_root.path().join("proxy");
+    std::fs::create_dir(&proxy_dir).expect("create proxy dir");
+    let managed_bundle_path =
+        AbsolutePathBuf::from_absolute_path(proxy_dir.join("ca-bundle-active.pem"))
+            .expect("absolute managed bundle path");
+    let writable_root = AbsolutePathBuf::from_absolute_path(
+        canonicalize(writable_root.path()).expect("canonicalize writable root"),
+    )
+    .expect("absolute writable root");
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: writable_root.clone(),
+            },
+            access: FileSystemAccessMode::Write,
+        }]),
+        NetworkSandboxPolicy::Restricted,
+    );
+
+    assert!(matches!(
+        with_managed_mitm_ca_proxy_dirs_denied(
+            permission_profile,
+            std::slice::from_ref(&managed_bundle_path),
+            writable_root.as_path(),
+        ),
+        Err(super::SandboxTransformError::ManagedMitmCaPathUnderWritableRoot)
+    ));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn managed_mitm_ca_proxy_dir_rejects_platform_default_writable_ancestor() {
+    let proxy_dir = tempfile::tempdir_in("/private/tmp").expect("create proxy dir");
+    let managed_bundle_path =
+        AbsolutePathBuf::from_absolute_path(proxy_dir.path().join("ca-bundle-active.pem"))
+            .expect("absolute managed bundle path");
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Minimal,
+            },
+            access: FileSystemAccessMode::Read,
+        }]),
+        NetworkSandboxPolicy::Restricted,
+    );
+
+    assert!(matches!(
+        with_managed_mitm_ca_proxy_dirs_denied(
+            permission_profile,
+            std::slice::from_ref(&managed_bundle_path),
+            proxy_dir.path(),
+        ),
+        Err(super::SandboxTransformError::ManagedMitmCaPathUnderWritableRoot)
+    ));
 }
 
 #[test]
@@ -369,6 +508,7 @@ fn wsl1_rejects_linux_bubblewrap_path() {
             &restricted_policy,
             /*use_legacy_landlock*/ false,
             /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ false,
             /*is_wsl1*/ true,
         ),
         Err(super::SandboxTransformError::Wsl1UnsupportedForBubblewrap)
@@ -378,6 +518,7 @@ fn wsl1_rejects_linux_bubblewrap_path() {
             &FileSystemSandboxPolicy::unrestricted(),
             /*use_legacy_landlock*/ false,
             /*allow_network_for_proxy*/ true,
+            /*managed_mitm_ca_active*/ false,
             /*is_wsl1*/ true,
         ),
         Err(super::SandboxTransformError::Wsl1UnsupportedForBubblewrap)
@@ -392,6 +533,7 @@ fn wsl1_allows_non_bubblewrap_linux_paths() {
             &FileSystemSandboxPolicy::unrestricted(),
             /*use_legacy_landlock*/ false,
             /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ false,
             /*is_wsl1*/ true,
         )
         .is_ok()
@@ -408,7 +550,60 @@ fn wsl1_allows_non_bubblewrap_linux_paths() {
             &restricted_policy,
             /*use_legacy_landlock*/ true,
             /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ false,
             /*is_wsl1*/ true,
+        )
+        .is_ok()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn legacy_landlock_rejects_managed_mitm_ca_isolation_for_restricted_profiles() {
+    let restricted_policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+        path: FileSystemPath::Special {
+            value: FileSystemSpecialPath::Root,
+        },
+        access: FileSystemAccessMode::Read,
+    }]);
+
+    assert!(matches!(
+        super::ensure_linux_bubblewrap_is_supported(
+            &restricted_policy,
+            /*use_legacy_landlock*/ true,
+            /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ true,
+            /*is_wsl1*/ false,
+        ),
+        Err(super::SandboxTransformError::LegacyLandlockUnsupportedWithManagedMitm)
+    ));
+    assert!(
+        super::ensure_linux_bubblewrap_is_supported(
+            &restricted_policy,
+            /*use_legacy_landlock*/ false,
+            /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ true,
+            /*is_wsl1*/ false,
+        )
+        .is_ok()
+    );
+    assert!(
+        super::ensure_linux_bubblewrap_is_supported(
+            &restricted_policy,
+            /*use_legacy_landlock*/ true,
+            /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ false,
+            /*is_wsl1*/ false,
+        )
+        .is_ok()
+    );
+    assert!(
+        super::ensure_linux_bubblewrap_is_supported(
+            &FileSystemSandboxPolicy::unrestricted(),
+            /*use_legacy_landlock*/ true,
+            /*allow_network_for_proxy*/ false,
+            /*managed_mitm_ca_active*/ true,
+            /*is_wsl1*/ false,
         )
         .is_ok()
     );

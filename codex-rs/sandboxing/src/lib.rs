@@ -36,6 +36,19 @@ impl From<SandboxTransformError> for CodexErr {
             SandboxTransformError::MissingLinuxSandboxExecutable => {
                 CodexErr::LandlockSandboxExecutableNotProvided
             }
+            SandboxTransformError::ManagedMitmCaPathUnderWritableRoot => {
+                CodexErr::UnsupportedOperation(
+                    "managed MITM CA isolation requires its proxy directory to be outside sandbox-writable roots"
+                        .to_string(),
+                )
+            }
+            #[cfg(target_os = "linux")]
+            SandboxTransformError::LegacyLandlockUnsupportedWithManagedMitm => {
+                CodexErr::UnsupportedOperation(
+                    "managed MITM CA isolation requires bubblewrap and is incompatible with legacy Landlock"
+                        .to_string(),
+                )
+            }
             #[cfg(target_os = "linux")]
             SandboxTransformError::Wsl1UnsupportedForBubblewrap => {
                 CodexErr::UnsupportedOperation(crate::bwrap::WSL1_BWRAP_WARNING.to_string())

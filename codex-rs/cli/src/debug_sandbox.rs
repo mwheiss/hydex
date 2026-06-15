@@ -258,13 +258,18 @@ async fn run_command_under_sandbox(
     let network = network_proxy
         .as_ref()
         .map(codex_core::config::StartedNetworkProxy::proxy);
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the concrete proxy type is not a direct dependency of codex-cli"
+    )]
+    let network_child_env = network.as_ref().map(|network| network.child_env_snapshot());
     let runtime_permission_profile = prepare_managed_network_child(
-        network.as_ref(),
+        network_child_env.as_ref(),
         &mut env,
         cwd.as_path(),
         config.permissions.effective_permission_profile(),
         sandbox_policy_cwd.as_path(),
-    );
+    )?;
 
     let mut child = match sandbox_type {
         #[cfg(target_os = "macos")]

@@ -52,6 +52,7 @@ pub use proxy::MITM_CA_ENV_ACTIVE_ENV_KEY;
 pub use proxy::NO_PROXY_ENV_KEYS;
 pub use proxy::NetworkProxy;
 pub use proxy::NetworkProxyBuilder;
+pub use proxy::NetworkProxyChildEnvSnapshot;
 pub use proxy::NetworkProxyHandle;
 pub use proxy::PROXY_ACTIVE_ENV_KEY;
 pub use proxy::PROXY_ENV_KEYS;

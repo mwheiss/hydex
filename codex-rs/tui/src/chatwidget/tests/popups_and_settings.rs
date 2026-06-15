@@ -2267,7 +2267,7 @@ async fn open_plugins_list_preserves_saved_workspace_tab() {
 }
 
 #[tokio::test]
-async fn plugins_popup_remote_row_prefers_local_mapped_share_detail() {
+async fn plugins_popup_installed_remote_row_prefers_local_mapped_share_detail() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
 
@@ -2314,16 +2314,24 @@ async fn plugins_popup_remote_row_prefers_local_mapped_share_detail() {
         .find(|line| line.contains("Docs"))
         .expect("expected all-plugins row");
     assert!(
-        popup.contains("Installed 0 of 1 available plugins."),
+        popup.contains("Installed 1 of 1 available plugins."),
         "expected header count to reflect deduped plugin rows, got:\n{popup}"
     );
     assert!(
-        all_plugins_row.contains("Available") && !all_plugins_row.contains("Installed"),
-        "expected local mapped share to win over installed remote duplicate, got:\n{all_plugins_row}"
+        all_plugins_row.contains("Installed") && !all_plugins_row.contains("Available"),
+        "expected installed remote duplicate to win over local mapped share, got:\n{all_plugins_row}"
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    let installed_popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        installed_popup.contains("Showing 1 installed plugins.")
+            && installed_popup.contains("Docs"),
+        "expected installed remote duplicate in the Installed tab, got:\n{installed_popup}"
     );
 
     while rx.try_recv().is_ok() {}
-    for _ in 0..3 {
+    for _ in 0..2 {
         chat.handle_key_event(KeyEvent::from(KeyCode::Right));
     }
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));

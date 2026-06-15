@@ -270,7 +270,7 @@ fn build_proxy_env_exports() -> (String, String) {
             "{captures}\n__CODEX_SNAPSHOT_PROXY_ENV_SET=\"${{{key}+x}}\"\n{ssl_cert_dir_captures}\n__CODEX_SNAPSHOT_MITM_CA_ENV_SET=\"${{{mitm_ca_key}+x}}\""
         ),
         format!(
-            "if [ -n \"$__CODEX_SNAPSHOT_PROXY_ENV_SET\" ] || [ -n \"${{{key}+x}}\" ]; then\n{restores}\nfi\nif [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_SET\" ] || [ -n \"${{{mitm_ca_key}+x}}\" ]; then\n{ssl_cert_dir_restores}\nfi"
+            "__CODEX_SNAPSHOT_MITM_CA_ENV_AFTER_SET=\"${{{mitm_ca_key}+x}}\"\nif [ -n \"$__CODEX_SNAPSHOT_PROXY_ENV_SET\" ] || [ -n \"${{{key}+x}}\" ]; then\n{restores}\nfi\nif [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_SET\" ] || [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_AFTER_SET\" ]; then\n{ssl_cert_dir_restores}\nfi"
         ),
     );
     let git_blocks = build_codex_proxy_git_ssh_command_exports();

@@ -5,6 +5,7 @@ use super::SandboxType;
 use super::SandboxablePreference;
 use super::can_read_path_with_policy;
 use super::get_platform_sandbox;
+use super::read_deny_glob_matcher;
 use super::with_managed_mitm_ca_proxy_dirs_denied;
 use super::with_managed_mitm_ca_readable_roots;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -261,6 +262,13 @@ fn managed_mitm_ca_bundle_is_only_readable_carveback_in_proxy_dir() {
     let managed_bundle_path = managed_bundle_dir.join("ca-bundle-active.pem");
     let previous_bundle_path = managed_bundle_dir.join("ca-bundle-previous.pem");
     let managed_ca_key_path = managed_bundle_dir.join("ca.key");
+    for path in [
+        &managed_bundle_path,
+        &previous_bundle_path,
+        &managed_ca_key_path,
+    ] {
+        std::fs::write(path.as_path(), "fixture").expect("write managed CA fixture");
+    }
     let permission_profile = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Special {
@@ -299,6 +307,7 @@ fn managed_mitm_ca_bundle_is_only_readable_carveback_in_proxy_dir() {
         cwd.as_path(),
     );
     let (file_system_sandbox_policy, _) = permission_profile.to_runtime_permissions();
+    let read_deny_glob_matcher = read_deny_glob_matcher(&file_system_sandbox_policy, cwd.as_path());
 
     assert_eq!(
         file_system_sandbox_policy,
@@ -323,10 +332,12 @@ fn managed_mitm_ca_bundle_is_only_readable_carveback_in_proxy_dir() {
             },
         ])
     );
-    assert!(
-        file_system_sandbox_policy
-            .can_read_path_with_cwd(managed_bundle_path.as_path(), cwd.as_path(),)
-    );
+    assert!(can_read_path_with_policy(
+        &file_system_sandbox_policy,
+        read_deny_glob_matcher.as_ref(),
+        managed_bundle_path.as_path(),
+        cwd.as_path(),
+    ));
     assert!(
         !file_system_sandbox_policy
             .can_read_path_with_cwd(previous_bundle_path.as_path(), cwd.as_path(),)
@@ -335,6 +346,51 @@ fn managed_mitm_ca_bundle_is_only_readable_carveback_in_proxy_dir() {
         !file_system_sandbox_policy
             .can_read_path_with_cwd(managed_ca_key_path.as_path(), cwd.as_path(),)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_mitm_ca_materialization_checks_canonical_target_policy() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().expect("create policy root");
+    let root = AbsolutePathBuf::from_absolute_path(
+        canonicalize(root.path()).expect("canonicalize policy root"),
+    )
+    .expect("absolute policy root");
+    let denied_dir = root.join("secrets");
+    std::fs::create_dir(denied_dir.as_path()).expect("create denied dir");
+    let denied_ca = denied_dir.join("ca.pem");
+    std::fs::write(denied_ca.as_path(), "secret CA").expect("write denied CA");
+    let readable_alias = root.join("readable-ca.pem");
+    symlink(denied_ca.as_path(), readable_alias.as_path()).expect("create readable alias");
+    let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path: root.clone() },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path: denied_dir },
+            access: FileSystemAccessMode::Deny,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: readable_alias.clone(),
+            },
+            access: FileSystemAccessMode::Read,
+        },
+    ]);
+
+    assert!(
+        file_system_sandbox_policy.can_read_path_with_cwd(readable_alias.as_path(), root.as_path()),
+        "the lexical alias is explicitly readable"
+    );
+    assert!(!can_read_path_with_policy(
+        &file_system_sandbox_policy,
+        None,
+        readable_alias.as_path(),
+        root.as_path(),
+    ));
 }
 
 #[test]
@@ -452,13 +508,13 @@ fn managed_mitm_ca_materialization_rejects_glob_denied_paths_from_command_subdir
             access: FileSystemAccessMode::Deny,
         },
     ]);
-    let read_deny_matcher =
-        ReadDenyMatcher::new(&file_system_sandbox_policy, sandbox_policy_cwd.as_path())
-            .expect("deny matcher");
+    let read_deny_glob_matcher =
+        read_deny_glob_matcher(&file_system_sandbox_policy, sandbox_policy_cwd.as_path())
+            .expect("deny glob matcher");
 
     assert!(!can_read_path_with_policy(
         &file_system_sandbox_policy,
-        Some(&read_deny_matcher),
+        Some(&read_deny_glob_matcher),
         ca_bundle_path.as_path(),
         sandbox_policy_cwd.as_path(),
     ));

@@ -366,6 +366,23 @@ impl NetworkProxyChildEnvSnapshot {
         );
     }
 
+    /// Prepares a child environment without creating a command-specific CA bundle.
+    ///
+    /// Persistent sandbox identities cannot safely receive a read grant for a
+    /// derived bundle because later commands would retain that grant. Preserve
+    /// the pre-materialization behavior there and expose only the stable
+    /// managed baseline path.
+    pub fn prepare_persistent_sandbox_child_env(
+        &self,
+        env: &mut HashMap<String, String>,
+    ) -> Vec<AbsolutePathBuf> {
+        self.apply_to_env(env);
+        env.remove(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY);
+        self.managed_mitm_ca_trust_bundle_path()
+            .into_iter()
+            .collect()
+    }
+
     /// Rewrites readable child-selected CA bundles into immutable managed MITM bundles.
     pub fn prepare_child_env<F>(
         &self,
@@ -1048,7 +1065,7 @@ mod tests {
         std::fs::write(&managed_bundle_path, "managed ca\n").expect("write managed bundle");
         std::fs::write(&custom_bundle_path, "custom ca\n").expect("write custom bundle");
         let managed_bundle = crate::certs::ManagedMitmCaTrustBundle {
-            path: managed_bundle_path,
+            path: managed_bundle_path.clone(),
             startup_env_values: HashMap::new(),
             startup_cwd: temp_dir.path().to_path_buf(),
         };
@@ -1075,6 +1092,22 @@ mod tests {
         );
 
         let with_mitm = proxy.child_env_snapshot();
+        let mut persistent_sandbox_env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            custom_bundle_path.display().to_string(),
+        )]);
+        assert_eq!(
+            with_mitm.prepare_persistent_sandbox_child_env(&mut persistent_sandbox_env),
+            vec![AbsolutePathBuf::from_absolute_path(&managed_bundle_path).unwrap()]
+        );
+        assert_eq!(
+            persistent_sandbox_env.get("REQUESTS_CA_BUNDLE"),
+            Some(&custom_bundle_path.display().to_string())
+        );
+        assert_eq!(
+            persistent_sandbox_env.get(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY),
+            None
+        );
         {
             let mut guard = proxy
                 .runtime_settings

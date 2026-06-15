@@ -203,14 +203,20 @@ pub fn prepare_managed_network_child(
         &managed_mitm_ca_trust_bundle_paths,
         sandbox_policy_cwd,
     )?;
+    let persistent_windows_sandbox = cfg!(target_os = "windows")
+        && permission_profile.file_system_sandbox_policy().kind
+            == FileSystemSandboxKind::Restricted;
     let active_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
+        if persistent_windows_sandbox {
+            return network.prepare_persistent_sandbox_child_env(env);
+        }
         let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
-        let read_deny_matcher =
-            ReadDenyMatcher::new(&file_system_sandbox_policy, sandbox_policy_cwd);
+        let read_deny_glob_matcher =
+            read_deny_glob_matcher(&file_system_sandbox_policy, sandbox_policy_cwd);
         network.prepare_child_env(env, command_cwd, |path| {
             can_read_path_with_policy(
                 &file_system_sandbox_policy,
-                read_deny_matcher.as_ref(),
+                read_deny_glob_matcher.as_ref(),
                 path,
                 sandbox_policy_cwd,
             )
@@ -223,14 +229,32 @@ pub fn prepare_managed_network_child(
     ))
 }
 
+fn read_deny_glob_matcher(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    cwd: &Path,
+) -> Option<ReadDenyMatcher> {
+    // Exact deny roots participate in normal path-specificity resolution, so
+    // a narrower explicit read entry can validly reopen one CA file below a
+    // denied parent. Globs are enforced separately and must still fail closed.
+    let mut deny_glob_policy = file_system_sandbox_policy.clone();
+    deny_glob_policy.entries.retain(|entry| {
+        entry.access == FileSystemAccessMode::Deny
+            && matches!(entry.path, FileSystemPath::GlobPattern { .. })
+    });
+    ReadDenyMatcher::new(&deny_glob_policy, cwd)
+}
+
 fn can_read_path_with_policy(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    read_deny_matcher: Option<&ReadDenyMatcher>,
+    read_deny_glob_matcher: Option<&ReadDenyMatcher>,
     path: &Path,
     cwd: &Path,
 ) -> bool {
     file_system_sandbox_policy.can_read_path_with_cwd(path, cwd)
-        && !read_deny_matcher.is_some_and(|matcher| matcher.is_read_denied(path))
+        && path.canonicalize().is_ok_and(|canonical_path| {
+            file_system_sandbox_policy.can_read_path_with_cwd(&canonical_path, cwd)
+        })
+        && !read_deny_glob_matcher.is_some_and(|matcher| matcher.is_read_denied(path))
 }
 
 #[derive(Debug)]

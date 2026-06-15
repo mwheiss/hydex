@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -10,6 +11,9 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_features::Feature;
+use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
+use codex_network_proxy::PROXY_ENV_KEYS;
+use codex_network_proxy::SSL_CERT_DIR_ENV_KEY;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -35,35 +39,9 @@ use core_test_support::test_codex::test_codex;
 use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
-use serial_test::serial;
-use std::ffi::OsString;
 use tempfile::TempDir;
 
-struct EnvVarGuard {
-    key: &'static str,
-    original: Option<OsString>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
-        let original = std::env::var_os(key);
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, original }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.original {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-}
+const CUSTOM_CA_TEST_SUBPROCESS_ENV_VAR: &str = "CODEX_CUSTOM_CA_TEST_SUBPROCESS";
 
 fn tool_names(body: &Value) -> Vec<String> {
     body.get("tools")
@@ -501,14 +479,37 @@ async fn shell_command_enforces_glob_deny_read_policy() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial]
 async fn shell_command_combines_custom_ca_without_exposing_proxy_siblings() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
 
+    if std::env::var_os(CUSTOM_CA_TEST_SUBPROCESS_ENV_VAR).is_none() {
+        let codex_home = TempDir::new()?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("--exact")
+            .arg("suite::tools::shell_command_combines_custom_ca_without_exposing_proxy_siblings")
+            .env(CUSTOM_CA_TEST_SUBPROCESS_ENV_VAR, "1")
+            .env("CODEX_HOME", codex_home.path());
+        for &key in PROXY_ENV_KEYS {
+            command.env_remove(key);
+        }
+        for key in CUSTOM_CA_ENV_KEYS {
+            command.env_remove(key);
+        }
+        command.env_remove(SSL_CERT_DIR_ENV_KEY);
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "custom CA subprocess test failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return Ok(());
+    }
+
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", home.path().as_os_str());
     fs::write(
         home.path().join("config.toml"),
         r#"default_permissions = "workspace"

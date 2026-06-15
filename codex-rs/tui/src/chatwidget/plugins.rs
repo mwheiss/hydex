@@ -2414,16 +2414,16 @@ fn plugin_entry_preferred(
     candidate: &(&PluginMarketplaceEntry, &PluginSummary, String),
     existing: &(&PluginMarketplaceEntry, &PluginSummary, String),
 ) -> bool {
+    if candidate.1.installed != existing.1.installed {
+        return candidate.1.installed;
+    }
+
     let candidate_is_local_share =
         candidate.1.share_context.is_some() && !matches!(candidate.1.source, PluginSource::Remote);
     let existing_is_local_share =
         existing.1.share_context.is_some() && !matches!(existing.1.source, PluginSource::Remote);
     if candidate_is_local_share != existing_is_local_share {
         return candidate_is_local_share;
-    }
-
-    if candidate.1.installed != existing.1.installed {
-        return candidate.1.installed;
     }
 
     !matches!(candidate.1.source, PluginSource::Remote)

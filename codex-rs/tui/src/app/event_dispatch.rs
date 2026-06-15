@@ -1365,7 +1365,7 @@ impl App {
             }
             AppEvent::PluginUninstallLoaded {
                 cwd,
-                plugin_id: _plugin_id,
+                plugin_id,
                 plugin_display_name,
                 result,
             } => {
@@ -1375,6 +1375,7 @@ impl App {
                 }
                 self.chat_widget.on_plugin_uninstall_loaded(
                     cwd.clone(),
+                    plugin_id,
                     plugin_display_name,
                     result,
                 );

@@ -948,6 +948,7 @@ impl ChatWidget {
     pub(crate) fn on_plugin_uninstall_loaded(
         &mut self,
         cwd: PathBuf,
+        plugin_id: String,
         plugin_display_name: String,
         result: Result<PluginUninstallResponse, String>,
     ) {
@@ -963,7 +964,30 @@ impl ChatWidget {
                     format!("Uninstalled {plugin_display_name} plugin."),
                     Some("Bundled apps remain installed.".to_string()),
                 );
-                self.return_to_cached_plugins_popup_if_open();
+                let refreshed_response = match &mut self.plugins_cache {
+                    PluginsCacheState::Ready(response)
+                        if self.plugins_fetch_state.cache_cwd.as_deref() == Some(cwd.as_path()) =>
+                    {
+                        let mut cache_updated = false;
+                        for plugin in response
+                            .marketplaces
+                            .iter_mut()
+                            .flat_map(|marketplace| marketplace.plugins.iter_mut())
+                            .filter(|plugin| {
+                                plugin_uninstall_id(plugin).as_deref() == Some(plugin_id.as_str())
+                            })
+                        {
+                            plugin.installed = false;
+                            plugin.enabled = false;
+                            cache_updated = true;
+                        }
+                        cache_updated.then(|| response.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(response) = refreshed_response {
+                    self.refresh_plugins_popup_if_open(&response);
+                }
             }
             Err(err) => {
                 let plugins_response = match self.plugins_cache_for_current_cwd() {
@@ -1181,12 +1205,6 @@ impl ChatWidget {
             PLUGINS_SELECTION_VIEW_ID,
             self.plugins_popup_params(response, active_tab_id, selected_idx),
         );
-    }
-
-    fn return_to_cached_plugins_popup_if_open(&mut self) {
-        if let PluginsCacheState::Ready(response) = self.plugins_cache_for_current_cwd() {
-            self.refresh_plugins_popup_if_open(&response);
-        }
     }
 
     fn plugins_loading_popup_params(&self) -> SelectionViewParams {

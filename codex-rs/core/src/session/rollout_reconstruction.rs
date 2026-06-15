@@ -1,5 +1,5 @@
 use super::*;
-use crate::context_manager::is_user_turn_boundary;
+use crate::rollout_history::is_user_turn_boundary;
 
 // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
 // the resume/fork hydration metadata derived from the same replay.

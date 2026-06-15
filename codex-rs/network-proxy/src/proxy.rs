@@ -383,6 +383,36 @@ impl NetworkProxyChildEnvSnapshot {
             .collect()
     }
 
+    /// Returns whether this child would need a command-specific managed CA bundle.
+    ///
+    /// Persistent sandbox identities must reject this shape rather than grant
+    /// access to a derived bundle that later commands could continue reading.
+    pub fn requires_child_specific_mitm_ca_bundle(&self, env: &HashMap<String, String>) -> bool {
+        let Some(mitm_ca_trust_bundle) = self.runtime_settings.mitm_ca_trust_bundle.as_ref() else {
+            return false;
+        };
+        if env
+            .get(crate::certs::SSL_CERT_DIR_ENV_KEY)
+            .is_some_and(|value| !value.is_empty())
+        {
+            // The stable Windows baseline only embeds file-backed startup CA
+            // overrides. Directory contents can change after proxy startup,
+            // so they still require per-child materialization and cannot be
+            // exposed through a persistent sandbox identity.
+            return true;
+        }
+
+        let managed_path = mitm_ca_trust_bundle.path.to_string_lossy();
+        crate::certs::CUSTOM_CA_ENV_KEYS.into_iter().any(|key| {
+            env.get(key)
+                .filter(|value| !value.is_empty())
+                .is_some_and(|value| {
+                    value != managed_path.as_ref()
+                        && mitm_ca_trust_bundle.startup_env_values.get(key) != Some(value)
+                })
+        })
+    }
+
     /// Rewrites readable child-selected CA bundles into immutable managed MITM bundles.
     pub fn prepare_child_env<F>(
         &self,
@@ -1090,12 +1120,14 @@ mod tests {
             env.get("REQUESTS_CA_BUNDLE"),
             Some(&custom_bundle_path.display().to_string())
         );
+        assert!(!without_mitm.requires_child_specific_mitm_ca_bundle(&env));
 
         let with_mitm = proxy.child_env_snapshot();
         let mut persistent_sandbox_env = HashMap::from([(
             "REQUESTS_CA_BUNDLE".to_string(),
             custom_bundle_path.display().to_string(),
         )]);
+        assert!(with_mitm.requires_child_specific_mitm_ca_bundle(&persistent_sandbox_env));
         assert_eq!(
             with_mitm.prepare_persistent_sandbox_child_env(&mut persistent_sandbox_env),
             vec![AbsolutePathBuf::from_absolute_path(&managed_bundle_path).unwrap()]
@@ -1108,6 +1140,34 @@ mod tests {
             persistent_sandbox_env.get(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY),
             None
         );
+        let managed_path = managed_bundle_path.display().to_string();
+        let baseline_env =
+            HashMap::from([("REQUESTS_CA_BUNDLE".to_string(), managed_path.clone())]);
+        assert!(!with_mitm.requires_child_specific_mitm_ca_bundle(&baseline_env));
+        let startup_env = HashMap::from([
+            ("REQUESTS_CA_BUNDLE".to_string(), managed_path),
+            (
+                STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY.to_string(),
+                "REQUESTS_CA_BUNDLE".to_string(),
+            ),
+        ]);
+        assert!(!with_mitm.requires_child_specific_mitm_ca_bundle(&startup_env));
+        let startup_ssl_cert_dir_env = HashMap::from([
+            (
+                crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+                temp_dir.path().display().to_string(),
+            ),
+            (
+                STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY.to_string(),
+                crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+            ),
+        ]);
+        assert!(with_mitm.requires_child_specific_mitm_ca_bundle(&startup_ssl_cert_dir_env));
+        let ssl_cert_dir_env = HashMap::from([(
+            crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+            temp_dir.path().display().to_string(),
+        )]);
+        assert!(with_mitm.requires_child_specific_mitm_ca_bundle(&ssl_cert_dir_env));
         {
             let mut guard = proxy
                 .runtime_settings

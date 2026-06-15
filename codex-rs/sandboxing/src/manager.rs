@@ -206,6 +206,11 @@ pub fn prepare_managed_network_child(
     let persistent_windows_sandbox = cfg!(target_os = "windows")
         && permission_profile.file_system_sandbox_policy().kind
             == FileSystemSandboxKind::Restricted;
+    if persistent_windows_sandbox
+        && network.is_some_and(|network| network.requires_child_specific_mitm_ca_bundle(env))
+    {
+        return Err(SandboxTransformError::ManagedMitmCustomCaUnsupportedOnWindows);
+    }
     let active_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
         if persistent_windows_sandbox {
             return network.prepare_persistent_sandbox_child_env(env);
@@ -303,6 +308,7 @@ pub struct SandboxTransformRequest<'a> {
 pub enum SandboxTransformError {
     MissingLinuxSandboxExecutable,
     ManagedMitmCaPathUnderWritableRoot,
+    ManagedMitmCustomCaUnsupportedOnWindows,
     #[cfg(target_os = "linux")]
     LegacyLandlockUnsupportedWithManagedMitm,
     #[cfg(target_os = "linux")]
@@ -320,6 +326,10 @@ impl std::fmt::Display for SandboxTransformError {
             Self::ManagedMitmCaPathUnderWritableRoot => write!(
                 f,
                 "managed MITM CA isolation requires its proxy directory to be outside sandbox-writable roots"
+            ),
+            Self::ManagedMitmCustomCaUnsupportedOnWindows => write!(
+                f,
+                "CA directories and command-specific CA overrides with managed MITM are not supported in the Windows sandbox because its read grants persist across commands"
             ),
             #[cfg(target_os = "linux")]
             Self::LegacyLandlockUnsupportedWithManagedMitm => write!(

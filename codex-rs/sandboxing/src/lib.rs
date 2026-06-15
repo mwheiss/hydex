@@ -42,6 +42,12 @@ impl From<SandboxTransformError> for CodexErr {
                         .to_string(),
                 )
             }
+            SandboxTransformError::ManagedMitmCustomCaUnsupportedOnWindows => {
+                CodexErr::UnsupportedOperation(
+                    "CA directories and command-specific CA overrides with managed MITM are not supported in the Windows sandbox because its read grants persist across commands"
+                        .to_string(),
+                )
+            }
             #[cfg(target_os = "linux")]
             SandboxTransformError::LegacyLandlockUnsupportedWithManagedMitm => {
                 CodexErr::UnsupportedOperation(

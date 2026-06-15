@@ -204,9 +204,8 @@ async fn run_compact_task_inner_impl(
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
-    let mut initial_input_for_turn: ResponseItem = initial_input_for_turn.into();
-    turn_context.set_response_item_turn_id_if_missing(&mut initial_input_for_turn);
+    let mut initial_input_for_turn: ResponseItem = ResponseInputItem::from(input).into();
+    initial_input_for_turn.set_turn_id_if_missing(&turn_context.sub_id);
 
     let mut history = sess.clone_history().await;
     history.record_items(&[initial_input_for_turn], turn_context.truncation_policy);
@@ -298,7 +297,7 @@ async fn run_compact_task_inner_impl(
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
-        turn_context.set_response_item_turn_id_if_missing(summary_item);
+        summary_item.set_turn_id_if_missing(&turn_context.sub_id);
     }
     let window_id = sess.advance_auto_compact_window_id().await;
 

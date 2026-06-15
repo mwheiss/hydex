@@ -1818,7 +1818,7 @@ async fn resize_all_images_prepares_failures_before_history_insertion() {
         },
         metadata: None,
     }];
-    turn_context.set_response_item_turn_ids_if_missing(&mut expected);
+    set_response_item_turn_ids_if_missing(&mut expected, &turn_context.sub_id);
     assert_eq!(
         session.state.lock().await.clone_history().raw_items(),
         expected.as_slice()
@@ -8077,7 +8077,7 @@ async fn handle_output_item_done_records_image_save_history_message() {
         ),
     );
     let mut expected = vec![image_message, item];
-    turn_context.set_response_item_turn_ids_if_missing(&mut expected);
+    set_response_item_turn_ids_if_missing(&mut expected, &turn_context.sub_id);
     assert_eq!(history.raw_items(), expected.as_slice());
     assert_eq!(
         std::fs::read(&expected_saved_path).expect("saved file"),
@@ -8121,7 +8121,7 @@ async fn handle_output_item_done_skips_image_save_message_when_save_fails() {
 
     let history = session.clone_history().await;
     let mut expected = vec![item];
-    turn_context.set_response_item_turn_ids_if_missing(&mut expected);
+    set_response_item_turn_ids_if_missing(&mut expected, &turn_context.sub_id);
     assert_eq!(history.raw_items(), expected.as_slice());
     assert!(!expected_saved_path.exists());
 }

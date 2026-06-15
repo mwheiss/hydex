@@ -915,6 +915,12 @@ async fn thread_title_from_thread_store(
     (!title.is_empty() && thread.preview.trim() != title).then(|| title.to_string())
 }
 
+fn set_response_item_turn_ids_if_missing(items: &mut [ResponseItem], turn_id: &str) {
+    for item in items {
+        item.set_turn_id_if_missing(turn_id);
+    }
+}
+
 impl Session {
     pub(crate) async fn app_server_client_metadata(&self) -> AppServerClientMetadata {
         let state = self.state.lock().await;
@@ -2659,7 +2665,7 @@ impl Session {
             prepare_response_items(prepared_items.to_mut());
         }
         if prepared_items.iter().any(|item| item.turn_id().is_none()) {
-            turn_context.set_response_item_turn_ids_if_missing(prepared_items.to_mut());
+            set_response_item_turn_ids_if_missing(prepared_items.to_mut(), &turn_context.sub_id);
         }
         prepared_items
     }
@@ -3103,7 +3109,7 @@ impl Session {
         {
             items.push(guardian_developer_message);
         }
-        turn_context.set_response_item_turn_ids_if_missing(&mut items);
+        set_response_item_turn_ids_if_missing(&mut items, &turn_context.sub_id);
         items
     }
 

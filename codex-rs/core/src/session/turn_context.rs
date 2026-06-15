@@ -9,7 +9,6 @@ use codex_model_provider::create_model_provider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -146,16 +145,6 @@ enum TurnMultiAgentRuntime {
 }
 
 impl TurnContext {
-    pub(crate) fn set_response_item_turn_id_if_missing(&self, item: &mut ResponseItem) {
-        item.set_turn_id_if_missing(&self.sub_id);
-    }
-
-    pub(crate) fn set_response_item_turn_ids_if_missing(&self, items: &mut [ResponseItem]) {
-        for item in items {
-            self.set_response_item_turn_id_if_missing(item);
-        }
-    }
-
     pub(crate) fn permission_profile(&self) -> PermissionProfile {
         self.permission_profile.clone()
     }

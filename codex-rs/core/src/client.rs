@@ -566,9 +566,8 @@ impl ModelClient {
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
         let trace_attempt = compaction_trace.start_attempt(&payload);
-        // `/responses/compact` is unary and bypasses `map_response_stream`. Responses API
-        // sets generated compaction item metadata from this request's turn metadata before
-        // returning them, while retained input items already carry their existing metadata.
+        // `/responses/compact` bypasses `map_response_stream`; Responses API sets generated
+        // compaction metadata from the request turn and preserves retained input metadata.
         let result = client
             .compact_input(
                 &payload,

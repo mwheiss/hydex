@@ -318,6 +318,10 @@ impl EnvironmentManager {
     }
 
     /// Adds or replaces a remote environment whose signed URL is refreshed for each connection.
+    ///
+    /// This is the host-facing registration path for consumers that discover
+    /// remote environments outside this crate, including callers through
+    /// `codex-core-api`.
     pub fn upsert_environment_with_url_provider(
         &self,
         environment_id: String,

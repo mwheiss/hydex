@@ -9,10 +9,12 @@ use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
+use crate::tools::handlers::GetContextRemainingHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
 use crate::tools::handlers::McpHandler;
+use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
@@ -57,6 +59,7 @@ use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -386,15 +389,6 @@ fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOpt
     }
 }
 
-fn max_concurrent_threads_per_session(turn_context: &TurnContext) -> Option<usize> {
-    multi_agent_v2_enabled(turn_context).then_some(
-        turn_context
-            .config
-            .multi_agent_v2
-            .max_concurrent_threads_per_session,
-    )
-}
-
 fn agent_type_description(
     turn_context: &TurnContext,
     default_agent_type_description: &str,
@@ -650,13 +644,21 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     planned_tools.add(PlanHandler);
 
     if turn_context.config.experimental_request_user_input_enabled {
-        planned_tools.add(RequestUserInputHandler {
-            available_modes: request_user_input_available_modes(features),
-        });
+        planned_tools.add_with_exposure(
+            RequestUserInputHandler {
+                available_modes: request_user_input_available_modes(features),
+            },
+            ToolExposure::DirectModelOnly,
+        );
     }
 
     if features.enabled(Feature::RequestPermissionsTool) {
         planned_tools.add(RequestPermissionsHandler);
+    }
+
+    if features.enabled(Feature::TokenBudget) {
+        planned_tools.add_with_exposure(NewContextWindowHandler, ToolExposure::DirectModelOnly);
+        planned_tools.add(GetContextRemainingHandler);
     }
 
     if tool_suggest_enabled(turn_context)
@@ -722,9 +724,6 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                             .hide_spawn_agent_metadata,
                         include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
                         usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                        max_concurrent_threads_per_session: max_concurrent_threads_per_session(
-                            turn_context,
-                        ),
                     }),
                     tool_namespace,
                 ),
@@ -769,9 +768,6 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                     hide_agent_type_model_reasoning: false,
                     include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                    max_concurrent_threads_per_session: max_concurrent_threads_per_session(
-                        turn_context,
-                    ),
                 }),
                 exposure,
             );
@@ -818,16 +814,34 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
 }
 
 fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
-    for tool in context.dynamic_tools {
-        let Some(handler) = DynamicToolHandler::new(tool) else {
-            tracing::error!(
-                "Failed to convert dynamic tool {:?} to OpenAI tool",
-                tool.name
-            );
-            continue;
-        };
-
-        planned_tools.add(handler);
+    for spec in context.dynamic_tools {
+        match spec {
+            DynamicToolSpec::Function(tool) => {
+                let Some(handler) = DynamicToolHandler::new(tool) else {
+                    tracing::error!(
+                        "Failed to convert dynamic tool {:?} to OpenAI tool",
+                        tool.name
+                    );
+                    continue;
+                };
+                planned_tools.add(handler);
+            }
+            DynamicToolSpec::Namespace(namespace) => {
+                for tool in &namespace.tools {
+                    let DynamicToolNamespaceTool::Function(tool) = tool;
+                    let Some(handler) = DynamicToolHandler::new_in_namespace(namespace, tool)
+                    else {
+                        tracing::error!(
+                            "Failed to convert dynamic tool {:?}.{:?} to OpenAI tool",
+                            namespace.name,
+                            tool.name
+                        );
+                        continue;
+                    };
+                    planned_tools.add(handler);
+                }
+            }
+        }
     }
 }
 

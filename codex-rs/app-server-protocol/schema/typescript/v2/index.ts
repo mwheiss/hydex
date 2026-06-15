@@ -92,6 +92,9 @@ export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputCo
 export type { DynamicToolCallParams } from "./DynamicToolCallParams";
 export type { DynamicToolCallResponse } from "./DynamicToolCallResponse";
 export type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
+export type { DynamicToolFunctionSpec } from "./DynamicToolFunctionSpec";
+export type { DynamicToolNamespaceSpec } from "./DynamicToolNamespaceSpec";
+export type { DynamicToolNamespaceTool } from "./DynamicToolNamespaceTool";
 export type { DynamicToolSpec } from "./DynamicToolSpec";
 export type { ErrorNotification } from "./ErrorNotification";
 export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
@@ -325,6 +328,8 @@ export type { ReasoningSummaryPartAddedNotification } from "./ReasoningSummaryPa
 export type { ReasoningSummaryTextDeltaNotification } from "./ReasoningSummaryTextDeltaNotification";
 export type { ReasoningTextDeltaNotification } from "./ReasoningTextDeltaNotification";
 export type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+export type { RemoteControlDisableParams } from "./RemoteControlDisableParams";
+export type { RemoteControlEnableParams } from "./RemoteControlEnableParams";
 export type { RemoteControlStatusChangedNotification } from "./RemoteControlStatusChangedNotification";
 export type { RequestPermissionProfile } from "./RequestPermissionProfile";
 export type { ResidencyRequirement } from "./ResidencyRequirement";
@@ -374,6 +379,9 @@ export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
+export type { ThreadDeleteParams } from "./ThreadDeleteParams";
+export type { ThreadDeleteResponse } from "./ThreadDeleteResponse";
+export type { ThreadDeletedNotification } from "./ThreadDeletedNotification";
 export type { ThreadForkParams } from "./ThreadForkParams";
 export type { ThreadForkResponse } from "./ThreadForkResponse";
 export type { ThreadGoal } from "./ThreadGoal";

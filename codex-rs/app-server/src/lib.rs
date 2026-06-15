@@ -92,7 +92,6 @@ mod connection_rpc_gate;
 mod dynamic_tools;
 mod error_code;
 mod extensions;
-mod filters;
 mod fs_watch;
 mod fuzzy_file_search;
 pub mod in_process;
@@ -107,6 +106,7 @@ mod server_request_error;
 mod skills_watcher;
 mod thread_state;
 mod thread_status;
+pub mod thread_views;
 mod transport;
 
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;

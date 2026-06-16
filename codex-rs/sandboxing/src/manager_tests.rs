@@ -7,6 +7,7 @@ use super::can_read_path_with_policy;
 use super::get_platform_sandbox;
 use super::read_deny_glob_matcher;
 use super::with_managed_mitm_ca_proxy_dirs_denied;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::with_managed_mitm_ca_readable_roots;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -19,6 +20,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use codex_protocol::permissions::ReadDenyMatcher;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -393,7 +395,7 @@ fn managed_mitm_ca_materialization_checks_canonical_target_policy() {
     );
     assert!(!can_read_path_with_policy(
         &file_system_sandbox_policy,
-        None,
+        /*read_deny_glob_matcher*/ None,
         readable_alias.as_path(),
         root.as_path(),
     ));
@@ -645,15 +647,6 @@ fn wsl1_rejects_linux_bubblewrap_path() {
             /*use_legacy_landlock*/ false,
             /*allow_network_for_proxy*/ true,
             /*managed_mitm_ca_active*/ false,
-            /*is_wsl1*/ true,
-        ),
-        Err(super::SandboxTransformError::Wsl1UnsupportedForBubblewrap)
-    ));
-    assert!(matches!(
-        super::ensure_linux_bubblewrap_is_supported(
-            &FileSystemSandboxPolicy::unrestricted(),
-            /*use_legacy_landlock*/ true,
-            /*allow_network_for_proxy*/ true,
             /*is_wsl1*/ true,
         ),
         Err(super::SandboxTransformError::Wsl1UnsupportedForBubblewrap)

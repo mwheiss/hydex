@@ -1,9 +1,11 @@
 use codex_agent_identity::AgentIdentityKey;
+use codex_agent_identity::agent_task_registration_url;
 use codex_agent_identity::register_agent_task;
 use codex_protocol::account::PlanType as AccountPlanType;
 use std::env;
 
-use crate::default_client::build_reqwest_client;
+use crate::default_client::build_default_auth_reqwest_client;
+use crate::outbound_proxy::AuthRouteConfig;
 
 use super::storage::AgentIdentityAuthRecord;
 
@@ -17,15 +19,18 @@ pub struct AgentIdentityAuth {
 }
 
 impl AgentIdentityAuth {
-    pub async fn load(record: AgentIdentityAuthRecord) -> std::io::Result<Self> {
+    pub(crate) async fn load(
+        record: AgentIdentityAuthRecord,
+        auth_route_config: Option<&AuthRouteConfig>,
+    ) -> std::io::Result<Self> {
         let agent_identity_authapi_base_url = agent_identity_authapi_base_url();
-        let process_task_id = register_agent_task(
-            &build_reqwest_client(),
-            &agent_identity_authapi_base_url,
-            key(&record),
-        )
-        .await
-        .map_err(std::io::Error::other)?;
+        let task_registration_url =
+            agent_task_registration_url(&agent_identity_authapi_base_url, &record.agent_runtime_id);
+        let client = build_default_auth_reqwest_client(&task_registration_url, auth_route_config)?;
+        let process_task_id =
+            register_agent_task(&client, &agent_identity_authapi_base_url, key(&record))
+                .await
+                .map_err(std::io::Error::other)?;
         Ok(Self {
             record,
             process_task_id,

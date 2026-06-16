@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn network_proxy_settings_default_matches_local_use_baseline() {
+    fn network_proxy_config_defaults_and_broker_enables_mitm() {
         assert_eq!(
             NetworkProxySettings::default(),
             NetworkProxySettings {
@@ -607,16 +607,12 @@ mod tests {
                 mitm_hooks: Vec::new(),
             }
         );
-    }
-
-    #[test]
-    fn enabling_credential_broker_enables_mitm() {
         let mut config = NetworkProxyConfig::default();
         let mut expected = NetworkProxyConfig::default();
         expected.network.credential_broker = true;
         expected.network.mitm = true;
 
-        config.set_credential_broker_enabled(true);
+        config.set_credential_broker_enabled(/*enabled*/ true);
 
         assert_eq!(config, expected);
     }

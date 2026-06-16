@@ -41,23 +41,12 @@ fn preserves_unmanaged_ca_env() {
 }
 
 #[test]
-fn preserves_unbrokered_credentials() {
-    let mut env = HashMap::from([
+fn strips_only_brokered_credentials() {
+    let mut unbrokered_env = HashMap::from([
         (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
         ("OPENAI_API_KEY".to_string(), "sk-real".to_string()),
     ]);
-
-    strip_managed_proxy_env(&mut env);
-
-    assert_eq!(
-        env,
-        HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())])
-    );
-}
-
-#[test]
-fn strips_brokered_credentials() {
-    let mut env = HashMap::from([
+    let mut brokered_env = HashMap::from([
         (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
         (
             CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
@@ -69,7 +58,12 @@ fn strips_brokered_credentials() {
         ),
     ]);
 
-    strip_managed_proxy_env(&mut env);
+    strip_managed_proxy_env(&mut unbrokered_env);
+    strip_managed_proxy_env(&mut brokered_env);
 
-    assert_eq!(env, HashMap::new());
+    assert_eq!(
+        unbrokered_env,
+        HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())])
+    );
+    assert_eq!(brokered_env, HashMap::new());
 }

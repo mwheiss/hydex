@@ -701,27 +701,12 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
         FeatureOverrides::default(),
     );
     assert_eq!(replayed.enabled(Feature::ApplyPatchFreeform), false);
-}
+    let config = crate::NetworkProxyConfigToml {
+        credential_broker: Some(true),
+        ..Default::default()
+    };
 
-#[test]
-fn network_proxy_credential_broker_config_enables_network_proxy() {
-    let features_toml = toml::from_str::<FeaturesToml>(
-        r#"
-[network_proxy]
-credential_broker = true
-"#,
-    )
-    .expect("valid feature config");
-    let features = Features::from_sources(
-        FeatureConfigSource {
-            features: Some(&features_toml),
-            ..Default::default()
-        },
-        FeatureConfigSource::default(),
-        FeatureOverrides::default(),
-    );
-
-    assert!(features.enabled(Feature::NetworkProxy));
+    assert_eq!(crate::FeatureConfig::enabled(&config), Some(true));
 }
 
 #[test]

@@ -42,7 +42,7 @@ use codex_app_server_protocol::PluginSharePrincipal;
 use codex_app_server_protocol::PluginSource;
 use codex_app_server_protocol::PluginSummary;
 use codex_app_server_protocol::PluginUninstallResponse;
-use codex_core_plugins::OPENAI_CURATED_MARKETPLACE_NAME;
+use codex_core_plugins::is_openai_curated_marketplace_name;
 use codex_core_plugins::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use codex_core_plugins::remote::REMOTE_WORKSPACE_MARKETPLACE_NAME;
 use codex_core_plugins::remote::REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME;
@@ -2645,8 +2645,13 @@ fn marketplace_product_tab_order(marketplace: &PluginMarketplaceEntry) -> u8 {
 }
 
 fn marketplace_product_label_from_name(marketplace_name: &str) -> Option<&str> {
+    if is_openai_curated_marketplace_name(marketplace_name)
+        || marketplace_name == REMOTE_GLOBAL_MARKETPLACE_NAME
+    {
+        return Some("OpenAI Curated");
+    }
+
     match marketplace_name {
-        OPENAI_CURATED_MARKETPLACE_NAME | REMOTE_GLOBAL_MARKETPLACE_NAME => Some("OpenAI Curated"),
         REMOTE_WORKSPACE_MARKETPLACE_NAME => Some("Workspace"),
         REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
         | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME => Some("Shared with me"),
@@ -2656,7 +2661,7 @@ fn marketplace_product_label_from_name(marketplace_name: &str) -> Option<&str> {
 }
 
 fn marketplace_is_by_openai(marketplace: &PluginMarketplaceEntry) -> bool {
-    marketplace.name == OPENAI_CURATED_MARKETPLACE_NAME
+    is_openai_curated_marketplace_name(&marketplace.name)
         || marketplace.name == REMOTE_GLOBAL_MARKETPLACE_NAME
 }
 

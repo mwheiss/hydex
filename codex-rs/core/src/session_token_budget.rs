@@ -67,6 +67,28 @@ impl SessionTokenBudget {
         was_below_limit && state.used_tokens >= state.config.limit_tokens
     }
 
+    pub(crate) fn begin_context_window(
+        &self,
+        thread_id: ThreadId,
+        window_id: &str,
+    ) -> Option<SessionTokenBudgetSnapshot> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state.as_mut()?;
+        let generation = state.used_tokens / state.config.reminder_interval_tokens;
+        let snapshot = snapshot(&state.config, state.used_tokens);
+        state.deliveries.insert(
+            thread_id,
+            SessionTokenBudgetDelivery {
+                window_id: window_id.to_string(),
+                generation,
+            },
+        );
+        Some(snapshot)
+    }
+
     pub(crate) fn before_sampling(
         &self,
         thread_id: ThreadId,

@@ -103,6 +103,11 @@ async fn session_token_budget_adds_initial_context_and_periodic_reminders() -> R
     .await;
     let test = test_codex()
         .with_config(|config| {
+            config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("test config should allow token budget");
             config.session_token_budget = Some(SessionTokenBudgetConfig {
                 limit_tokens: 100,
                 reminder_interval_tokens: 25,
@@ -120,6 +125,17 @@ async fn session_token_budget_adds_initial_context_and_periodic_reminders() -> R
     assert_eq!(
         session_token_budget_texts(&requests[0]),
         vec![initial.clone()]
+    );
+    let initial_developer_group = requests[0]
+        .message_input_text_groups("developer")
+        .into_iter()
+        .find(|group| group.contains(&initial))
+        .expect("initial session token budget context should be model-visible");
+    assert!(
+        initial_developer_group
+            .iter()
+            .any(|text| text.starts_with("<token_budget>")),
+        "initial session token budget context should share the full-context developer message"
     );
     assert_eq!(
         session_token_budget_texts(&requests[1]),
@@ -195,7 +211,7 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
     .to_string();
     mount_sse_once_match(
         &server,
-        |request| wire_request_contains(request, ROOT_PROMPT),
+        |request: &wiremock::Request| wire_request_contains(request, ROOT_PROMPT),
         sse(vec![
             ev_response_created("root-1"),
             ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
@@ -205,7 +221,7 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
     .await;
     mount_sse_once_match(
         &server,
-        |request| {
+        |request: &wiremock::Request| {
             wire_request_contains(request, CHILD_PROMPT)
                 && !wire_request_contains(request, SPAWN_CALL_ID)
         },
@@ -217,7 +233,7 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
     .await;
     mount_sse_once_match(
         &server,
-        |request| wire_request_contains(request, SPAWN_CALL_ID),
+        |request: &wiremock::Request| wire_request_contains(request, SPAWN_CALL_ID),
         sse(vec![
             ev_response_created("root-2"),
             ev_completed_with_tokens("root-2", /*total_tokens*/ 10),
@@ -226,7 +242,7 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
     .await;
     let follow_up = mount_sse_once_match(
         &server,
-        |request| wire_request_contains(request, FOLLOW_UP_PROMPT),
+        |request: &wiremock::Request| wire_request_contains(request, FOLLOW_UP_PROMPT),
         sse(vec![ev_response_created("root-3"), ev_completed("root-3")]),
     )
     .await;

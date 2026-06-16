@@ -2990,6 +2990,21 @@ impl Session {
                 .render(),
             );
         }
+        let session_window_id = format!("{}:{auto_compact_window_id}", self.thread_id());
+        if let Some(snapshot) = self
+            .services
+            .agent_control
+            .session_token_budget()
+            .begin_context_window(self.thread_id(), &session_window_id)
+        {
+            developer_sections.push(
+                crate::context::SessionTokenBudgetContext::initial(
+                    snapshot.limit_tokens,
+                    snapshot.remaining_tokens,
+                )
+                .render(),
+            );
+        }
         if turn_context.config.include_environment_context {
             let shell = self.user_shell();
             let subagents = self

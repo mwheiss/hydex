@@ -85,6 +85,47 @@ fn emits_process_metrics() {
     assert_eq!(histogram_count(&metrics, PROCESS_DURATION_METRIC), 1);
 }
 
+#[test]
+fn emits_remote_lifecycle_metrics() {
+    let (telemetry, metrics, exporter) = test_telemetry();
+
+    telemetry.remote_registration_completed("success", Duration::from_millis(10));
+    telemetry.remote_rendezvous_completed("error", Duration::from_millis(20));
+    telemetry.remote_reconnect("connect_failed");
+    metrics.shutdown().expect("shutdown metrics");
+
+    let metrics = latest_metrics(&exporter);
+    assert_eq!(
+        metric_points(&metrics, REMOTE_REGISTRATION_METRICS.total_name),
+        vec![(
+            1.0,
+            BTreeMap::from([("result".to_string(), "success".to_string())]),
+        )]
+    );
+    assert_eq!(
+        metric_points(&metrics, REMOTE_RENDEZVOUS_METRICS.total_name),
+        vec![(
+            1.0,
+            BTreeMap::from([("result".to_string(), "error".to_string())]),
+        )]
+    );
+    assert_eq!(
+        metric_points(&metrics, REMOTE_RECONNECTS_TOTAL_METRIC),
+        vec![(
+            1.0,
+            BTreeMap::from([("reason".to_string(), "connect_failed".to_string())]),
+        )]
+    );
+    assert_eq!(
+        histogram_count(&metrics, REMOTE_REGISTRATION_METRICS.duration_name),
+        1
+    );
+    assert_eq!(
+        histogram_count(&metrics, REMOTE_RENDEZVOUS_METRICS.duration_name),
+        1
+    );
+}
+
 fn test_telemetry() -> (
     ExecServerTelemetry,
     codex_otel::MetricsClient,

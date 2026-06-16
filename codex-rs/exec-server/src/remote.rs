@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::time::Instant;
 
 use codex_api::SharedAuthProvider;
 use reqwest::StatusCode;
@@ -30,6 +31,7 @@ struct EnvironmentRegistryClient {
     base_url: String,
     auth_provider: SharedAuthProvider,
     http: reqwest::Client,
+    telemetry: ExecServerTelemetry,
 }
 
 impl std::fmt::Debug for EnvironmentRegistryClient {
@@ -42,7 +44,16 @@ impl std::fmt::Debug for EnvironmentRegistryClient {
 }
 
 impl EnvironmentRegistryClient {
+    #[cfg(test)]
     fn new(base_url: String, auth_provider: SharedAuthProvider) -> Result<Self, ExecServerError> {
+        Self::new_with_telemetry(base_url, auth_provider, ExecServerTelemetry::default())
+    }
+
+    fn new_with_telemetry(
+        base_url: String,
+        auth_provider: SharedAuthProvider,
+        telemetry: ExecServerTelemetry,
+    ) -> Result<Self, ExecServerError> {
         let base_url = normalize_base_url(base_url)?;
         Ok(Self {
             base_url,
@@ -50,12 +61,38 @@ impl EnvironmentRegistryClient {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
+            telemetry,
         })
     }
 
     /// Register the executor public key and obtain the rendezvous allocation.
     /// The returned registration ID is included in each stream's Noise prologue.
+    #[tracing::instrument(
+        name = "codex.exec_server.remote.register",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            otel.name = "codex.exec_server.remote.register",
+            result = tracing::field::Empty,
+        )
+    )]
     async fn register_environment(
+        &self,
+        environment_id: &str,
+        executor_public_key: &NoiseChannelPublicKey,
+    ) -> Result<EnvironmentRegistryRegistrationResponse, ExecServerError> {
+        let started_at = Instant::now();
+        let response = self
+            .register_environment_inner(environment_id, executor_public_key)
+            .await;
+        let result = if response.is_ok() { "success" } else { "error" };
+        tracing::Span::current().record("result", result);
+        self.telemetry
+            .remote_registration_completed(result, started_at.elapsed());
+        response
+    }
+
+    async fn register_environment_inner(
         &self,
         environment_id: &str,
         executor_public_key: &NoiseChannelPublicKey,
@@ -265,8 +302,11 @@ pub async fn run_remote_environment(
     runtime_paths: ExecServerRuntimePaths,
 ) -> Result<(), ExecServerError> {
     ensure_rustls_crypto_provider();
-    let client =
-        EnvironmentRegistryClient::new(config.base_url.clone(), config.auth_provider.clone())?;
+    let client = EnvironmentRegistryClient::new_with_telemetry(
+        config.base_url.clone(),
+        config.auth_provider.clone(),
+        config.telemetry.clone(),
+    )?;
     let processor =
         ConnectionProcessor::new_with_telemetry(runtime_paths, config.telemetry.clone());
     let identity = NoiseChannelIdentity::generate().map_err(|error| {
@@ -278,13 +318,22 @@ pub async fn run_remote_environment(
         .await?;
 
     loop {
-        match connect_async_with_config(
+        let connect_started_at = Instant::now();
+        let connection = connect_async_with_config(
             response.url.as_str(),
             Some(noise_relay_websocket_config()),
             /*disable_nagle*/ false,
         )
-        .await
-        {
+        .await;
+        config.telemetry.remote_rendezvous_completed(
+            if connection.is_ok() {
+                "success"
+            } else {
+                "error"
+            },
+            connect_started_at.elapsed(),
+        );
+        match connection {
             Ok((websocket, _)) => {
                 backoff = Duration::from_secs(1);
                 let executor_registration_id = response.executor_registration_id.clone();
@@ -306,6 +355,7 @@ pub async fn run_remote_environment(
                     },
                 )
                 .await;
+                config.telemetry.remote_reconnect("disconnected");
             }
             Err(error) => {
                 let registration_rejected = matches!(
@@ -321,9 +371,12 @@ pub async fn run_remote_environment(
                 );
                 debug!(error = %error, "Noise executor rendezvous connection error");
                 if registration_rejected {
+                    config.telemetry.remote_reconnect("registration_rejected");
                     response = client
                         .register_environment(&config.environment_id, &identity.public_key())
                         .await?;
+                } else {
+                    config.telemetry.remote_reconnect("connect_failed");
                 }
             }
         }

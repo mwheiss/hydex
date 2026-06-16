@@ -1,8 +1,12 @@
 use anyhow::Result;
+use codex_core::config::SessionTokenBudgetConfig;
 use codex_features::Feature;
 use codex_model_provider_info::built_in_model_providers;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -12,6 +16,8 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
@@ -22,6 +28,9 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::time::Duration;
+use tokio::time::Instant;
+use tokio::time::sleep;
 
 const CONFIGURED_CONTEXT_WINDOW: i64 = 128_000;
 const EFFECTIVE_CONTEXT_WINDOW: i64 = CONFIGURED_CONTEXT_WINDOW * 95 / 100;
@@ -34,6 +43,14 @@ fn token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
         .collect()
 }
 
+fn session_token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
+    request
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("<session_token_budget>"))
+        .collect()
+}
+
 fn tool_names(request: &ResponsesRequest) -> Vec<String> {
     request
         .body_json()
@@ -43,6 +60,209 @@ fn tool_names(request: &ResponsesRequest) -> Vec<String> {
         .flatten()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
         .collect()
+}
+
+fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
+    String::from_utf8(request.body.clone()).is_ok_and(|body| body.contains(text))
+}
+
+async fn wait_for_child_completion(test: &core_test_support::test_codex::TestCodex) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        for thread_id in test.thread_manager.list_thread_ids().await {
+            if thread_id == test.session_configured.thread_id {
+                continue;
+            }
+            let thread = test.thread_manager.get_thread(thread_id).await?;
+            if matches!(thread.agent_status().await, AgentStatus::Completed(_)) {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for child completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_token_budget_adds_initial_context_and_periodic_reminders() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_completed_with_tokens("resp-1", /*total_tokens*/ 30),
+            ]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.session_token_budget = Some(SessionTokenBudgetConfig {
+                limit_tokens: 100,
+                reminder_interval_tokens: 25,
+            });
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_turn("first turn").await?;
+    test.submit_turn("second turn").await?;
+
+    let requests = responses.requests();
+    let initial = "<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\nYou have 100 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
+    let remaining = "<session_token_budget>\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
+    assert_eq!(
+        session_token_budget_texts(&requests[0]),
+        vec![initial.clone()]
+    );
+    assert_eq!(
+        session_token_budget_texts(&requests[1]),
+        vec![initial, remaining]
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_token_budget_exhaustion_uses_existing_interrupt_path() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_completed_with_tokens("resp-1", /*total_tokens*/ 30),
+        ]),
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.session_token_budget = Some(SessionTokenBudgetConfig {
+                limit_tokens: 30,
+                reminder_interval_tokens: 10,
+            });
+        })
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "use the budget".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+    let EventMsg::TurnAborted(event) = event else {
+        unreachable!("event filter only accepts TurnAborted")
+    };
+    assert_eq!(event.reason, TurnAbortReason::Interrupted);
+    response.single_request();
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const ROOT_PROMPT: &str = "spawn a budget worker";
+    const CHILD_PROMPT: &str = "consume child budget";
+    const FOLLOW_UP_PROMPT: &str = "report the shared budget";
+    const SPAWN_CALL_ID: &str = "spawn-budget-worker";
+
+    let server = start_mock_server().await;
+    let spawn_args = json!({
+        "message": CHILD_PROMPT,
+        "task_name": "budget_worker",
+    })
+    .to_string();
+    mount_sse_once_match(
+        &server,
+        |request| wire_request_contains(request, ROOT_PROMPT),
+        sse(vec![
+            ev_response_created("root-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed_with_tokens("root-1", /*total_tokens*/ 10),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request| {
+            wire_request_contains(request, CHILD_PROMPT)
+                && !wire_request_contains(request, SPAWN_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("child-1"),
+            ev_completed_with_tokens("child-1", /*total_tokens*/ 30),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request| wire_request_contains(request, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("root-2"),
+            ev_completed_with_tokens("root-2", /*total_tokens*/ 10),
+        ]),
+    )
+    .await;
+    let follow_up = mount_sse_once_match(
+        &server,
+        |request| wire_request_contains(request, FOLLOW_UP_PROMPT),
+        sse(vec![ev_response_created("root-3"), ev_completed("root-3")]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow multi-agent tools");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow multi-agent v2");
+            config.session_token_budget = Some(SessionTokenBudgetConfig {
+                limit_tokens: 100,
+                reminder_interval_tokens: 25,
+            });
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_turn(ROOT_PROMPT).await?;
+    wait_for_child_completion(&test).await?;
+    test.submit_turn(FOLLOW_UP_PROMPT).await?;
+
+    let request = follow_up.single_request();
+    assert_eq!(
+        session_token_budget_texts(&request).last(),
+        Some(
+            &"<session_token_budget>\nYou have 50 tokens left in the shared session token budget.\n</session_token_budget>"
+                .to_string()
+        )
+    );
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -322,11 +542,14 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
     let responses = mount_sse_sequence(
         &server,
         vec![
-            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_completed_with_tokens("resp-1", /*total_tokens*/ 20),
+            ]),
             sse(vec![
                 ev_response_created("resp-compact"),
                 ev_assistant_message("msg-compact", "compact summary"),
-                ev_completed("resp-compact"),
+                ev_completed_with_tokens("resp-compact", /*total_tokens*/ 10),
             ]),
             sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
         ],
@@ -346,6 +569,10 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("test config should allow token budget");
+            config.session_token_budget = Some(SessionTokenBudgetConfig {
+                limit_tokens: 100,
+                reminder_interval_tokens: 25,
+            });
         })
         .build(&server)
         .await?;
@@ -368,6 +595,11 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
             "<token_budget>\nThread id {thread_id}.\nCurrent context window 1.\nYou have {EFFECTIVE_CONTEXT_WINDOW} tokens left in this context window.\n</token_budget>"
         )],
         "post-compaction full context should report context window 1"
+    );
+    assert_eq!(
+        session_token_budget_texts(&requests[2]),
+        vec!["<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string()],
+        "a new context window should restate the shared budget after charging compaction"
     );
 
     Ok(())

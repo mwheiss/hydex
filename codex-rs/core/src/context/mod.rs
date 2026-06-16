@@ -61,6 +61,7 @@ pub(crate) use realtime_end_instructions::RealtimeEndInstructions;
 pub(crate) use realtime_start_instructions::RealtimeStartInstructions;
 pub(crate) use realtime_start_with_instructions::RealtimeStartWithInstructions;
 pub(crate) use subagent_notification::SubagentNotification;
+pub(crate) use token_budget_context::SessionTokenBudgetContext;
 pub(crate) use token_budget_context::TokenBudgetContext;
 pub(crate) use token_budget_context::TokenBudgetRemainingContext;
 pub(crate) use turn_aborted::TurnAborted;

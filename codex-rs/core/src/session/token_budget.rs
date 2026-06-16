@@ -1,9 +1,59 @@
 use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::context::ContextualUserFragment;
+use crate::session_token_budget::SessionTokenBudgetAction;
 use codex_features::Feature;
 
 const TOKEN_BUDGET_USAGE_THRESHOLDS: [i64; 3] = [25, 50, 75];
+
+pub(super) async fn maybe_record_session_token_budget_context(
+    sess: &Session,
+    turn_context: &TurnContext,
+    window_id: &str,
+) {
+    let budget = sess.services.agent_control.session_token_budget();
+    let (response_item, generation) = match budget.before_sampling(sess.thread_id(), window_id) {
+        SessionTokenBudgetAction::Proceed => return,
+        SessionTokenBudgetAction::Initialize {
+            snapshot,
+            generation,
+        } => (
+            ContextualUserFragment::into(crate::context::SessionTokenBudgetContext::initial(
+                snapshot.limit_tokens,
+                snapshot.remaining_tokens,
+            )),
+            generation,
+        ),
+        SessionTokenBudgetAction::Remind {
+            snapshot,
+            generation,
+        } => (
+            ContextualUserFragment::into(crate::context::SessionTokenBudgetContext::reminder(
+                snapshot.remaining_tokens,
+            )),
+            generation,
+        ),
+    };
+    sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
+        .await;
+    budget.acknowledge(sess.thread_id(), window_id, generation);
+}
+
+impl Session {
+    pub(crate) async fn record_session_token_usage(&self, tokens: i64) {
+        if self
+            .services
+            .agent_control
+            .session_token_budget()
+            .record_usage(tokens)
+        {
+            self.services
+                .agent_control
+                .interrupt_session(self.thread_id())
+                .await;
+        }
+    }
+}
 
 pub(super) async fn maybe_record_token_budget_remaining_context(
     sess: &Session,

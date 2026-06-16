@@ -85,6 +85,7 @@ mod sandbox_tags;
 pub mod sandboxing;
 mod session_prefix;
 mod session_startup_prewarm;
+mod session_token_budget;
 pub mod skills;
 pub(crate) use skills::SkillInjections;
 pub(crate) use skills::SkillLoadOutcome;

@@ -3190,6 +3190,8 @@ impl Session {
                 }
                 state.token_info()
             };
+            self.record_session_token_usage(token_usage.total_tokens)
+                .await;
             if let Some(token_info) = token_info.as_ref() {
                 for contributor in self.services.extensions.token_usage_contributors() {
                     contributor

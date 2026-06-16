@@ -1016,6 +1016,9 @@ pub struct Config {
     /// Settings specific to the task-path-based multi-agent tool surface.
     pub multi_agent_v2: MultiAgentV2Config,
 
+    /// Shared token budget for the root thread and its sub-agents.
+    pub session_token_budget: Option<SessionTokenBudgetConfig>,
+
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
 
@@ -1057,6 +1060,12 @@ pub struct Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CodeModeConfig {
     pub excluded_tool_namespaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SessionTokenBudgetConfig {
+    pub limit_tokens: i64,
+    pub reminder_interval_tokens: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2460,6 +2469,51 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     }
 }
 
+fn resolve_session_token_budget_config(
+    config_toml: &ConfigToml,
+    features: &ManagedFeatures,
+) -> std::io::Result<Option<SessionTokenBudgetConfig>> {
+    if !features.enabled(Feature::TokenBudget) {
+        return Ok(None);
+    }
+    let config = match config_toml
+        .features
+        .as_ref()
+        .and_then(|features| features.token_budget.as_ref())
+    {
+        Some(FeatureToml::Config(config)) => config,
+        Some(FeatureToml::Enabled(_)) | None => return Ok(None),
+    };
+    let Some(limit_tokens) = config.session_limit_tokens else {
+        if config.session_reminder_interval_tokens.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "features.token_budget.session_reminder_interval_tokens requires session_limit_tokens",
+            ));
+        }
+        return Ok(None);
+    };
+    if limit_tokens <= 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.token_budget.session_limit_tokens must be positive",
+        ));
+    }
+    let reminder_interval_tokens = config
+        .session_reminder_interval_tokens
+        .unwrap_or_else(|| (limit_tokens / 10).max(1));
+    if reminder_interval_tokens <= 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.token_budget.session_reminder_interval_tokens must be positive",
+        ));
+    }
+    Ok(Some(SessionTokenBudgetConfig {
+        limit_tokens,
+        reminder_interval_tokens,
+    }))
+}
+
 fn resolve_terminal_resize_reflow_config(config_toml: &ConfigToml) -> TerminalResizeReflowConfig {
     let Some(tui) = config_toml.tui.as_ref() else {
         return TerminalResizeReflowConfig::default();
@@ -3115,6 +3169,7 @@ impl Config {
             resolve_experimental_request_user_input_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
+        let session_token_budget = resolve_session_token_budget_config(&cfg, &features)?;
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
 
         let agent_roles =
@@ -3654,6 +3709,7 @@ impl Config {
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,
+            session_token_budget,
             features,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning

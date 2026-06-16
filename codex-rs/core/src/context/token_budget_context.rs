@@ -80,3 +80,51 @@ impl ContextualUserFragment for TokenBudgetRemainingContext {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionTokenBudgetContext {
+    limit_tokens: Option<i64>,
+    remaining_tokens: i64,
+}
+
+impl SessionTokenBudgetContext {
+    pub(crate) fn initial(limit_tokens: i64, remaining_tokens: i64) -> Self {
+        Self {
+            limit_tokens: Some(limit_tokens),
+            remaining_tokens,
+        }
+    }
+
+    pub(crate) fn reminder(remaining_tokens: i64) -> Self {
+        Self {
+            limit_tokens: None,
+            remaining_tokens,
+        }
+    }
+}
+
+impl ContextualUserFragment for SessionTokenBudgetContext {
+    fn role(&self) -> &'static str {
+        "developer"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        ("<session_token_budget>\n", "\n</session_token_budget>")
+    }
+
+    fn body(&self) -> String {
+        let remaining_tokens = self.remaining_tokens;
+        match self.limit_tokens {
+            Some(limit_tokens) => format!(
+                "This session has a shared token budget of {limit_tokens} tokens across all threads.\nYou have {remaining_tokens} tokens left in the shared session token budget."
+            ),
+            None => format!(
+                "You have {remaining_tokens} tokens left in the shared session token budget."
+            ),
+        }
+    }
+}

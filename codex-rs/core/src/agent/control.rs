@@ -10,6 +10,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
+use crate::session_token_budget::SessionTokenBudget;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
@@ -36,6 +37,7 @@ use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::ReadThreadParams;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -99,6 +101,7 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    session_token_budget: Arc<SessionTokenBudget>,
 }
 
 impl AgentControl {
@@ -118,6 +121,31 @@ impl AgentControl {
 
     pub(crate) fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    pub(crate) fn session_token_budget(&self) -> &SessionTokenBudget {
+        self.session_token_budget.as_ref()
+    }
+
+    /// Interrupt every live thread in the session using the same operation as Ctrl+C.
+    pub(crate) async fn interrupt_session(&self, triggering_thread_id: ThreadId) {
+        let mut thread_ids = HashSet::from([ThreadId::from(self.session_id)]);
+        thread_ids.extend(
+            self.state
+                .live_agents()
+                .into_iter()
+                .filter_map(|metadata| metadata.agent_id),
+        );
+        thread_ids.remove(&triggering_thread_id);
+
+        for thread_id in thread_ids
+            .into_iter()
+            .chain(std::iter::once(triggering_thread_id))
+        {
+            if let Err(err) = self.interrupt_agent(thread_id).await {
+                warn!(%thread_id, %err, "failed to interrupt thread after token budget exhaustion");
+            }
+        }
     }
 
     /// Send rich user input items to an existing agent thread.

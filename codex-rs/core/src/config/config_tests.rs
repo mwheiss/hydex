@@ -456,6 +456,35 @@ excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
     Ok(())
 }
 
+#[tokio::test]
+async fn load_config_resolves_session_token_budget() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml: ConfigToml = toml::from_str(
+        r#"
+[features.token_budget]
+enabled = true
+session_limit_tokens = 100000
+session_reminder_interval_tokens = 10000
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.session_token_budget,
+        Some(SessionTokenBudgetConfig {
+            limit_tokens: 100_000,
+            reminder_interval_tokens: 10_000,
+        })
+    );
+    Ok(())
+}
+
 #[test]
 fn rejects_provider_auth_with_env_key() {
     let err = toml::from_str::<ConfigToml>(

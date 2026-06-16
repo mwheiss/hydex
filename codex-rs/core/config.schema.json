@@ -639,7 +639,7 @@
               "type": "boolean"
             },
             "token_budget": {
-              "type": "boolean"
+              "$ref": "#/definitions/FeatureToml_for_TokenBudgetConfigToml"
             },
             "tool_call_mcp_elicitation": {
               "type": "boolean"
@@ -887,6 +887,16 @@
         },
         {
           "$ref": "#/definitions/NetworkProxyConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_TokenBudgetConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/TokenBudgetConfigToml"
         }
       ]
     },
@@ -2716,6 +2726,25 @@
           "type": "object"
         }
       ]
+    },
+    "TokenBudgetConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "session_limit_tokens": {
+          "format": "int64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "session_reminder_interval_tokens": {
+          "format": "int64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
     },
     "ToolSuggestConfig": {
       "additionalProperties": false,
@@ -4797,7 +4826,7 @@
           "type": "boolean"
         },
         "token_budget": {
-          "type": "boolean"
+          "$ref": "#/definitions/FeatureToml_for_TokenBudgetConfigToml"
         },
         "tool_call_mcp_elicitation": {
           "type": "boolean"

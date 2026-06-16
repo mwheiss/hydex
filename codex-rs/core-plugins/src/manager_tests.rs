@@ -33,6 +33,7 @@ use codex_config::McpServerConfig;
 use codex_config::McpServerOAuthConfig;
 use codex_config::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_core_skills::SkillRootLoader;
 use codex_login::CodexAuth;
 use codex_plugin::AppDeclaration;
 use codex_protocol::protocol::HookEventName;
@@ -4543,10 +4544,12 @@ async fn load_plugins_ignores_project_config_files() {
     )
     .expect("config layer stack should build");
 
+    let skill_root_loader = SkillRootLoader::default();
     let plugins = load_plugins_from_layer_stack(
         &stack,
         std::collections::HashMap::new(),
         &PluginStore::new(codex_home.path().to_path_buf()),
+        &skill_root_loader,
         Some(Product::Codex),
         /*prefer_remote_curated_conflicts*/ false,
     )

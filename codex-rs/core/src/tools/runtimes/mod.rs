@@ -13,6 +13,8 @@ use crate::tools::sandboxing::ToolError;
 use codex_install_context::InstallContext;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
+use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
+use codex_network_proxy::CREDENTIAL_BROKER_ENV_KEYS;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::MITM_CA_ENV_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
@@ -70,8 +72,14 @@ pub(crate) fn exec_env_for_sandbox_permissions(
 }
 
 pub(crate) fn strip_managed_proxy_env(env: &mut HashMap<String, String>) {
+    let credential_broker_active = env.contains_key(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
     for key in PROXY_ENV_KEYS {
         env.remove(*key);
+    }
+    if credential_broker_active {
+        for key in CREDENTIAL_BROKER_ENV_KEYS {
+            env.remove(*key);
+        }
     }
     for key in CUSTOM_CA_ENV_KEYS {
         if env
@@ -338,6 +346,11 @@ fn build_proxy_env_exports() -> (String, String) {
     let (captures, restores) =
         build_override_exports_for_keys("__CODEX_SNAPSHOT_PROXY_OVERRIDE", &keys);
     let key = PROXY_ACTIVE_ENV_KEY;
+    let (credential_broker_captures, credential_broker_restores) = build_override_exports_for_keys(
+        "__CODEX_SNAPSHOT_CREDENTIAL_BROKER_OVERRIDE",
+        CREDENTIAL_BROKER_ENV_KEYS,
+    );
+    let credential_broker_key = CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
     let (ssl_cert_dir_captures, ssl_cert_dir_restores) = build_override_exports_for_keys(
         "__CODEX_SNAPSHOT_MITM_CA_OVERRIDE",
         &[SSL_CERT_DIR_ENV_KEY],
@@ -345,10 +358,10 @@ fn build_proxy_env_exports() -> (String, String) {
     let mitm_ca_key = MITM_CA_ENV_ACTIVE_ENV_KEY;
     let proxy_blocks = (
         format!(
-            "{captures}\n__CODEX_SNAPSHOT_PROXY_ENV_SET=\"${{{key}+x}}\"\n{ssl_cert_dir_captures}\n__CODEX_SNAPSHOT_MITM_CA_ENV_SET=\"${{{mitm_ca_key}+x}}\""
+            "{captures}\n__CODEX_SNAPSHOT_PROXY_ENV_SET=\"${{{key}+x}}\"\n{credential_broker_captures}\n__CODEX_SNAPSHOT_CREDENTIAL_BROKER_ENV_SET=\"${{{credential_broker_key}+x}}\"\n{ssl_cert_dir_captures}\n__CODEX_SNAPSHOT_MITM_CA_ENV_SET=\"${{{mitm_ca_key}+x}}\""
         ),
         format!(
-            "__CODEX_SNAPSHOT_MITM_CA_ENV_AFTER_SET=\"${{{mitm_ca_key}+x}}\"\nif [ -n \"$__CODEX_SNAPSHOT_PROXY_ENV_SET\" ] || [ -n \"${{{key}+x}}\" ]; then\n{restores}\nfi\nif [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_SET\" ] || [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_AFTER_SET\" ]; then\n{ssl_cert_dir_restores}\nfi"
+            "__CODEX_SNAPSHOT_CREDENTIAL_BROKER_ENV_AFTER_SET=\"${{{credential_broker_key}+x}}\"\n__CODEX_SNAPSHOT_MITM_CA_ENV_AFTER_SET=\"${{{mitm_ca_key}+x}}\"\nif [ -n \"$__CODEX_SNAPSHOT_PROXY_ENV_SET\" ] || [ -n \"${{{key}+x}}\" ]; then\n{restores}\nfi\nif [ -n \"$__CODEX_SNAPSHOT_CREDENTIAL_BROKER_ENV_SET\" ] || [ -n \"$__CODEX_SNAPSHOT_CREDENTIAL_BROKER_ENV_AFTER_SET\" ]; then\n{credential_broker_restores}\nfi\nif [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_SET\" ] || [ -n \"$__CODEX_SNAPSHOT_MITM_CA_ENV_AFTER_SET\" ]; then\n{ssl_cert_dir_restores}\nfi"
         ),
     );
     let git_blocks = build_codex_proxy_git_ssh_command_exports();

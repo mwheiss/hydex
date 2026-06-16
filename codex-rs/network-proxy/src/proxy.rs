@@ -1,4 +1,5 @@
 use crate::config;
+use crate::credential_broker::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use crate::http_proxy;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::runtime::BlockedRequestObserver;
@@ -510,6 +511,7 @@ pub const PROXY_ENV_KEYS: &[&str] = &[
     PROXY_ACTIVE_ENV_KEY,
     MITM_CA_ENV_ACTIVE_ENV_KEY,
     STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY,
+    CREDENTIAL_BROKER_ACTIVE_ENV_KEY,
     ALLOW_LOCAL_BINDING_ENV_KEY,
     ELECTRON_GET_USE_PROXY_ENV_KEY,
     NODE_USE_ENV_PROXY_ENV_KEY,

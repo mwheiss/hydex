@@ -11,6 +11,15 @@ const GITHUB_CLOUD_TOKEN_ENV_VARS: &[&str] = &["GH_TOKEN", "GITHUB_TOKEN"];
 const GITHUB_ENTERPRISE_TOKEN_ENV_VARS: &[&str] =
     &["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
 const OPENAI_API_KEY_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
+pub const CREDENTIAL_BROKER_ACTIVE_ENV_KEY: &str = "CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE";
+pub const CREDENTIAL_BROKER_ENV_KEYS: &[&str] = &[
+    GH_HOST_ENV_VAR,
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "OPENAI_API_KEY",
+];
 
 #[derive(Clone)]
 pub(crate) struct CredentialBroker {
@@ -43,7 +52,7 @@ enum CredentialHostBinding {
     GitHubCloud,
     ExactHost(String),
     OpenAiApi,
-    Unbound,
+    AnyHostWithDummy,
 }
 
 impl CredentialBroker {
@@ -69,24 +78,28 @@ impl CredentialBroker {
         let github_host_hint = github_host_hint(env);
         let mut state = self.write_state();
         if !state.enabled {
+            env.remove(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
             return;
         }
+        env.insert(
+            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+            "1".to_string(),
+        );
 
         for env_var in GITHUB_CLOUD_TOKEN_ENV_VARS {
-            let host_binding = github_host_hint
-                .clone()
-                .map_or(CredentialHostBinding::GitHubCloud, github_host_binding);
             virtualize_env_var(
                 env,
                 &mut state,
                 env_var,
                 CredentialKind::GitHub,
-                host_binding,
+                CredentialHostBinding::GitHubCloud,
             );
         }
 
-        let host_binding =
-            github_host_hint.map_or(CredentialHostBinding::Unbound, github_host_binding);
+        let host_binding = github_host_hint.map_or(
+            CredentialHostBinding::AnyHostWithDummy,
+            github_enterprise_host_binding,
+        );
         for env_var in GITHUB_ENTERPRISE_TOKEN_ENV_VARS {
             virtualize_env_var(
                 env,
@@ -194,11 +207,6 @@ impl CredentialBrokerState {
             return existing.dummy_value.clone();
         }
 
-        self.credentials.retain(|credential| {
-            credential.env_var != env_var
-                || credential.kind != kind
-                || credential.host_binding != host_binding
-        });
         let dummy_value = kind.dummy_value(self.next_credential_id);
         self.next_credential_id += 1;
         self.credentials.push(CredentialRecord {
@@ -215,6 +223,10 @@ impl CredentialBrokerState {
 impl CredentialRecord {
     fn matches_host(&self, host: &str) -> bool {
         self.host_binding.matches_host(host)
+    }
+
+    fn allows_missing_dummy_fallback(&self) -> bool {
+        self.host_binding.allows_missing_dummy_fallback()
     }
 }
 
@@ -241,13 +253,27 @@ impl CredentialKind {
 impl CredentialHostBinding {
     fn matches_host(&self, host: &str) -> bool {
         match self {
-            Self::GitHubCloud => {
-                matches!(host, "api.github.com" | "github.com") || host.ends_with(".ghe.com")
-            }
+            Self::GitHubCloud => github_cloud_host(host),
             Self::ExactHost(expected_host) => host == expected_host,
             Self::OpenAiApi => host == "api.openai.com",
-            Self::Unbound => false,
+            Self::AnyHostWithDummy => true,
         }
+    }
+
+    fn allows_missing_dummy_fallback(&self) -> bool {
+        !matches!(self, Self::AnyHostWithDummy)
+    }
+}
+
+fn github_cloud_host(host: &str) -> bool {
+    matches!(host, "api.github.com" | "github.com") || host.ends_with(".ghe.com")
+}
+
+fn github_enterprise_host_binding(host: String) -> CredentialHostBinding {
+    if github_cloud_host(&host) {
+        CredentialHostBinding::AnyHostWithDummy
+    } else {
+        CredentialHostBinding::ExactHost(host)
     }
 }
 
@@ -258,32 +284,42 @@ fn github_host_hint(env: &HashMap<String, String>) -> Option<String> {
         .filter(|host| !host.is_empty())
 }
 
-fn github_host_binding(host: String) -> CredentialHostBinding {
-    if host == "github.com" {
-        CredentialHostBinding::GitHubCloud
-    } else {
-        CredentialHostBinding::ExactHost(host)
-    }
-}
-
 fn select_credential<'a>(
     headers: &HeaderMap,
     matching_credentials: &[&'a CredentialRecord],
 ) -> Option<&'a CredentialRecord> {
-    if let Some(authorization) = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    {
-        let dummy_matches = matching_credentials
-            .iter()
-            .copied()
-            .filter(|credential| authorization.contains(&credential.dummy_value))
-            .collect::<Vec<_>>();
-        if dummy_matches.len() == 1 {
-            return dummy_matches.into_iter().next();
-        }
+    match headers.get(AUTHORIZATION) {
+        Some(authorization) => authorization.to_str().ok().and_then(|authorization| {
+            dummy_authorization_match(authorization, matching_credentials)
+        }),
+        None => missing_dummy_fallback(matching_credentials),
     }
+}
 
+fn dummy_authorization_match<'a>(
+    authorization: &str,
+    matching_credentials: &[&'a CredentialRecord],
+) -> Option<&'a CredentialRecord> {
+    let dummy_matches = matching_credentials
+        .iter()
+        .copied()
+        .filter(|credential| authorization.contains(&credential.dummy_value))
+        .collect::<Vec<_>>();
+    if dummy_matches.len() == 1 {
+        dummy_matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn missing_dummy_fallback<'a>(
+    matching_credentials: &[&'a CredentialRecord],
+) -> Option<&'a CredentialRecord> {
+    let matching_credentials = matching_credentials
+        .iter()
+        .copied()
+        .filter(|credential| credential.allows_missing_dummy_fallback())
+        .collect::<Vec<_>>();
     let credential = *matching_credentials.first()?;
     matching_credentials
         .iter()

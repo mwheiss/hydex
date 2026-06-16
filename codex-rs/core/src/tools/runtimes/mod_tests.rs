@@ -7,6 +7,7 @@ use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
+use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::ConfigReloader;
 use codex_network_proxy::ConfigReloaderFuture;
@@ -322,6 +323,37 @@ fn explicit_escalation_keeps_user_proxy_env_without_codex_marker() {
 }
 
 #[test]
+fn explicit_escalation_keeps_unbrokered_credentials() {
+    let env = HashMap::from([
+        (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
+        ("OPENAI_API_KEY".to_string(), "sk-real".to_string()),
+    ]);
+
+    let env = exec_env_for_sandbox_permissions(&env, SandboxPermissions::RequireEscalated);
+
+    assert_eq!(env.get("OPENAI_API_KEY"), Some(&"sk-real".to_string()));
+}
+
+#[test]
+fn explicit_escalation_strips_brokered_credentials() {
+    let env = HashMap::from([
+        (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
+        (
+            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+            "1".to_string(),
+        ),
+        (
+            "OPENAI_API_KEY".to_string(),
+            "sk-codex-dummy-0000".to_string(),
+        ),
+    ]);
+
+    let env = exec_env_for_sandbox_permissions(&env, SandboxPermissions::RequireEscalated);
+
+    assert_eq!(env.get("OPENAI_API_KEY"), None);
+}
+
+#[test]
 fn maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
@@ -583,6 +615,55 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_proxy_env_from_process_env() {
 }
 
 #[test]
+fn maybe_wrap_shell_lc_with_snapshot_restores_brokered_credentials_from_process_env() {
+    let dir = tempdir().expect("create temp dir");
+    let snapshot_path = dir.path().join("snapshot.sh");
+    std::fs::write(
+        &snapshot_path,
+        "# Snapshot file\nexport OPENAI_API_KEY='sk-real'\n",
+    )
+    .expect("write snapshot");
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
+    let command = vec![
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        "printf '%s' \"$OPENAI_API_KEY\"".to_string(),
+    ];
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        &session_shell,
+        Some(&shell_snapshot),
+        &HashMap::new(),
+        &HashMap::from([
+            (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
+            (
+                CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+                "1".to_string(),
+            ),
+            (
+                "OPENAI_API_KEY".to_string(),
+                "sk-codex-dummy-0000".to_string(),
+            ),
+        ]),
+        &RuntimePathPrepends::default(),
+    );
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env(PROXY_ACTIVE_ENV_KEY, "1")
+        .env(CREDENTIAL_BROKER_ACTIVE_ENV_KEY, "1")
+        .env("OPENAI_API_KEY", "sk-codex-dummy-0000")
+        .output()
+        .expect("run rewritten command");
+
+    assert!(output.status.success(), "command failed: {output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "sk-codex-dummy-0000"
+    );
+}
+
+#[test]
 fn maybe_wrap_shell_lc_with_snapshot_clears_snapshot_ssl_cert_dir() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
@@ -591,12 +672,8 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_snapshot_ssl_cert_dir() {
         format!("# Snapshot file\nexport {SSL_CERT_DIR_ENV_KEY}='/tmp/snapshot-certs'\n"),
     )
     .expect("write snapshot");
-    let session_shell = shell_with_snapshot(
-        ShellType::Bash,
-        "/bin/bash",
-        snapshot_path.abs(),
-        dir.path().abs(),
-    );
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
@@ -607,9 +684,10 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_snapshot_ssl_cert_dir() {
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
-        &dir.path().abs(),
+        Some(&shell_snapshot),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -631,12 +709,8 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_snapshot_ssl_cert_dir_without_mit
         format!("# Snapshot file\nexport {SSL_CERT_DIR_ENV_KEY}='/tmp/snapshot-certs'\n"),
     )
     .expect("write snapshot");
-    let session_shell = shell_with_snapshot(
-        ShellType::Bash,
-        "/bin/bash",
-        snapshot_path.abs(),
-        dir.path().abs(),
-    );
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
@@ -645,9 +719,10 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_snapshot_ssl_cert_dir_without_mit
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
-        &dir.path().abs(),
+        Some(&shell_snapshot),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -674,12 +749,8 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_stale_mitm_ssl_cert_dir_for_plain_pr
         ),
     )
     .expect("write snapshot");
-    let session_shell = shell_with_snapshot(
-        ShellType::Bash,
-        "/bin/bash",
-        snapshot_path.abs(),
-        dir.path().abs(),
-    );
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
@@ -690,9 +761,10 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_stale_mitm_ssl_cert_dir_for_plain_pr
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
-        &dir.path().abs(),
+        Some(&shell_snapshot),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])

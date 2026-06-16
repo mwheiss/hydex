@@ -372,9 +372,13 @@ impl std::error::Error for SandboxTransformError {
         match self {
             Self::InvalidCommandCwd { source, .. }
             | Self::InvalidSandboxPolicyCwd { source, .. } => Some(source),
-            Self::MissingLinuxSandboxExecutable => None,
+            Self::MissingLinuxSandboxExecutable
+            | Self::ManagedMitmCaPathUnderWritableRoot
+            | Self::ManagedMitmCustomCaUnsupportedOnWindows => None,
             #[cfg(target_os = "linux")]
-            Self::Wsl1UnsupportedForBubblewrap => None,
+            Self::LegacyLandlockUnsupportedWithManagedMitm | Self::Wsl1UnsupportedForBubblewrap => {
+                None
+            }
             #[cfg(not(target_os = "macos"))]
             Self::SeatbeltUnavailable => None,
         }

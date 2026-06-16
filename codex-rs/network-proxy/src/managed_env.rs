@@ -4,14 +4,19 @@ use crate::CUSTOM_CA_ENV_KEYS;
 use crate::PROXY_ENV_KEYS;
 #[cfg(target_os = "macos")]
 use crate::PROXY_GIT_SSH_COMMAND_ENV_KEY;
+use crate::credential_broker::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
+use crate::credential_broker::CREDENTIAL_BROKER_ENV_KEYS;
 use crate::is_managed_mitm_ca_trust_bundle_path;
 use std::collections::HashMap;
 
 /// Removes environment values owned by a managed network proxy before a command escapes its
 /// sandbox and proxy containment.
 pub fn strip_managed_proxy_env(env: &mut HashMap<String, String>) {
+    let credential_broker_active = env.contains_key(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
     for key in PROXY_ENV_KEYS {
-        env.remove(*key);
+        if credential_broker_active || !CREDENTIAL_BROKER_ENV_KEYS.contains(key) {
+            env.remove(*key);
+        }
     }
     for key in CUSTOM_CA_ENV_KEYS {
         if env

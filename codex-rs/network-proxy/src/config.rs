@@ -21,6 +21,13 @@ pub struct NetworkProxyConfig {
     pub network: NetworkProxySettings,
 }
 
+impl NetworkProxyConfig {
+    pub fn set_credential_broker_enabled(&mut self, enabled: bool) {
+        self.network.credential_broker = enabled;
+        self.network.mitm |= enabled;
+    }
+}
+
 /// Variant order encodes effective precedence for duplicate patterns:
 /// `None < Allow < Deny`, so deny wins over allow when entries conflict.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -600,6 +607,18 @@ mod tests {
                 mitm_hooks: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn enabling_credential_broker_enables_mitm() {
+        let mut config = NetworkProxyConfig::default();
+        let mut expected = NetworkProxyConfig::default();
+        expected.network.credential_broker = true;
+        expected.network.mitm = true;
+
+        config.set_credential_broker_enabled(true);
+
+        assert_eq!(config, expected);
     }
 
     #[test]

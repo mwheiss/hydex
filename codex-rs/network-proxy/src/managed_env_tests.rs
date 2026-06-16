@@ -1,5 +1,6 @@
 use super::*;
 use crate::PROXY_ACTIVE_ENV_KEY;
+use crate::credential_broker::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -37,4 +38,38 @@ fn preserves_unmanaged_ca_env() {
             "/tmp/user-ca-bundle.pem".to_string(),
         )])
     );
+}
+
+#[test]
+fn preserves_unbrokered_credentials() {
+    let mut env = HashMap::from([
+        (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
+        ("OPENAI_API_KEY".to_string(), "sk-real".to_string()),
+    ]);
+
+    strip_managed_proxy_env(&mut env);
+
+    assert_eq!(
+        env,
+        HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())])
+    );
+}
+
+#[test]
+fn strips_brokered_credentials() {
+    let mut env = HashMap::from([
+        (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
+        (
+            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+            "1".to_string(),
+        ),
+        (
+            "OPENAI_API_KEY".to_string(),
+            "sk-codex-dummy-0000".to_string(),
+        ),
+    ]);
+
+    strip_managed_proxy_env(&mut env);
+
+    assert_eq!(env, HashMap::new());
 }

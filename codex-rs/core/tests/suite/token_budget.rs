@@ -29,11 +29,15 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
-use tokio::time::Instant;
 use tokio::time::sleep;
+use tokio::time::timeout;
 
 const CONFIGURED_CONTEXT_WINDOW: i64 = 128_000;
 const EFFECTIVE_CONTEXT_WINDOW: i64 = CONFIGURED_CONTEXT_WINDOW * 95 / 100;
+const SESSION_TOKEN_BUDGET: SessionTokenBudgetConfig = SessionTokenBudgetConfig {
+    limit_tokens: 100,
+    reminder_interval_tokens: 25,
+};
 
 fn token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
     request
@@ -63,26 +67,7 @@ fn tool_names(request: &ResponsesRequest) -> Vec<String> {
 }
 
 fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
-    String::from_utf8(request.body.clone()).is_ok_and(|body| body.contains(text))
-}
-
-async fn wait_for_child_completion(test: &core_test_support::test_codex::TestCodex) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        for thread_id in test.thread_manager.list_thread_ids().await {
-            if thread_id == test.session_configured.thread_id {
-                continue;
-            }
-            let thread = test.thread_manager.get_thread(thread_id).await?;
-            if matches!(thread.agent_status().await, AgentStatus::Completed(_)) {
-                return Ok(());
-            }
-        }
-        if Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for child completion");
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
+    std::str::from_utf8(&request.body).is_ok_and(|body| body.contains(text))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -108,10 +93,7 @@ async fn session_token_budget_adds_initial_context_and_periodic_reminders() -> R
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("test config should allow token budget");
-            config.session_token_budget = Some(SessionTokenBudgetConfig {
-                limit_tokens: 100,
-                reminder_interval_tokens: 25,
-            });
+            config.session_token_budget = Some(SESSION_TOKEN_BUDGET);
         })
         .build(&server)
         .await?;
@@ -257,16 +239,21 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow multi-agent v2");
-            config.session_token_budget = Some(SessionTokenBudgetConfig {
-                limit_tokens: 100,
-                reminder_interval_tokens: 25,
-            });
+            config.session_token_budget = Some(SESSION_TOKEN_BUDGET);
         })
         .build(&server)
         .await?;
 
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.submit_turn(ROOT_PROMPT).await?;
-    wait_for_child_completion(&test).await?;
+    let child_thread_id = timeout(Duration::from_secs(10), created_threads.recv()).await??;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    timeout(Duration::from_secs(10), async {
+        while !matches!(child_thread.agent_status().await, AgentStatus::Completed(_)) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
     test.submit_turn(FOLLOW_UP_PROMPT).await?;
 
     let request = follow_up.single_request();
@@ -585,10 +572,7 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("test config should allow token budget");
-            config.session_token_budget = Some(SessionTokenBudgetConfig {
-                limit_tokens: 100,
-                reminder_interval_tokens: 25,
-            });
+            config.session_token_budget = Some(SESSION_TOKEN_BUDGET);
         })
         .build(&server)
         .await?;

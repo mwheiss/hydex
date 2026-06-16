@@ -37,7 +37,6 @@ use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::ReadThreadParams;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -101,6 +100,7 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     session_token_budget: Arc<SessionTokenBudget>,
 }
 
@@ -129,19 +129,18 @@ impl AgentControl {
 
     /// Interrupt every live thread in the session using the same operation as Ctrl+C.
     pub(crate) async fn interrupt_session(&self, triggering_thread_id: ThreadId) {
-        let mut thread_ids = HashSet::from([ThreadId::from(self.session_id)]);
-        thread_ids.extend(
-            self.state
-                .live_agents()
-                .into_iter()
-                .filter_map(|metadata| metadata.agent_id),
-        );
-        thread_ids.remove(&triggering_thread_id);
-
-        for thread_id in thread_ids
+        let mut thread_ids = self
+            .state
+            .live_agents()
             .into_iter()
-            .chain(std::iter::once(triggering_thread_id))
-        {
+            .filter_map(|metadata| metadata.agent_id)
+            .collect::<Vec<_>>();
+        thread_ids.push(ThreadId::from(self.session_id));
+        thread_ids.retain(|thread_id| *thread_id != triggering_thread_id);
+        // Interrupt this thread last so it can finish fanning the interrupt out to its peers.
+        thread_ids.push(triggering_thread_id);
+
+        for thread_id in thread_ids {
             if let Err(err) = self.interrupt_agent(thread_id).await {
                 warn!(%thread_id, %err, "failed to interrupt thread after token budget exhaustion");
             }

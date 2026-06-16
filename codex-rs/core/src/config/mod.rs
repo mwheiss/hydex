@@ -2476,13 +2476,12 @@ fn resolve_session_token_budget_config(
     if !features.enabled(Feature::TokenBudget) {
         return Ok(None);
     }
-    let config = match config_toml
+    let Some(FeatureToml::Config(config)) = config_toml
         .features
         .as_ref()
         .and_then(|features| features.token_budget.as_ref())
-    {
-        Some(FeatureToml::Config(config)) => config,
-        Some(FeatureToml::Enabled(_)) | None => return Ok(None),
+    else {
+        return Ok(None);
     };
     let Some(limit_tokens) = config.session_limit_tokens else {
         if config.session_reminder_interval_tokens.is_some() {

@@ -7,6 +7,7 @@ use std::sync::RwLock;
 
 use codex_exec_server::ExecutorFileSystem;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use futures::StreamExt;
 
 use crate::SkillLoadOutcome;
 use crate::loader::SkillRoot;
@@ -15,6 +16,7 @@ use crate::loader::load_skill_root;
 use crate::model::SkillFileSystemsByPath;
 
 const MAX_CACHED_PLUGIN_SKILL_ROOTS: usize = 256;
+const MAX_CONCURRENT_SKILL_ROOT_LOADS: usize = 8;
 
 #[derive(Clone)]
 struct FileSystemIdentity(Arc<dyn ExecutorFileSystem>);
@@ -77,24 +79,26 @@ impl SkillRootLoader {
     where
         I: IntoIterator<Item = SkillRoot>,
     {
-        let mut snapshots = Vec::new();
-        for root in roots {
-            let cache_key = SkillRootCacheKey::from_root(&root);
-            let (cache_generation, cached_snapshot) = cache_key
-                .as_ref()
-                .map_or((0, None), |key| self.cached_snapshot(key));
-            let snapshot = match cached_snapshot {
-                Some(snapshot) => snapshot,
-                None => {
-                    let snapshot = load_skill_root(root).await;
-                    if let Some(cache_key) = cache_key {
-                        self.cache_snapshot(cache_generation, cache_key, snapshot.clone());
+        let snapshots = futures::stream::iter(roots)
+            .map(|root| async move {
+                let cache_key = SkillRootCacheKey::from_root(&root);
+                let (cache_generation, cached_snapshot) = cache_key
+                    .as_ref()
+                    .map_or((0, None), |key| self.cached_snapshot(key));
+                match cached_snapshot {
+                    Some(snapshot) => snapshot,
+                    None => {
+                        let snapshot = load_skill_root(root).await;
+                        if let Some(cache_key) = cache_key {
+                            self.cache_snapshot(cache_generation, cache_key, snapshot.clone());
+                        }
+                        snapshot
                     }
-                    snapshot
                 }
-            };
-            snapshots.push(snapshot);
-        }
+            })
+            .buffered(MAX_CONCURRENT_SKILL_ROOT_LOADS)
+            .collect::<Vec<_>>()
+            .await;
 
         merge_skill_root_snapshots(snapshots)
     }

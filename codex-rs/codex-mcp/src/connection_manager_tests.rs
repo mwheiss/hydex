@@ -1180,6 +1180,7 @@ fn server_metadata_preserves_tool_approval_policy() {
     let mut config = crate::codex_apps_mcp_server_config(
         "https://docs.example",
         /*apps_mcp_product_sku*/ None,
+        /*plugin_service_preview*/ false,
     );
     config.default_tools_approval_mode = Some(AppToolApproval::Prompt);
     config.tools.insert(

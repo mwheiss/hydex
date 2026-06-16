@@ -591,12 +591,8 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_snapshot_ssl_cert_dir() {
         format!("# Snapshot file\nexport {SSL_CERT_DIR_ENV_KEY}='/tmp/snapshot-certs'\n"),
     )
     .expect("write snapshot");
-    let session_shell = shell_with_snapshot(
-        ShellType::Bash,
-        "/bin/bash",
-        snapshot_path.abs(),
-        dir.path().abs(),
-    );
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
@@ -607,9 +603,10 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_snapshot_ssl_cert_dir() {
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
-        &dir.path().abs(),
+        Some(&shell_snapshot),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -631,12 +628,8 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_snapshot_ssl_cert_dir_without_mit
         format!("# Snapshot file\nexport {SSL_CERT_DIR_ENV_KEY}='/tmp/snapshot-certs'\n"),
     )
     .expect("write snapshot");
-    let session_shell = shell_with_snapshot(
-        ShellType::Bash,
-        "/bin/bash",
-        snapshot_path.abs(),
-        dir.path().abs(),
-    );
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
@@ -645,9 +638,10 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_snapshot_ssl_cert_dir_without_mit
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
-        &dir.path().abs(),
+        Some(&shell_snapshot),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
@@ -674,12 +668,8 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_stale_mitm_ssl_cert_dir_for_plain_pr
         ),
     )
     .expect("write snapshot");
-    let session_shell = shell_with_snapshot(
-        ShellType::Bash,
-        "/bin/bash",
-        snapshot_path.abs(),
-        dir.path().abs(),
-    );
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
@@ -690,9 +680,10 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_stale_mitm_ssl_cert_dir_for_plain_pr
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
-        &dir.path().abs(),
+        Some(&shell_snapshot),
         &HashMap::new(),
         &HashMap::new(),
+        &RuntimePathPrepends::default(),
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])

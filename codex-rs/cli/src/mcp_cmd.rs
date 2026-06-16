@@ -28,6 +28,7 @@ use codex_mcp::should_retry_without_scopes;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::perform_oauth_login;
+use codex_rmcp_client::resolve_mcp_oauth_callback_url;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
 
@@ -38,6 +39,7 @@ use codex_utils_cli::format_env_display;
 /// - `remove` — delete a server entry
 /// - `login`  — authenticate with MCP server using OAuth
 /// - `logout` — remove OAuth credentials for MCP server
+/// - `callback-url` — print the OAuth callback URL for MCP server setup
 #[derive(Debug, clap::Parser)]
 pub struct McpCli {
     #[clap(flatten)]
@@ -55,6 +57,7 @@ pub enum McpSubcommand {
     Remove(RemoveArgs),
     Login(LoginArgs),
     Logout(LogoutArgs),
+    CallbackUrl(CallbackUrlArgs),
 }
 
 #[derive(Debug, clap::Parser)]
@@ -167,6 +170,12 @@ pub struct LogoutArgs {
     pub name: String,
 }
 
+#[derive(Debug, clap::Parser)]
+pub struct CallbackUrlArgs {
+    /// Name of the MCP server whose OAuth callback URL should be printed.
+    pub name: String,
+}
+
 impl McpCli {
     pub async fn run(self, loader_overrides: LoaderOverrides) -> Result<()> {
         let McpCli {
@@ -196,6 +205,9 @@ impl McpCli {
             }
             McpSubcommand::Logout(args) => {
                 run_logout(&config_overrides, args).await?;
+            }
+            McpSubcommand::CallbackUrl(args) => {
+                run_callback_url(&config_overrides, args).await?;
             }
         }
 
@@ -493,6 +505,41 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     )
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
+    Ok(())
+}
+
+async fn run_callback_url(
+    config_overrides: &CliConfigOverrides,
+    callback_url_args: CallbackUrlArgs,
+) -> Result<()> {
+    let overrides = config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides(overrides)
+        .await
+        .context("failed to load configuration")?;
+    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
+        config.codex_home.to_path_buf(),
+    )));
+    let mcp_servers = mcp_manager.configured_servers(&config).await;
+
+    let CallbackUrlArgs { name } = callback_url_args;
+
+    let Some(server) = mcp_servers.get(&name) else {
+        bail!("No MCP server named '{name}' found.");
+    };
+
+    let url = match &server.transport {
+        McpServerTransportConfig::StreamableHttp { url, .. } => url,
+        _ => bail!("OAuth callback URL is only available for streamable HTTP servers."),
+    };
+
+    let callback_url = resolve_mcp_oauth_callback_url(
+        url,
+        config.mcp_oauth_callback_port,
+        config.mcp_oauth_callback_url.as_deref(),
+    )?;
+    println!("{callback_url}");
     Ok(())
 }
 
@@ -998,3 +1045,7 @@ fn format_mcp_status(config: &McpServerConfig) -> String {
         "disabled".to_string()
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_cmd_tests.rs"]
+mod tests;

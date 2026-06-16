@@ -394,13 +394,49 @@ fn local_redirect_uri(server: &Server) -> Result<String> {
     }
 }
 
-fn resolve_redirect_uri(server: &Server, callback_url: Option<&str>) -> Result<String> {
-    let Some(callback_url) = callback_url else {
-        return local_redirect_uri(server);
-    };
+fn configured_redirect_uri(callback_url: &str) -> Result<String> {
     Url::parse(callback_url)
         .with_context(|| format!("invalid MCP OAuth callback URL `{callback_url}`"))?;
     Ok(callback_url.to_string())
+}
+
+fn local_redirect_uri_from_port(callback_port: Option<u16>) -> Result<String> {
+    let Some(port) = callback_port else {
+        bail!(
+            "cannot determine MCP OAuth callback URL with an ephemeral callback port; set `mcp_oauth_callback_port` or `mcp_oauth_callback_url`"
+        );
+    };
+    Ok(format!("http://127.0.0.1:{port}/callback"))
+}
+
+/// Resolve the final OAuth redirect URI Codex will use for an MCP server.
+///
+/// The returned URI includes the deterministic callback ID suffix derived from
+/// the normalized MCP server URL. This helper is read-only and does not start an
+/// OAuth flow, bind a callback listener, or perform network I/O.
+pub fn resolve_mcp_oauth_callback_url(
+    server_url: &str,
+    callback_port: Option<u16>,
+    callback_url: Option<&str>,
+) -> Result<String> {
+    let callback_port = resolve_callback_port(callback_port)?;
+    let redirect_uri = match callback_url {
+        Some(callback_url) => configured_redirect_uri(callback_url)?,
+        None => local_redirect_uri_from_port(callback_port)?,
+    };
+    append_callback_id_to_redirect_uri(server_url, &redirect_uri)
+}
+
+fn resolve_redirect_uri(
+    server: &Server,
+    server_url: &str,
+    callback_url: Option<&str>,
+) -> Result<String> {
+    let redirect_uri = match callback_url {
+        Some(callback_url) => configured_redirect_uri(callback_url)?,
+        None => local_redirect_uri(server)?,
+    };
+    append_callback_id_to_redirect_uri(server_url, &redirect_uri)
 }
 
 fn callback_id_from_server_url(server_url: &str) -> Result<String> {
@@ -415,7 +451,8 @@ fn callback_id_from_server_url(server_url: &str) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(&digest[..9]))
 }
 
-fn append_callback_id_to_redirect_uri(redirect_uri: &str, callback_id: &str) -> Result<String> {
+fn append_callback_id_to_redirect_uri(server_url: &str, redirect_uri: &str) -> Result<String> {
+    let callback_id = callback_id_from_server_url(server_url)?;
     let mut parsed = Url::parse(redirect_uri)
         .with_context(|| format!("invalid redirect URI `{redirect_uri}`"))?;
     let path = parsed.path();
@@ -479,9 +516,7 @@ impl OauthLoginFlow {
             server: Arc::clone(&server),
         };
 
-        let redirect_uri = resolve_redirect_uri(&server, callback_url)?;
-        let callback_id = callback_id_from_server_url(server_url)?;
-        let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
+        let redirect_uri = resolve_redirect_uri(&server, server_url, callback_url)?;
         let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
 
         let (tx, rx) = oneshot::channel();
@@ -683,6 +718,7 @@ mod tests {
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
+    use super::resolve_mcp_oauth_callback_url;
     use super::start_authorization;
 
     async fn spawn_oauth_metadata_server() -> String {
@@ -803,6 +839,66 @@ mod tests {
     }
 
     #[test]
+    fn precomputed_configured_callback_url_includes_callback_id() {
+        let server_url = "https://mcp.example.com/mcp";
+        let callback_id = callback_id_from_server_url(server_url).expect("derive callback ID");
+
+        let redirect_uri = resolve_mcp_oauth_callback_url(
+            server_url,
+            /*callback_port*/ None,
+            Some("https://callbacks.example.com/oauth/callback"),
+        )
+        .expect("resolve redirect URI");
+
+        assert_eq!(
+            redirect_uri,
+            format!("https://callbacks.example.com/oauth/callback/{callback_id}")
+        );
+    }
+
+    #[test]
+    fn precomputed_local_callback_url_includes_callback_id() {
+        let server_url = "https://mcp.example.com/mcp";
+        let callback_id = callback_id_from_server_url(server_url).expect("derive callback ID");
+
+        let redirect_uri =
+            resolve_mcp_oauth_callback_url(server_url, Some(4321), /*callback_url*/ None)
+                .expect("resolve redirect URI");
+
+        assert_eq!(
+            redirect_uri,
+            format!("http://127.0.0.1:4321/callback/{callback_id}")
+        );
+    }
+
+    #[test]
+    fn precomputed_local_callback_url_rejects_ephemeral_port() {
+        let err = resolve_mcp_oauth_callback_url(
+            "https://mcp.example.com/mcp",
+            /*callback_port*/ None,
+            /*callback_url*/ None,
+        )
+        .expect_err("ephemeral callback port should not resolve");
+
+        assert!(
+            err.to_string()
+                .contains("set `mcp_oauth_callback_port` or `mcp_oauth_callback_url`")
+        );
+    }
+
+    #[test]
+    fn precomputed_callback_url_rejects_invalid_callback_port() {
+        let err = resolve_mcp_oauth_callback_url(
+            "https://mcp.example.com/mcp",
+            Some(0),
+            Some("https://callbacks.example.com/oauth/callback"),
+        )
+        .expect_err("invalid callback port should not resolve");
+
+        assert!(err.to_string().contains("port must be between 1 and 65535"));
+    }
+
+    #[test]
     fn callback_id_is_bound_to_server_url() {
         let callback_id = callback_id_from_server_url("https://mcp.example.com/mcp?tenant=one")
             .expect("server URL should parse");
@@ -830,24 +926,33 @@ mod tests {
 
     #[test]
     fn callback_id_is_appended_to_redirect_uri_path() {
-        let redirect_uri =
-            append_callback_id_to_redirect_uri("http://127.0.0.1:1234/callback", "abc123")
-                .expect("redirect URI should parse");
-
-        assert_eq!(redirect_uri, "http://127.0.0.1:1234/callback/abc123");
-    }
-
-    #[test]
-    fn callback_id_is_appended_before_redirect_uri_query() {
+        let callback_id =
+            callback_id_from_server_url("https://mcp.example.com/mcp").expect("derive callback ID");
         let redirect_uri = append_callback_id_to_redirect_uri(
-            "https://callbacks.example.com/oauth/callback?provider=github",
-            "abc123",
+            "https://mcp.example.com/mcp",
+            "http://127.0.0.1:1234/callback",
         )
         .expect("redirect URI should parse");
 
         assert_eq!(
             redirect_uri,
-            "https://callbacks.example.com/oauth/callback/abc123?provider=github"
+            format!("http://127.0.0.1:1234/callback/{callback_id}")
+        );
+    }
+
+    #[test]
+    fn callback_id_is_appended_before_redirect_uri_query() {
+        let callback_id =
+            callback_id_from_server_url("https://mcp.example.com/mcp").expect("derive callback ID");
+        let redirect_uri = append_callback_id_to_redirect_uri(
+            "https://mcp.example.com/mcp",
+            "https://callbacks.example.com/oauth/callback?provider=github",
+        )
+        .expect("redirect URI should parse");
+
+        assert_eq!(
+            redirect_uri,
+            format!("https://callbacks.example.com/oauth/callback/{callback_id}?provider=github")
         );
     }
 

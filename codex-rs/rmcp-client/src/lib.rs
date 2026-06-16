@@ -27,6 +27,7 @@ pub use perform_oauth_login::OauthLoginHandle;
 pub use perform_oauth_login::perform_oauth_login;
 pub use perform_oauth_login::perform_oauth_login_return_url;
 pub use perform_oauth_login::perform_oauth_login_silent;
+pub use perform_oauth_login::resolve_mcp_oauth_callback_url;
 pub use rmcp::model::ElicitationAction;
 pub use rmcp_client::Elicitation;
 pub use rmcp_client::ElicitationResponse;

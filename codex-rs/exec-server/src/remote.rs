@@ -14,6 +14,7 @@ use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 
 use crate::ExecServerError;
 use crate::ExecServerRuntimePaths;
+use crate::ExecServerTelemetry;
 use crate::NoiseChannelIdentity;
 use crate::NoiseChannelPublicKey;
 use crate::noise_relay::noise_relay_websocket_config;
@@ -212,6 +213,7 @@ pub struct RemoteEnvironmentConfig {
     pub environment_id: String,
     pub name: String,
     auth_provider: SharedAuthProvider,
+    telemetry: ExecServerTelemetry,
 }
 
 impl std::fmt::Debug for RemoteEnvironmentConfig {
@@ -237,7 +239,13 @@ impl RemoteEnvironmentConfig {
             environment_id,
             name: "codex-exec-server".to_string(),
             auth_provider,
+            telemetry: ExecServerTelemetry::default(),
         })
+    }
+
+    pub fn with_telemetry(mut self, telemetry: ExecServerTelemetry) -> Self {
+        self.telemetry = telemetry;
+        self
     }
 }
 
@@ -259,7 +267,8 @@ pub async fn run_remote_environment(
     ensure_rustls_crypto_provider();
     let client =
         EnvironmentRegistryClient::new(config.base_url.clone(), config.auth_provider.clone())?;
-    let processor = ConnectionProcessor::new(runtime_paths);
+    let processor =
+        ConnectionProcessor::new_with_telemetry(runtime_paths, config.telemetry.clone());
     let identity = NoiseChannelIdentity::generate().map_err(|error| {
         ExecServerError::Protocol(format!("failed to generate Noise relay identity: {error}"))
     })?;

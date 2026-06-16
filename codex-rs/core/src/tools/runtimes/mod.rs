@@ -13,8 +13,6 @@ use crate::tools::sandboxing::ToolError;
 use codex_install_context::InstallContext;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
-use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
-use codex_network_proxy::CREDENTIAL_BROKER_ENV_KEYS;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::MITM_CA_ENV_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
@@ -22,7 +20,6 @@ use codex_network_proxy::PROXY_ENV_KEYS;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
 use codex_network_proxy::SSL_CERT_DIR_ENV_KEY;
-use codex_network_proxy::is_managed_mitm_ca_trust_bundle_path;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_sandboxing::SandboxCommand;
@@ -72,31 +69,7 @@ pub(crate) fn exec_env_for_sandbox_permissions(
 }
 
 pub(crate) fn strip_managed_proxy_env(env: &mut HashMap<String, String>) {
-    let credential_broker_active = env.contains_key(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
-    for key in PROXY_ENV_KEYS {
-        env.remove(*key);
-    }
-    if credential_broker_active {
-        for key in CREDENTIAL_BROKER_ENV_KEYS {
-            env.remove(*key);
-        }
-    }
-    for key in CUSTOM_CA_ENV_KEYS {
-        if env
-            .get(key)
-            .is_some_and(|value| is_managed_mitm_ca_trust_bundle_path(value))
-        {
-            env.remove(key);
-        }
-    }
-    // Only macOS injects a Codex-owned SSH wrapper for the managed SOCKS proxy.
-    #[cfg(target_os = "macos")]
-    if env
-        .get(PROXY_GIT_SSH_COMMAND_ENV_KEY)
-        .is_some_and(|command| command.starts_with(CODEX_PROXY_GIT_SSH_COMMAND_MARKER))
-    {
-        env.remove(PROXY_GIT_SSH_COMMAND_ENV_KEY);
-    }
+    codex_network_proxy::strip_managed_proxy_env(env);
 }
 
 /// Prepends `path_entry` to `PATH`, removing duplicate and empty existing

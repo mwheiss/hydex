@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::unwrap_used)]
 
 use anyhow::Result;
 use base64::Engine;
@@ -572,8 +572,8 @@ if (!tool) {
                 .features
                 .enable(Feature::CodeModeOnly)
                 .expect("test config should allow feature update");
-            let mut model_catalog = bundled_models_response()
-                .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+            let mut model_catalog =
+                bundled_models_response().expect("bundled models.json should parse");
             let model = model_catalog
                 .models
                 .iter_mut()
@@ -1035,7 +1035,7 @@ text(result.output);
             /*index*/ 1
         ),
         format!(
-            "Total output lines: 1\n\n{}…2500 tokens truncated…{}",
+            "Warning: truncated output (original token count: 22500)\nTotal output lines: 1\n\n{}…2500 tokens truncated…{}",
             "A".repeat(40_000),
             "A".repeat(40_000)
         )
@@ -1176,7 +1176,7 @@ text(result.output);
             &custom_tool_output_items(&second_mock.single_request(), "call-1"),
             /*index*/ 1
         ),
-        "Total output lines: 1\n\n0123456789…5 tokens truncated…0123456789"
+        "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789"
     );
 
     Ok(())
@@ -2389,6 +2389,7 @@ text("token one token two token three token four token five token six token seve
     );
     let expected_pattern = r#"(?sx)
 \A
+Warning:\ truncated\ output\ \(original\ token\ count:\ \d+\)\n
 Total\ output\ lines:\ 1\n
 \n
 .*…\d+\ tokens\ truncated….*

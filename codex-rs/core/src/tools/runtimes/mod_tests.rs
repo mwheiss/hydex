@@ -663,6 +663,49 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_snapshot_ssl_cert_dir_without_mit
     );
 }
 
+#[test]
+fn maybe_wrap_shell_lc_with_snapshot_clears_stale_mitm_ssl_cert_dir_for_plain_proxy() {
+    let dir = tempdir().expect("create temp dir");
+    let snapshot_path = dir.path().join("snapshot.sh");
+    std::fs::write(
+        &snapshot_path,
+        format!(
+            "# Snapshot file\nexport {MITM_CA_ENV_ACTIVE_ENV_KEY}=1\nexport {SSL_CERT_DIR_ENV_KEY}='/tmp/stale-mitm-certs'\n"
+        ),
+    )
+    .expect("write snapshot");
+    let session_shell = shell_with_snapshot(
+        ShellType::Bash,
+        "/bin/bash",
+        snapshot_path.abs(),
+        dir.path().abs(),
+    );
+    let command = vec![
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        format!(
+            "if [ \"${{{SSL_CERT_DIR_ENV_KEY}+x}}\" = x ]; then printf 'set'; else printf 'unset'; fi"
+        ),
+    ];
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        &session_shell,
+        &dir.path().abs(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env(PROXY_ACTIVE_ENV_KEY, "1")
+        .env_remove(MITM_CA_ENV_ACTIVE_ENV_KEY)
+        .env_remove(SSL_CERT_DIR_ENV_KEY)
+        .output()
+        .expect("run rewritten command");
+
+    assert!(output.status.success(), "command failed: {output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unset");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_refreshes_codex_proxy_git_ssh_command() {

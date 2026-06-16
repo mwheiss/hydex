@@ -2,6 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
+use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -9,6 +11,9 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_features::Feature;
+use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
+use codex_network_proxy::PROXY_ENV_KEYS;
+use codex_network_proxy::SSL_CERT_DIR_ENV_KEY;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -17,6 +22,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use core_test_support::assert_regex_match;
+use core_test_support::managed_network_requirements_loader;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_custom_tool_call;
@@ -33,6 +39,9 @@ use core_test_support::test_codex::test_codex;
 use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
+use tempfile::TempDir;
+
+const CUSTOM_CA_TEST_SUBPROCESS_ENV_VAR: &str = "CODEX_CUSTOM_CA_TEST_SUBPROCESS";
 
 fn tool_names(body: &Value) -> Vec<String> {
     body.get("tools")
@@ -461,6 +470,154 @@ async fn shell_command_enforces_glob_deny_read_policy() -> Result<()> {
     assert!(
         has_denial,
         "expected sandbox denial details in shell output: {output_text}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_command_combines_custom_ca_without_exposing_proxy_siblings() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    if std::env::var_os(CUSTOM_CA_TEST_SUBPROCESS_ENV_VAR).is_none() {
+        let codex_home = TempDir::new()?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("--exact")
+            .arg("suite::tools::shell_command_combines_custom_ca_without_exposing_proxy_siblings")
+            .env(CUSTOM_CA_TEST_SUBPROCESS_ENV_VAR, "1")
+            .env("CODEX_HOME", codex_home.path());
+        for &key in PROXY_ENV_KEYS {
+            command.env_remove(key);
+        }
+        for key in CUSTOM_CA_ENV_KEYS {
+            command.env_remove(key);
+        }
+        command.env_remove(SSL_CERT_DIR_ENV_KEY);
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "custom CA subprocess test failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return Ok(());
+    }
+
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    fs::write(
+        home.path().join("config.toml"),
+        r#"default_permissions = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.network]
+enabled = true
+mode = "limited"
+allow_local_binding = true
+"#,
+    )?;
+    let custom_ca_path = home.path().join("custom-ca.pem");
+    let custom_ca_sentinel = "custom-ca-agent-path-sentinel";
+    fs::write(&custom_ca_path, custom_ca_sentinel)?;
+    let permission_profile = PermissionProfile::read_only();
+    let permission_profile_for_config = permission_profile.clone();
+    let custom_ca_env = custom_ca_path.to_string_lossy().into_owned();
+    let mut builder = test_codex()
+        .with_model("gpt-5.4")
+        .with_home(Arc::clone(&home))
+        .with_cloud_config_bundle(managed_network_requirements_loader())
+        .with_config(move |config| {
+            config
+                .permissions
+                .shell_environment_policy
+                .r#set
+                .insert("REQUESTS_CA_BUNDLE".to_string(), custom_ca_env.clone());
+            config
+                .permissions
+                .set_permission_profile(permission_profile_for_config)
+                .expect("set permission profile");
+        });
+    let test = builder.build(&server).await?;
+    assert!(
+        test.session_configured.network_proxy.is_some(),
+        "expected managed network proxy to be active"
+    );
+
+    let call_id = "shell-command-custom-ca";
+    let command = format!(
+        r#"set -eu
+if test "$REQUESTS_CA_BUNDLE" = {custom_ca_path:?}; then
+  printf 'custom CA path was not materialized\n'
+  exit 1
+fi
+if ! grep -F {custom_ca_sentinel:?} "$REQUESTS_CA_BUNDLE" >/dev/null; then
+  printf 'materialized bundle omitted the custom CA\n'
+  exit 1
+fi
+if ! grep -F -- '-----BEGIN CERTIFICATE-----' "$REQUESTS_CA_BUNDLE" >/dev/null; then
+  printf 'materialized bundle omitted the managed CA\n'
+  exit 1
+fi
+proxy_dir=${{REQUESTS_CA_BUNDLE%/*}}
+if test -r "$proxy_dir"; then
+  printf 'managed proxy directory remained readable\n'
+  exit 1
+fi
+if test -r "$proxy_dir/ca.pem"; then
+  printf 'managed CA certificate remained readable\n'
+  exit 1
+fi
+if test -r "$proxy_dir/ca.key"; then
+  printf 'managed CA private key remained readable\n'
+  exit 1
+fi
+printf 'custom-ca-combined-and-proxy-siblings-hidden\n'
+"#,
+        custom_ca_path = custom_ca_path.to_string_lossy(),
+        custom_ca_sentinel = custom_ca_sentinel,
+    );
+    let args = json!({
+        "command": command,
+        "login": false,
+        "timeout_ms": 5_000,
+    });
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        "verify the managed network custom CA environment",
+        AskForApproval::Never,
+        permission_profile,
+    )
+    .await?;
+
+    let output_text = mock
+        .function_call_output_text(call_id)
+        .context("shell output present")?;
+    assert!(
+        output_text.contains("Exit code: 0"),
+        "custom CA command failed: {output_text}"
+    );
+    assert!(
+        output_text.contains("custom-ca-combined-and-proxy-siblings-hidden"),
+        "custom CA command did not verify the expected isolation: {output_text}"
     );
 
     Ok(())

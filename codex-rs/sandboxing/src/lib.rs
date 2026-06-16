@@ -18,6 +18,8 @@ pub use manager::SandboxTransformRequest;
 pub use manager::SandboxType;
 pub use manager::SandboxablePreference;
 pub use manager::compatibility_sandbox_policy_for_permission_profile;
+#[cfg(target_os = "linux")]
+pub use manager::ensure_legacy_landlock_supports_managed_mitm;
 pub use manager::get_platform_sandbox;
 pub use manager::prepare_managed_network_child;
 
@@ -39,6 +41,25 @@ impl From<SandboxTransformError> for CodexErr {
             }
             SandboxTransformError::MissingLinuxSandboxExecutable => {
                 CodexErr::LandlockSandboxExecutableNotProvided
+            }
+            SandboxTransformError::ManagedMitmCaPathUnderWritableRoot => {
+                CodexErr::UnsupportedOperation(
+                    "managed MITM CA isolation requires its proxy directory to be outside sandbox-writable roots"
+                        .to_string(),
+                )
+            }
+            SandboxTransformError::ManagedMitmCustomCaUnsupportedOnWindows => {
+                CodexErr::UnsupportedOperation(
+                    "CA directories and command-specific CA overrides with managed MITM are not supported in the Windows sandbox because its read grants persist across commands"
+                        .to_string(),
+                )
+            }
+            #[cfg(target_os = "linux")]
+            SandboxTransformError::LegacyLandlockUnsupportedWithManagedMitm => {
+                CodexErr::UnsupportedOperation(
+                    "managed MITM CA isolation requires bubblewrap and is incompatible with legacy Landlock"
+                        .to_string(),
+                )
             }
             #[cfg(target_os = "linux")]
             SandboxTransformError::Wsl1UnsupportedForBubblewrap => {

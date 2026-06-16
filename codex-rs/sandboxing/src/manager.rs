@@ -8,9 +8,14 @@ use crate::landlock::create_linux_sandbox_command_args_for_permission_profile;
 use crate::policy_transforms::effective_permission_profile;
 use crate::policy_transforms::should_require_platform_sandbox;
 use codex_network_proxy::NetworkProxy;
+use codex_network_proxy::NetworkProxyChildEnvSnapshot;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::permissions::ReadDenyMatcher;
@@ -64,14 +69,115 @@ pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType
     }
 }
 
+fn with_managed_mitm_ca_proxy_dirs_denied(
+    permission_profile: PermissionProfile,
+    managed_mitm_ca_trust_bundle_paths: &[AbsolutePathBuf],
+    sandbox_policy_cwd: &Path,
+) -> Result<PermissionProfile, SandboxTransformError> {
+    if managed_mitm_ca_trust_bundle_paths.is_empty() {
+        return Ok(permission_profile);
+    }
+    let (mut file_system_sandbox_policy, network_sandbox_policy) =
+        permission_profile.to_runtime_permissions();
+
+    // Seatbelt and bubblewrap can apply the parent deny plus file carveback per
+    // invocation. Windows read grants persist; other profile kinds stay unchanged.
+    if !cfg!(any(target_os = "linux", target_os = "macos"))
+        || file_system_sandbox_policy.kind != FileSystemSandboxKind::Restricted
+    {
+        return Ok(permission_profile);
+    }
+
+    // Hide the entire proxy directory before custom CA materialization. This
+    // prevents a later command from asking the unsandboxed host to copy an
+    // earlier command's generated bundle (or the MITM private key) into its
+    // own active bundle.
+    let mut managed_mitm_ca_dirs = managed_mitm_ca_trust_bundle_paths
+        .iter()
+        .filter_map(|path| path.as_path().parent())
+        .filter_map(|path| AbsolutePathBuf::from_absolute_path(path).ok())
+        .collect::<Vec<_>>();
+    managed_mitm_ca_dirs.sort();
+    managed_mitm_ca_dirs.dedup();
+    if managed_mitm_ca_dirs.iter().any(|path| {
+        managed_mitm_ca_dir_overlaps_writable_path(
+            &file_system_sandbox_policy,
+            path.as_path(),
+            sandbox_policy_cwd,
+        )
+    }) {
+        return Err(SandboxTransformError::ManagedMitmCaPathUnderWritableRoot);
+    }
+    for path in managed_mitm_ca_dirs {
+        let entry = FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path },
+            access: FileSystemAccessMode::Deny,
+        };
+        if !file_system_sandbox_policy.entries.contains(&entry) {
+            file_system_sandbox_policy.entries.push(entry);
+        }
+    }
+    Ok(
+        PermissionProfile::from_runtime_permissions_with_enforcement(
+            permission_profile.enforcement(),
+            &file_system_sandbox_policy,
+            network_sandbox_policy,
+        ),
+    )
+}
+
+fn managed_mitm_ca_dir_overlaps_writable_path(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    managed_mitm_ca_dir: &Path,
+    sandbox_policy_cwd: &Path,
+) -> bool {
+    if file_system_sandbox_policy.has_full_disk_write_access() {
+        return true;
+    }
+    let managed_mitm_ca_dir_canonical = managed_mitm_ca_dir.canonicalize().ok();
+    let has_explicit_writable_overlap = file_system_sandbox_policy
+        .get_writable_roots_with_cwd(sandbox_policy_cwd)
+        .into_iter()
+        .any(|root| {
+            let root = root.root;
+            managed_mitm_ca_dir.starts_with(root.as_path())
+                || root.as_path().starts_with(managed_mitm_ca_dir)
+                || managed_mitm_ca_dir_canonical
+                    .as_ref()
+                    .is_some_and(|managed_dir| {
+                        root.as_path().canonicalize().is_ok_and(|root| {
+                            managed_dir.starts_with(&root) || root.starts_with(managed_dir)
+                        })
+                    })
+        });
+    if has_explicit_writable_overlap {
+        return true;
+    }
+
+    #[cfg(target_os = "macos")]
+    if file_system_sandbox_policy.include_platform_defaults() {
+        return ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"]
+            .into_iter()
+            .map(Path::new)
+            .any(|root| {
+                managed_mitm_ca_dir.starts_with(root)
+                    || managed_mitm_ca_dir_canonical
+                        .as_ref()
+                        .is_some_and(|managed_dir| {
+                            root.canonicalize()
+                                .is_ok_and(|root| managed_dir.starts_with(root))
+                        })
+            });
+    }
+
+    false
+}
+
 fn with_managed_mitm_ca_readable_roots(
     permission_profile: PermissionProfile,
     managed_mitm_ca_trust_bundle_paths: &[AbsolutePathBuf],
     sandbox_policy_cwd: &Path,
 ) -> PermissionProfile {
-    if managed_mitm_ca_trust_bundle_paths.is_empty() {
-        return permission_profile;
-    }
     let (file_system_sandbox_policy, network_sandbox_policy) =
         permission_profile.to_runtime_permissions();
     let file_system_sandbox_policy = file_system_sandbox_policy
@@ -84,40 +190,76 @@ fn with_managed_mitm_ca_readable_roots(
 }
 
 pub fn prepare_managed_network_child(
-    network: Option<&NetworkProxy>,
+    network: Option<&NetworkProxyChildEnvSnapshot>,
     env: &mut HashMap<String, String>,
     command_cwd: &Path,
     permission_profile: PermissionProfile,
     sandbox_policy_cwd: &Path,
-) -> PermissionProfile {
-    let managed_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
+    persistent_windows_sandbox: bool,
+) -> Result<PermissionProfile, SandboxTransformError> {
+    let managed_mitm_ca_trust_bundle_paths = network
+        .and_then(NetworkProxyChildEnvSnapshot::managed_mitm_ca_trust_bundle_path)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let permission_profile = with_managed_mitm_ca_proxy_dirs_denied(
+        permission_profile,
+        &managed_mitm_ca_trust_bundle_paths,
+        sandbox_policy_cwd,
+    )?;
+    if persistent_windows_sandbox
+        && network.is_some_and(|network| network.requires_child_specific_mitm_ca_bundle(env))
+    {
+        return Err(SandboxTransformError::ManagedMitmCustomCaUnsupportedOnWindows);
+    }
+    let active_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
+        if persistent_windows_sandbox {
+            return network.prepare_persistent_sandbox_child_env(env);
+        }
         let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
-        let read_deny_matcher =
-            ReadDenyMatcher::new(&file_system_sandbox_policy, sandbox_policy_cwd);
+        let read_deny_glob_matcher =
+            read_deny_glob_matcher(&file_system_sandbox_policy, sandbox_policy_cwd);
         network.prepare_child_env(env, command_cwd, |path| {
             can_read_path_with_policy(
                 &file_system_sandbox_policy,
-                read_deny_matcher.as_ref(),
+                read_deny_glob_matcher.as_ref(),
                 path,
                 sandbox_policy_cwd,
             )
         })
     });
-    with_managed_mitm_ca_readable_roots(
+    Ok(with_managed_mitm_ca_readable_roots(
         permission_profile,
-        &managed_mitm_ca_trust_bundle_paths,
+        &active_mitm_ca_trust_bundle_paths,
         sandbox_policy_cwd,
-    )
+    ))
+}
+
+fn read_deny_glob_matcher(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    cwd: &Path,
+) -> Option<ReadDenyMatcher> {
+    // Exact deny roots participate in normal path-specificity resolution, so
+    // a narrower explicit read entry can validly reopen one CA file below a
+    // denied parent. Globs are enforced separately and must still fail closed.
+    let mut deny_glob_policy = file_system_sandbox_policy.clone();
+    deny_glob_policy.entries.retain(|entry| {
+        entry.access == FileSystemAccessMode::Deny
+            && matches!(entry.path, FileSystemPath::GlobPattern { .. })
+    });
+    ReadDenyMatcher::new(&deny_glob_policy, cwd)
 }
 
 fn can_read_path_with_policy(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    read_deny_matcher: Option<&ReadDenyMatcher>,
+    read_deny_glob_matcher: Option<&ReadDenyMatcher>,
     path: &Path,
     cwd: &Path,
 ) -> bool {
     file_system_sandbox_policy.can_read_path_with_cwd(path, cwd)
-        && !read_deny_matcher.is_some_and(|matcher| matcher.is_read_denied(path))
+        && path.canonicalize().is_ok_and(|canonical_path| {
+            file_system_sandbox_policy.can_read_path_with_cwd(&canonical_path, cwd)
+        })
+        && !read_deny_glob_matcher.is_some_and(|matcher| matcher.is_read_denied(path))
 }
 
 #[derive(Debug)]
@@ -178,6 +320,10 @@ pub enum SandboxTransformError {
         source: io::Error,
     },
     MissingLinuxSandboxExecutable,
+    ManagedMitmCaPathUnderWritableRoot,
+    ManagedMitmCustomCaUnsupportedOnWindows,
+    #[cfg(target_os = "linux")]
+    LegacyLandlockUnsupportedWithManagedMitm,
     #[cfg(target_os = "linux")]
     Wsl1UnsupportedForBubblewrap,
     #[cfg(not(target_os = "macos"))]
@@ -200,6 +346,19 @@ impl std::fmt::Display for SandboxTransformError {
             Self::MissingLinuxSandboxExecutable => {
                 write!(f, "missing codex-linux-sandbox executable path")
             }
+            Self::ManagedMitmCaPathUnderWritableRoot => write!(
+                f,
+                "managed MITM CA isolation requires its proxy directory to be outside sandbox-writable roots"
+            ),
+            Self::ManagedMitmCustomCaUnsupportedOnWindows => write!(
+                f,
+                "CA directories and command-specific CA overrides with managed MITM are not supported in the Windows sandbox because its read grants persist across commands"
+            ),
+            #[cfg(target_os = "linux")]
+            Self::LegacyLandlockUnsupportedWithManagedMitm => write!(
+                f,
+                "managed MITM CA isolation requires bubblewrap and is incompatible with legacy Landlock"
+            ),
             #[cfg(target_os = "linux")]
             Self::Wsl1UnsupportedForBubblewrap => write!(f, "{WSL1_BWRAP_WARNING}"),
             #[cfg(not(target_os = "macos"))]
@@ -213,9 +372,13 @@ impl std::error::Error for SandboxTransformError {
         match self {
             Self::InvalidCommandCwd { source, .. }
             | Self::InvalidSandboxPolicyCwd { source, .. } => Some(source),
-            Self::MissingLinuxSandboxExecutable => None,
+            Self::MissingLinuxSandboxExecutable
+            | Self::ManagedMitmCaPathUnderWritableRoot
+            | Self::ManagedMitmCustomCaUnsupportedOnWindows => None,
             #[cfg(target_os = "linux")]
-            Self::Wsl1UnsupportedForBubblewrap => None,
+            Self::LegacyLandlockUnsupportedWithManagedMitm | Self::Wsl1UnsupportedForBubblewrap => {
+                None
+            }
             #[cfg(not(target_os = "macos"))]
             Self::SeatbeltUnavailable => None,
         }
@@ -290,13 +453,29 @@ impl SandboxManager {
         let additional_permissions = command.additional_permissions.take();
         let effective_permission_profile =
             effective_permission_profile(permissions, additional_permissions.as_ref());
+        let network_child_env = network.map(NetworkProxy::child_env_snapshot);
+        #[cfg(target_os = "linux")]
+        if sandbox == SandboxType::LinuxSeccomp {
+            let file_system_sandbox_policy =
+                effective_permission_profile.file_system_sandbox_policy();
+            ensure_linux_bubblewrap_is_supported(
+                &file_system_sandbox_policy,
+                use_legacy_landlock,
+                allow_network_for_proxy(enforce_managed_network),
+                network_child_env
+                    .as_ref()
+                    .is_some_and(NetworkProxyChildEnvSnapshot::has_managed_mitm_ca),
+                is_wsl1(),
+            )?;
+        }
         let effective_permission_profile = prepare_managed_network_child(
-            network,
+            network_child_env.as_ref(),
             &mut command.env,
             native_command_cwd.as_path(),
             effective_permission_profile,
             native_sandbox_policy_cwd.as_path(),
-        );
+            cfg!(target_os = "windows") && sandbox == SandboxType::WindowsRestrictedToken,
+        )?;
         let (effective_file_system_policy, effective_network_policy) =
             effective_permission_profile.to_runtime_permissions();
         let mut argv = Vec::with_capacity(1 + command.args.len());
@@ -331,13 +510,6 @@ impl SandboxManager {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
-                #[cfg(target_os = "linux")]
-                ensure_linux_bubblewrap_is_supported(
-                    &effective_file_system_policy,
-                    use_legacy_landlock,
-                    allow_proxy_network,
-                    is_wsl1(),
-                )?;
                 let mut args = create_linux_sandbox_command_args_for_permission_profile(
                     os_argv_to_strings(argv),
                     native_command_cwd.as_path(),
@@ -422,12 +594,34 @@ fn ensure_linux_bubblewrap_is_supported(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     use_legacy_landlock: bool,
     allow_network_for_proxy: bool,
+    managed_mitm_ca_active: bool,
     is_wsl1: bool,
 ) -> Result<(), SandboxTransformError> {
-    let requires_bubblewrap = allow_network_for_proxy
-        || (!use_legacy_landlock && !file_system_sandbox_policy.has_full_disk_write_access());
+    ensure_legacy_landlock_supports_managed_mitm(
+        file_system_sandbox_policy,
+        use_legacy_landlock,
+        managed_mitm_ca_active,
+    )?;
+    let requires_bubblewrap = !use_legacy_landlock
+        && (!file_system_sandbox_policy.has_full_disk_write_access() || allow_network_for_proxy);
     if is_wsl1 && requires_bubblewrap {
         return Err(SandboxTransformError::Wsl1UnsupportedForBubblewrap);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn ensure_legacy_landlock_supports_managed_mitm(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    use_legacy_landlock: bool,
+    managed_mitm_ca_active: bool,
+) -> Result<(), SandboxTransformError> {
+    if use_legacy_landlock
+        && managed_mitm_ca_active
+        && file_system_sandbox_policy.kind == FileSystemSandboxKind::Restricted
+    {
+        return Err(SandboxTransformError::LegacyLandlockUnsupportedWithManagedMitm);
     }
 
     Ok(())

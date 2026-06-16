@@ -325,6 +325,127 @@ impl NetworkProxyRuntimeSettings {
     }
 }
 
+/// Immutable proxy settings used to prepare one child process environment.
+///
+/// Keeping the managed CA path and environment rewrite on the same snapshot
+/// prevents a live proxy configuration reload from changing the MITM state in
+/// the middle of sandbox policy construction.
+#[derive(Clone)]
+pub struct NetworkProxyChildEnvSnapshot {
+    state: Arc<NetworkProxyState>,
+    http_addr: SocketAddr,
+    socks_addr: SocketAddr,
+    socks_enabled: bool,
+    runtime_settings: NetworkProxyRuntimeSettings,
+}
+
+impl NetworkProxyChildEnvSnapshot {
+    pub fn has_managed_mitm_ca(&self) -> bool {
+        self.runtime_settings.mitm_ca_trust_bundle.is_some()
+    }
+
+    /// Returns the generated MITM CA bundle path this snapshot will expose.
+    pub fn managed_mitm_ca_trust_bundle_path(&self) -> Option<AbsolutePathBuf> {
+        self.runtime_settings
+            .mitm_ca_trust_bundle
+            .as_ref()
+            .and_then(|bundle| {
+                AbsolutePathBuf::from_absolute_path(&bundle.path)
+                    .map_err(|err| warn!("managed MITM CA trust bundle path is invalid: {err}"))
+                    .ok()
+            })
+    }
+
+    pub fn apply_to_env(&self, env: &mut HashMap<String, String>) {
+        apply_proxy_env_overrides(
+            env,
+            self.http_addr,
+            self.socks_addr,
+            self.socks_enabled,
+            self.runtime_settings.allow_local_binding,
+            self.runtime_settings.mitm_ca_trust_bundle.as_ref(),
+        );
+    }
+
+    /// Prepares a child environment without creating a command-specific CA bundle.
+    ///
+    /// Persistent sandbox identities cannot safely receive a read grant for a
+    /// derived bundle because later commands would retain that grant. Preserve
+    /// the pre-materialization behavior there and expose only the stable
+    /// managed baseline path.
+    pub fn prepare_persistent_sandbox_child_env(
+        &self,
+        env: &mut HashMap<String, String>,
+    ) -> Vec<AbsolutePathBuf> {
+        self.apply_to_env(env);
+        self.state.virtualize_child_credentials(env);
+        env.remove(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY);
+        self.managed_mitm_ca_trust_bundle_path()
+            .into_iter()
+            .collect()
+    }
+
+    /// Returns whether this child would need a command-specific managed CA bundle.
+    ///
+    /// Persistent sandbox identities must reject this shape rather than grant
+    /// access to a derived bundle that later commands could continue reading.
+    pub fn requires_child_specific_mitm_ca_bundle(&self, env: &HashMap<String, String>) -> bool {
+        let Some(mitm_ca_trust_bundle) = self.runtime_settings.mitm_ca_trust_bundle.as_ref() else {
+            return false;
+        };
+        if env
+            .get(crate::certs::SSL_CERT_DIR_ENV_KEY)
+            .is_some_and(|value| !value.is_empty())
+        {
+            // The stable Windows baseline only embeds file-backed startup CA
+            // overrides. Directory contents can change after proxy startup,
+            // so they still require per-child materialization and cannot be
+            // exposed through a persistent sandbox identity.
+            return true;
+        }
+
+        let managed_path = mitm_ca_trust_bundle.path.to_string_lossy();
+        crate::certs::CUSTOM_CA_ENV_KEYS.into_iter().any(|key| {
+            env.get(key)
+                .filter(|value| !value.is_empty())
+                .is_some_and(|value| {
+                    value != managed_path.as_ref()
+                        && mitm_ca_trust_bundle.startup_env_values.get(key) != Some(value)
+                })
+        })
+    }
+
+    /// Rewrites readable child-selected CA bundles into immutable managed MITM bundles.
+    pub fn prepare_child_env<F>(
+        &self,
+        env: &mut HashMap<String, String>,
+        cwd: &Path,
+        can_read_path: F,
+    ) -> Vec<AbsolutePathBuf>
+    where
+        F: Fn(&Path) -> bool,
+    {
+        self.apply_to_env(env);
+        self.state.virtualize_child_credentials(env);
+        let startup_ca_env_keys_present_in_child = ca_env_keys()
+            .filter(|&key| is_tracked_startup_ca_env_key(env, key))
+            .collect::<Vec<_>>();
+        env.remove(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY);
+        self.runtime_settings
+            .mitm_ca_trust_bundle
+            .as_ref()
+            .map_or_else(Vec::new, |mitm_ca_trust_bundle| {
+                crate::child_ca::prepare_mitm_ca_trust_bundle_env(
+                    mitm_ca_trust_bundle,
+                    env,
+                    cwd,
+                    &startup_ca_env_keys_present_in_child,
+                    can_read_path,
+                )
+            })
+    }
+}
+
 #[derive(Clone)]
 pub struct NetworkProxy {
     state: Arc<NetworkProxyState>,
@@ -663,67 +784,25 @@ impl NetworkProxy {
         self.runtime_settings().dangerously_allow_all_unix_sockets
     }
 
+    /// Captures the proxy settings used to prepare a single child process.
+    pub fn child_env_snapshot(&self) -> NetworkProxyChildEnvSnapshot {
+        NetworkProxyChildEnvSnapshot {
+            state: Arc::clone(&self.state),
+            http_addr: self.http_addr,
+            socks_addr: self.socks_addr,
+            socks_enabled: self.socks_enabled,
+            runtime_settings: self.runtime_settings(),
+        }
+    }
+
     /// Returns the generated MITM CA bundle path child sandboxes should expose to TLS clients.
     pub fn managed_mitm_ca_trust_bundle_path(&self) -> Option<AbsolutePathBuf> {
-        self.runtime_settings()
-            .mitm_ca_trust_bundle
-            .and_then(|bundle| {
-                AbsolutePathBuf::from_absolute_path(bundle.path)
-                    .map_err(|err| warn!("managed MITM CA trust bundle path is invalid: {err}"))
-                    .ok()
-            })
+        self.child_env_snapshot()
+            .managed_mitm_ca_trust_bundle_path()
     }
 
     pub fn apply_to_env(&self, env: &mut HashMap<String, String>) {
-        let runtime_settings = self.runtime_settings();
-        // Enforce proxying for child processes. Proxy endpoint values are always rewritten;
-        // managed MITM CA vars preserve command-scoped overrides after proxy startup.
-        apply_proxy_env_overrides(
-            env,
-            self.http_addr,
-            self.socks_addr,
-            self.socks_enabled,
-            runtime_settings.allow_local_binding,
-            runtime_settings.mitm_ca_trust_bundle.as_ref(),
-        );
-    }
-
-    /// Rewrites readable child-selected CA bundles into immutable managed MITM bundles.
-    pub fn prepare_child_env<F>(
-        &self,
-        env: &mut HashMap<String, String>,
-        cwd: &Path,
-        can_read_path: F,
-    ) -> Vec<AbsolutePathBuf>
-    where
-        F: Fn(&Path) -> bool,
-    {
-        let runtime_settings = self.runtime_settings();
-        apply_proxy_env_overrides(
-            env,
-            self.http_addr,
-            self.socks_addr,
-            self.socks_enabled,
-            runtime_settings.allow_local_binding,
-            runtime_settings.mitm_ca_trust_bundle.as_ref(),
-        );
-        self.state.virtualize_child_credentials(env);
-        let startup_ca_env_keys_present_in_child = ca_env_keys()
-            .filter(|&key| is_tracked_startup_ca_env_key(env, key))
-            .collect::<Vec<_>>();
-        env.remove(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY);
-        runtime_settings.mitm_ca_trust_bundle.as_ref().map_or_else(
-            Vec::new,
-            |mitm_ca_trust_bundle| {
-                crate::child_ca::prepare_mitm_ca_trust_bundle_env(
-                    mitm_ca_trust_bundle,
-                    env,
-                    cwd,
-                    &startup_ca_env_keys_present_in_child,
-                    can_read_path,
-                )
-            },
-        )
+        self.child_env_snapshot().apply_to_env(env);
     }
 
     pub async fn replace_config_state(&self, new_state: ConfigState) -> Result<()> {
@@ -747,6 +826,10 @@ impl NetworkProxy {
         anyhow::ensure!(
             new_state.config.network.enable_socks5_udp == current_cfg.network.enable_socks5_udp,
             "cannot update network.enable_socks5_udp on a running proxy"
+        );
+        anyhow::ensure!(
+            new_state.config.network.mitm == current_cfg.network.mitm,
+            "cannot update network.mitm on a running proxy"
         );
 
         let settings = NetworkProxyRuntimeSettings::from_config(&new_state.config)?;
@@ -905,11 +988,14 @@ impl Drop for NetworkProxyHandle {
 mod tests {
     use super::*;
     use crate::config::NetworkProxySettings;
+    use crate::state::NetworkProxyConstraints;
+    use crate::state::build_config_state;
     use crate::state::network_proxy_state_for_policy;
     use pretty_assertions::assert_eq;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::path::Path;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn managed_proxy_builder_uses_loopback_ports() {
@@ -975,6 +1061,184 @@ mod tests {
             proxy.socks_addr,
             "127.0.0.1:48081".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn child_env_snapshot_pins_mitm_settings_across_reload() {
+        let settings = NetworkProxySettings {
+            proxy_url: "http://127.0.0.1:43128".to_string(),
+            socks_url: "http://127.0.0.1:48081".to_string(),
+            ..NetworkProxySettings::default()
+        };
+        let state = Arc::new(network_proxy_state_for_policy(settings));
+        let proxy = NetworkProxy::builder()
+            .state(state)
+            .managed_by_codex(/*managed_by_codex*/ false)
+            .build()
+            .await
+            .unwrap();
+        let without_mitm = proxy.child_env_snapshot();
+
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let managed_bundle_path = temp_dir.path().join("ca-bundle.pem");
+        let custom_bundle_path = temp_dir.path().join("custom-ca.pem");
+        std::fs::write(&managed_bundle_path, "managed ca\n").expect("write managed bundle");
+        std::fs::write(&custom_bundle_path, "custom ca\n").expect("write custom bundle");
+        let managed_bundle = crate::certs::ManagedMitmCaTrustBundle {
+            path: managed_bundle_path.clone(),
+            startup_env_values: HashMap::new(),
+            startup_cwd: temp_dir.path().to_path_buf(),
+        };
+        {
+            let mut guard = proxy
+                .runtime_settings
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.mitm_ca_trust_bundle = Some(managed_bundle);
+        }
+
+        let mut env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            custom_bundle_path.display().to_string(),
+        )]);
+        assert!(
+            without_mitm
+                .prepare_child_env(&mut env, temp_dir.path(), |_| true)
+                .is_empty()
+        );
+        assert_eq!(
+            env.get("REQUESTS_CA_BUNDLE"),
+            Some(&custom_bundle_path.display().to_string())
+        );
+        assert!(!without_mitm.requires_child_specific_mitm_ca_bundle(&env));
+
+        let with_mitm = proxy.child_env_snapshot();
+        let mut persistent_sandbox_env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            custom_bundle_path.display().to_string(),
+        )]);
+        assert!(with_mitm.requires_child_specific_mitm_ca_bundle(&persistent_sandbox_env));
+        assert_eq!(
+            with_mitm.prepare_persistent_sandbox_child_env(&mut persistent_sandbox_env),
+            vec![AbsolutePathBuf::from_absolute_path(&managed_bundle_path).unwrap()]
+        );
+        assert_eq!(
+            persistent_sandbox_env.get("REQUESTS_CA_BUNDLE"),
+            Some(&custom_bundle_path.display().to_string())
+        );
+        assert_eq!(
+            persistent_sandbox_env.get(STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY),
+            None
+        );
+        let managed_path = managed_bundle_path.display().to_string();
+        let baseline_env =
+            HashMap::from([("REQUESTS_CA_BUNDLE".to_string(), managed_path.clone())]);
+        assert!(!with_mitm.requires_child_specific_mitm_ca_bundle(&baseline_env));
+        let startup_env = HashMap::from([
+            ("REQUESTS_CA_BUNDLE".to_string(), managed_path),
+            (
+                STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY.to_string(),
+                "REQUESTS_CA_BUNDLE".to_string(),
+            ),
+        ]);
+        assert!(!with_mitm.requires_child_specific_mitm_ca_bundle(&startup_env));
+        let startup_ssl_cert_dir_env = HashMap::from([
+            (
+                crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+                temp_dir.path().display().to_string(),
+            ),
+            (
+                STARTUP_CA_ENV_KEYS_PRESENT_ENV_KEY.to_string(),
+                crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+            ),
+        ]);
+        assert!(with_mitm.requires_child_specific_mitm_ca_bundle(&startup_ssl_cert_dir_env));
+        let ssl_cert_dir_env = HashMap::from([(
+            crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+            temp_dir.path().display().to_string(),
+        )]);
+        assert!(with_mitm.requires_child_specific_mitm_ca_bundle(&ssl_cert_dir_env));
+        {
+            let mut guard = proxy
+                .runtime_settings
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.mitm_ca_trust_bundle = None;
+        }
+        let bundle_paths = with_mitm.prepare_child_env(&mut env, temp_dir.path(), |_| true);
+        let prepared_bundle_path = Path::new(
+            env.get("REQUESTS_CA_BUNDLE")
+                .expect("custom CA env should be rewritten"),
+        );
+        assert!(
+            bundle_paths
+                .iter()
+                .any(|path| path.as_path() == prepared_bundle_path)
+        );
+        assert_ne!(prepared_bundle_path, custom_bundle_path);
+        let prepared_bundle =
+            std::fs::read_to_string(prepared_bundle_path).expect("read prepared bundle");
+        assert!(prepared_bundle.contains("custom ca"));
+        assert!(prepared_bundle.contains("managed ca"));
+        assert!(!proxy.child_env_snapshot().has_managed_mitm_ca());
+    }
+
+    #[tokio::test]
+    async fn child_env_snapshot_virtualizes_credentials() {
+        let settings = NetworkProxySettings {
+            credential_broker: true,
+            proxy_url: "http://127.0.0.1:43128".to_string(),
+            socks_url: "http://127.0.0.1:48081".to_string(),
+            ..NetworkProxySettings::default()
+        };
+        let state = Arc::new(network_proxy_state_for_policy(settings));
+        let proxy = NetworkProxy::builder()
+            .state(state)
+            .managed_by_codex(/*managed_by_codex*/ false)
+            .build()
+            .await
+            .unwrap();
+        let snapshot = proxy.child_env_snapshot();
+        let mut env = HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())]);
+
+        assert!(
+            snapshot
+                .prepare_child_env(&mut env, Path::new("/"), |_| true)
+                .is_empty()
+        );
+        assert_eq!(
+            env.get("OPENAI_API_KEY"),
+            Some(&"sk-codex-dummy-0000".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn running_proxy_rejects_mitm_mode_changes() {
+        let settings = NetworkProxySettings {
+            proxy_url: "http://127.0.0.1:43128".to_string(),
+            socks_url: "http://127.0.0.1:48081".to_string(),
+            ..NetworkProxySettings::default()
+        };
+        let state = Arc::new(network_proxy_state_for_policy(settings));
+        let proxy = NetworkProxy::builder()
+            .state(Arc::clone(&state))
+            .managed_by_codex(/*managed_by_codex*/ false)
+            .build()
+            .await
+            .unwrap();
+        let mut config = state.current_cfg().await.unwrap();
+        config.network.mitm = true;
+        let new_state = build_config_state(config, NetworkProxyConstraints::default()).unwrap();
+
+        let err = proxy
+            .replace_config_state(new_state)
+            .await
+            .expect_err("running proxy should keep MITM mode session-static");
+        assert_eq!(
+            err.to_string(),
+            "cannot update network.mitm on a running proxy"
+        );
+        assert!(!proxy.child_env_snapshot().has_managed_mitm_ca());
     }
 
     #[tokio::test]

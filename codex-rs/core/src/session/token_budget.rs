@@ -14,9 +14,10 @@ pub(super) async fn maybe_record_session_token_budget_reminder(
     let Some(reminder) = budget.pending_reminder(sess.thread_id(), window_id) else {
         return;
     };
-    let response_item = ContextualUserFragment::into(
-        crate::context::SessionTokenBudgetContext::reminder(reminder.remaining_tokens),
-    );
+    let response_item =
+        ContextualUserFragment::into(crate::context::SessionTokenBudgetContext::Reminder {
+            remaining_tokens: reminder.remaining_tokens,
+        });
     sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
         .await;
     budget.mark_reminder_delivered(sess.thread_id(), window_id, reminder);

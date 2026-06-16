@@ -2984,7 +2984,7 @@ impl Session {
             .limit_tokens()
         {
             developer_sections.push(
-                crate::context::SessionTokenBudgetContext::declaration(limit_tokens).render(),
+                crate::context::SessionTokenBudgetContext::Declaration { limit_tokens }.render(),
             );
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.

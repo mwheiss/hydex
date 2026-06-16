@@ -87,16 +87,6 @@ pub(crate) enum SessionTokenBudgetContext {
     Reminder { remaining_tokens: i64 },
 }
 
-impl SessionTokenBudgetContext {
-    pub(crate) fn declaration(limit_tokens: i64) -> Self {
-        Self::Declaration { limit_tokens }
-    }
-
-    pub(crate) fn reminder(remaining_tokens: i64) -> Self {
-        Self::Reminder { remaining_tokens }
-    }
-}
-
 impl ContextualUserFragment for SessionTokenBudgetContext {
     fn role(&self) -> &'static str {
         "developer"

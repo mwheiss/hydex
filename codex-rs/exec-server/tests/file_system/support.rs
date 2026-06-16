@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -71,17 +70,13 @@ pub(crate) async fn create_file_system_context(
     }
 }
 
-pub(crate) fn absolute_path(path: impl AsRef<Path>) -> AbsolutePathBuf {
-    let path = path.as_ref().to_path_buf();
+pub(crate) fn absolute_path(path: std::path::PathBuf) -> AbsolutePathBuf {
     assert!(
         path.is_absolute(),
         "path must be absolute: {}",
         path.display()
     );
-    match AbsolutePathBuf::try_from(path) {
-        Ok(path) => path,
-        Err(err) => panic!("path should be absolute: {err}"),
-    }
+    AbsolutePathBuf::try_from(path).expect("path should be absolute")
 }
 
 pub(crate) fn read_only_sandbox(readable_root: std::path::PathBuf) -> FileSystemSandboxContext {

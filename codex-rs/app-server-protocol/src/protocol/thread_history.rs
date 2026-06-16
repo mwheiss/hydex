@@ -124,6 +124,14 @@ impl ThreadHistoryBuilder {
             .or_else(|| self.turns.last().cloned())
     }
 
+    pub fn turn_snapshot(&self, turn_id: &str) -> Option<Turn> {
+        self.current_turn
+            .as_ref()
+            .filter(|turn| turn.id == turn_id)
+            .map(Turn::from)
+            .or_else(|| self.turns.iter().find(|turn| turn.id == turn_id).cloned())
+    }
+
     /// Returns the index of the active turn snapshot within the finished turn list.
     ///
     /// When a turn is still open, this is the index it will occupy after
@@ -233,7 +241,9 @@ impl ThreadHistoryBuilder {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(item),
-            RolloutItem::TurnContext(_) | RolloutItem::SessionMeta(_) => {}
+            RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::SessionMeta(_) => {}
         }
     }
 
@@ -357,7 +367,8 @@ impl ThreadHistoryBuilder {
                     ThreadItem::from(payload.item.clone()),
                 );
             }
-            codex_protocol::items::TurnItem::McpToolCall(_) => {
+            codex_protocol::items::TurnItem::Sleep(_)
+            | codex_protocol::items::TurnItem::McpToolCall(_) => {
                 self.upsert_item_in_turn_id(
                     &payload.turn_id,
                     ThreadItem::from(payload.item.clone()),
@@ -381,6 +392,12 @@ impl ThreadHistoryBuilder {
                 if plan.text.is_empty() {
                     return;
                 }
+                self.upsert_item_in_turn_id(
+                    &payload.turn_id,
+                    ThreadItem::from(payload.item.clone()),
+                );
+            }
+            codex_protocol::items::TurnItem::Sleep(_) => {
                 self.upsert_item_in_turn_id(
                     &payload.turn_id,
                     ThreadItem::from(payload.item.clone()),
@@ -1245,6 +1262,7 @@ mod tests {
     use codex_protocol::items::HookPromptFragment as CoreHookPromptFragment;
     use codex_protocol::items::McpToolCallItem as CoreMcpToolCallItem;
     use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
+    use codex_protocol::items::SleepItem as CoreSleepItem;
     use codex_protocol::items::TurnItem as CoreTurnItem;
     use codex_protocol::items::UserMessageItem as CoreUserMessageItem;
     use codex_protocol::items::build_hook_prompt_message;
@@ -1262,6 +1280,7 @@ mod tests {
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
+    use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
@@ -1546,6 +1565,53 @@ mod tests {
                 result: None,
                 error: None,
                 duration_ms: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rebuilds_sleep_item_from_persisted_completion() {
+        let turn_id = "turn-1";
+        let thread_id = ThreadId::new();
+        let sleep_item = CoreTurnItem::Sleep(CoreSleepItem {
+            id: "sleep-1".to_string(),
+            duration_ms: 1_000,
+        });
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: sleep_item,
+                completed_at_ms: 1_000,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_id.to_string(),
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::Sleep {
+                id: "sleep-1".to_string(),
+                duration_ms: 1_000,
             }]
         );
     }
@@ -3457,6 +3523,7 @@ mod tests {
                     text: "plain text".into(),
                 }],
                 phase: None,
+                metadata: None,
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),

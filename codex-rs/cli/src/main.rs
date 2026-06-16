@@ -41,6 +41,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use supports_color::Stream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -75,6 +76,7 @@ use codex_core::config::resolve_profile_v2_config_path;
 use codex_features::FEATURES;
 use codex_features::Stage;
 use codex_features::is_known_feature_key;
+use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::read_codex_access_token_from_env;
@@ -531,7 +533,7 @@ struct AppServerCommand {
     #[arg(long = "stdio", conflicts_with = "listen")]
     stdio: bool,
 
-    /// Enable remote control for this app-server process.
+    /// Enable remote control for this app-server process without changing persistence.
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
 
@@ -951,13 +953,17 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
-    arg0_dispatch_or_else(|arg0_paths: Arg0DispatchPaths| async move {
-        cli_main(arg0_paths).await?;
+    let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
+    arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
+        cli_main(arg0_paths, remote_control_disabled).await?;
         Ok(())
     })
 }
 
-async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
+async fn cli_main(
+    arg0_paths: Arg0DispatchPaths,
+    remote_control_disabled: bool,
+) -> anyhow::Result<()> {
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,
@@ -1116,7 +1122,18 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     };
                     let auth = auth.try_into_settings()?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
-                        remote_control_enabled: remote_control,
+                        remote_control_startup_mode: match (remote_control, remote_control_disabled)
+                        {
+                            (true, _) => {
+                                codex_app_server::RemoteControlStartupMode::EnabledEphemeral
+                            }
+                            (false, true) => {
+                                codex_app_server::RemoteControlStartupMode::DisabledEphemeral
+                            }
+                            (false, false) => {
+                                codex_app_server::RemoteControlStartupMode::ResolvePersisted
+                            }
+                        },
                         ..Default::default()
                     };
                     codex_app_server::run_main_with_transport_options(
@@ -1941,7 +1958,16 @@ async fn run_debug_prompt_input_command(
         });
     }
 
-    let prompt_input = codex_core::build_prompt_input(config, input, /*state_db*/ None).await?;
+    let user_instructions_provider = Arc::new(CodexHomeUserInstructionsProvider::new(
+        config.codex_home.clone(),
+    ));
+    let prompt_input = codex_core::build_prompt_input(
+        config,
+        input,
+        /*state_db*/ None,
+        user_instructions_provider,
+    )
+    .await?;
     println!("{}", serde_json::to_string_pretty(&prompt_input)?);
 
     Ok(())
@@ -3398,6 +3424,12 @@ mod tests {
             app_server.listen,
             codex_app_server::AppServerTransport::Stdio
         );
+    }
+
+    #[test]
+    fn app_server_remote_control_startup_flag_enables_remote_control() {
+        let enabled = app_server_from_args(["codex", "app-server", "--remote-control"].as_ref());
+        assert!(enabled.remote_control);
     }
 
     #[test]

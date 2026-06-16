@@ -1,4 +1,5 @@
 #![cfg(unix)]
+#![allow(clippy::expect_used)]
 
 mod common;
 
@@ -21,7 +22,9 @@ use codex_exec_server::CopyOptions;
 use codex_exec_server::CreateDirectoryOptions;
 #[cfg(target_os = "linux")]
 use codex_exec_server::Environment;
+use codex_exec_server::FileMetadata;
 use codex_exec_server::RemoveOptions;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use test_case::test_case;
@@ -30,7 +33,6 @@ use test_case::test_case;
 use crate::common::exec_server::exec_server_with_env;
 
 use crate::support::FileSystemImplementation;
-use crate::support::absolute_path;
 use crate::support::create_file_system_context;
 use crate::support::read_only_sandbox;
 use crate::support::workspace_write_sandbox;
@@ -185,7 +187,7 @@ async fn sandboxed_file_system_helper_finds_bwrap_on_preserved_path() -> Result<
 
     file_system
         .write_file(
-            &absolute_path(&file_path),
+            &PathUri::from_path(&file_path)?,
             b"written through fs helper".to_vec(),
             Some(&sandbox),
         )
@@ -219,12 +221,20 @@ async fn file_system_get_metadata_reports_symlink_targets(
     let symlink_path = tmp.path().join("note-link.txt");
     symlink(&file_path, &symlink_path)?;
     let symlink_metadata = file_system
-        .get_metadata(&absolute_path(&symlink_path), /*sandbox*/ None)
+        .get_metadata(&PathUri::from_path(&symlink_path)?, /*sandbox*/ None)
         .await
         .with_context(|| format!("mode={implementation}"))?;
-    assert_eq!(symlink_metadata.is_directory, false);
-    assert_eq!(symlink_metadata.is_file, true);
-    assert_eq!(symlink_metadata.is_symlink, true);
+    assert_eq!(
+        symlink_metadata,
+        FileMetadata {
+            is_directory: false,
+            is_file: true,
+            is_symlink: true,
+            size: 5,
+            created_at_ms: symlink_metadata.created_at_ms,
+            modified_at_ms: symlink_metadata.modified_at_ms,
+        }
+    );
     assert!(symlink_metadata.modified_at_ms > 0);
 
     let dir_path = tmp.path().join("notes");
@@ -232,12 +242,23 @@ async fn file_system_get_metadata_reports_symlink_targets(
     let dir_symlink_path = tmp.path().join("notes-link");
     symlink(&dir_path, &dir_symlink_path)?;
     let dir_symlink_metadata = file_system
-        .get_metadata(&absolute_path(&dir_symlink_path), /*sandbox*/ None)
+        .get_metadata(
+            &PathUri::from_path(&dir_symlink_path)?,
+            /*sandbox*/ None,
+        )
         .await
         .with_context(|| format!("mode={implementation}"))?;
-    assert_eq!(dir_symlink_metadata.is_directory, true);
-    assert_eq!(dir_symlink_metadata.is_file, false);
-    assert_eq!(dir_symlink_metadata.is_symlink, true);
+    assert_eq!(
+        dir_symlink_metadata,
+        FileMetadata {
+            is_directory: true,
+            is_file: false,
+            is_symlink: true,
+            size: std::fs::metadata(&dir_path)?.len(),
+            created_at_ms: dir_symlink_metadata.created_at_ms,
+            modified_at_ms: dir_symlink_metadata.modified_at_ms,
+        }
+    );
 
     Ok(())
 }
@@ -257,7 +278,7 @@ async fn file_system_sandboxed_write_rejects_unwritable_path(
     let sandbox = read_only_sandbox(tmp.path().to_path_buf());
     let error = match file_system
         .write_file(
-            &absolute_path(&blocked_path),
+            &PathUri::from_path(&blocked_path)?,
             b"nope".to_vec(),
             Some(&sandbox),
         )
@@ -293,7 +314,7 @@ async fn file_system_sandboxed_write_allows_explicit_alias_roots(
 
     file_system
         .write_file(
-            &absolute_path(&file_path),
+            &PathUri::from_path(&file_path)?,
             b"created".to_vec(),
             Some(&sandbox),
         )
@@ -324,7 +345,7 @@ async fn file_system_sandboxed_read_rejects_symlink_escape(
     let requested_path = allowed_dir.join("link").join("secret.txt");
     let sandbox = read_only_sandbox(allowed_dir);
     let error = match file_system
-        .read_file(&absolute_path(&requested_path), Some(&sandbox))
+        .read_file(&PathUri::from_path(&requested_path)?, Some(&sandbox))
         .await
     {
         Ok(_) => anyhow::bail!("read should be blocked"),
@@ -353,13 +374,14 @@ async fn file_system_sandboxed_read_rejects_symlink_parent_dotdot_escape(
     std::fs::write(&secret_path, "nope")?;
     symlink(&outside_dir, allowed_dir.join("link"))?;
 
-    let requested_path = absolute_path(allowed_dir.join("link").join("..").join("secret.txt"));
+    let requested_path =
+        PathUri::from_path(allowed_dir.join("link").join("..").join("secret.txt"))?;
     let sandbox = read_only_sandbox(allowed_dir);
     let error = match file_system.read_file(&requested_path, Some(&sandbox)).await {
         Ok(_) => anyhow::bail!("read should fail after path normalization"),
         Err(error) => error,
     };
-    // AbsolutePathBuf normalizes `link/../secret.txt` to
+    // PathUri's native path constructor normalizes `link/../secret.txt` to
     // `allowed/secret.txt` before the request reaches the filesystem layer.
     // Depending on whether the platform/runtime resolves that normalized path
     // through a top-level symlink alias, the request can surface as either
@@ -389,7 +411,7 @@ async fn file_system_sandboxed_write_rejects_symlink_escape(
     let sandbox = workspace_write_sandbox(allowed_dir);
     let error = match file_system
         .write_file(
-            &absolute_path(&requested_path),
+            &PathUri::from_path(&requested_path)?,
             b"nope".to_vec(),
             Some(&sandbox),
         )
@@ -427,7 +449,7 @@ async fn file_system_sandboxed_write_preserves_existing_hard_link(
     let sandbox = workspace_write_sandbox(allowed_dir);
     file_system
         .write_file(
-            &absolute_path(&hard_link),
+            &PathUri::from_path(&hard_link)?,
             b"updated through existing hard link\n".to_vec(),
             Some(&sandbox),
         )
@@ -473,7 +495,7 @@ async fn file_system_create_directory_rejects_symlink_escape(
     let sandbox = workspace_write_sandbox(allowed_dir);
     let error = match file_system
         .create_directory(
-            &absolute_path(&requested_path),
+            &PathUri::from_path(&requested_path)?,
             CreateDirectoryOptions { recursive: false },
             Some(&sandbox),
         )
@@ -508,7 +530,7 @@ async fn file_system_read_directory_rejects_symlink_escape(
     let requested_path = allowed_dir.join("link");
     let sandbox = read_only_sandbox(allowed_dir);
     let error = match file_system
-        .read_directory(&absolute_path(&requested_path), Some(&sandbox))
+        .read_directory(&PathUri::from_path(&requested_path)?, Some(&sandbox))
         .await
     {
         Ok(_) => anyhow::bail!("read_directory should be blocked"),
@@ -540,8 +562,8 @@ async fn file_system_copy_rejects_symlink_escape_destination(
     let sandbox = workspace_write_sandbox(allowed_dir.clone());
     let error = match file_system
         .copy(
-            &absolute_path(allowed_dir.join("source.txt")),
-            &absolute_path(&requested_destination),
+            &PathUri::from_path(allowed_dir.join("source.txt"))?,
+            &PathUri::from_path(&requested_destination)?,
             CopyOptions { recursive: false },
             Some(&sandbox),
         )
@@ -578,7 +600,7 @@ async fn file_system_remove_removes_symlink_not_target(
     let sandbox = workspace_write_sandbox(allowed_dir);
     file_system
         .remove(
-            &absolute_path(&symlink_path),
+            &PathUri::from_path(&symlink_path)?,
             RemoveOptions {
                 recursive: false,
                 force: false,
@@ -618,8 +640,8 @@ async fn file_system_copy_preserves_symlink_source(
     let sandbox = workspace_write_sandbox(allowed_dir.clone());
     file_system
         .copy(
-            &absolute_path(&source_symlink),
-            &absolute_path(&copied_symlink),
+            &PathUri::from_path(&source_symlink)?,
+            &PathUri::from_path(&copied_symlink)?,
             CopyOptions { recursive: false },
             Some(&sandbox),
         )
@@ -655,7 +677,7 @@ async fn file_system_remove_rejects_symlink_escape(
     let sandbox = workspace_write_sandbox(allowed_dir);
     let error = match file_system
         .remove(
-            &absolute_path(&requested_path),
+            &PathUri::from_path(&requested_path)?,
             RemoveOptions {
                 recursive: false,
                 force: false,
@@ -696,8 +718,8 @@ async fn file_system_copy_rejects_symlink_escape_source(
     let sandbox = workspace_write_sandbox(allowed_dir);
     let error = match file_system
         .copy(
-            &absolute_path(&requested_source),
-            &absolute_path(&requested_destination),
+            &PathUri::from_path(&requested_source)?,
+            &PathUri::from_path(&requested_destination)?,
             CopyOptions { recursive: false },
             Some(&sandbox),
         )
@@ -730,8 +752,8 @@ async fn file_system_copy_preserves_symlinks_in_recursive_copy(
 
     file_system
         .copy(
-            &absolute_path(&source_dir),
-            &absolute_path(&copied_dir),
+            &PathUri::from_path(&source_dir)?,
+            &PathUri::from_path(&copied_dir)?,
             CopyOptions { recursive: true },
             /*sandbox*/ None,
         )
@@ -776,8 +798,8 @@ async fn file_system_copy_ignores_unknown_special_files_in_recursive_copy(
 
     file_system
         .copy(
-            &absolute_path(&source_dir),
-            &absolute_path(&copied_dir),
+            &PathUri::from_path(&source_dir)?,
+            &PathUri::from_path(&copied_dir)?,
             CopyOptions { recursive: true },
             /*sandbox*/ None,
         )
@@ -815,16 +837,13 @@ async fn file_system_copy_rejects_standalone_fifo_source(
 
     let error = file_system
         .copy(
-            &absolute_path(&fifo_path),
-            &absolute_path(tmp.path().join("copied")),
+            &PathUri::from_path(&fifo_path)?,
+            &PathUri::from_path(tmp.path().join("copied"))?,
             CopyOptions { recursive: false },
             /*sandbox*/ None,
         )
         .await;
-    let error = match error {
-        Ok(()) => panic!("copy should fail"),
-        Err(error) => error,
-    };
+    let error = error.expect_err("copying a FIFO should fail");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(
         error.to_string(),

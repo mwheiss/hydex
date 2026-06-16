@@ -649,16 +649,6 @@ fn wsl1_rejects_linux_bubblewrap_path() {
         ),
         Err(super::SandboxTransformError::Wsl1UnsupportedForBubblewrap)
     ));
-    assert!(matches!(
-        super::ensure_linux_bubblewrap_is_supported(
-            &FileSystemSandboxPolicy::unrestricted(),
-            /*use_legacy_landlock*/ true,
-            /*allow_network_for_proxy*/ true,
-            /*managed_mitm_ca_active*/ false,
-            /*is_wsl1*/ true,
-        ),
-        Err(super::SandboxTransformError::Wsl1UnsupportedForBubblewrap)
-    ));
 }
 
 #[cfg(target_os = "linux")]

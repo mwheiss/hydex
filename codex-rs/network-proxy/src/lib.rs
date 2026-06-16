@@ -1,5 +1,4 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
-#![allow(dead_code)]
 
 mod certs;
 mod child_ca;

@@ -393,7 +393,7 @@ fn managed_mitm_ca_materialization_checks_canonical_target_policy() {
     );
     assert!(!can_read_path_with_policy(
         &file_system_sandbox_policy,
-        None,
+        /*read_deny_glob_matcher*/ None,
         readable_alias.as_path(),
         root.as_path(),
     ));

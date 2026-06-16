@@ -5,22 +5,9 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SessionTokenBudgetSnapshot {
-    pub(crate) limit_tokens: i64,
+pub(crate) struct SessionTokenBudgetReminder {
     pub(crate) remaining_tokens: i64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SessionTokenBudgetContextUpdate {
-    Initial {
-        snapshot: SessionTokenBudgetSnapshot,
-        reminder_index: i64,
-    },
-    Remind {
-        snapshot: SessionTokenBudgetSnapshot,
-        reminder_index: i64,
-    },
+    reminder_index: i64,
 }
 
 /// Shared accounting and reminder state for one root-thread session tree.
@@ -62,55 +49,37 @@ impl SessionTokenBudget {
         was_below_limit && state.used_tokens >= state.config.limit_tokens
     }
 
-    pub(crate) fn begin_context_window(
-        &self,
-        thread_id: ThreadId,
-        window_id: &str,
-    ) -> Option<SessionTokenBudgetSnapshot> {
-        let mut state = self.lock()?;
-        let reminder_index = state.used_tokens / state.config.reminder_interval_tokens;
-        let snapshot = snapshot(&state.config, state.used_tokens);
-        state.deliveries.insert(
-            thread_id,
-            ThreadBudgetDelivery {
-                window_id: window_id.to_string(),
-                reminder_index,
-            },
-        );
-        Some(snapshot)
+    pub(crate) fn limit_tokens(&self) -> Option<i64> {
+        Some(self.lock()?.config.limit_tokens)
     }
 
-    pub(crate) fn pending_context_update(
+    pub(crate) fn pending_reminder(
         &self,
         thread_id: ThreadId,
         window_id: &str,
-    ) -> Option<SessionTokenBudgetContextUpdate> {
+    ) -> Option<SessionTokenBudgetReminder> {
         let state = self.lock()?;
         let reminder_index = state.used_tokens / state.config.reminder_interval_tokens;
-        let snapshot = snapshot(&state.config, state.used_tokens);
-        match state.deliveries.get(&thread_id) {
-            Some(delivery)
-                if delivery.window_id.as_str() == window_id
-                    && reminder_index > delivery.reminder_index =>
-            {
-                Some(SessionTokenBudgetContextUpdate::Remind {
-                    snapshot,
-                    reminder_index,
-                })
-            }
-            Some(delivery) if delivery.window_id.as_str() == window_id => None,
-            Some(_) | None => Some(SessionTokenBudgetContextUpdate::Initial {
-                snapshot,
-                reminder_index,
-            }),
+        if state.deliveries.get(&thread_id).is_some_and(|delivery| {
+            delivery.window_id.as_str() == window_id && delivery.reminder_index >= reminder_index
+        }) {
+            return None;
         }
+        Some(SessionTokenBudgetReminder {
+            remaining_tokens: state
+                .config
+                .limit_tokens
+                .saturating_sub(state.used_tokens)
+                .max(0),
+            reminder_index,
+        })
     }
 
-    pub(crate) fn mark_context_delivered(
+    pub(crate) fn mark_reminder_delivered(
         &self,
         thread_id: ThreadId,
         window_id: &str,
-        reminder_index: i64,
+        reminder: SessionTokenBudgetReminder,
     ) {
         // Mark delivery only after history insertion; cancellation before then should retry it.
         let Some(mut state) = self.lock() else {
@@ -120,7 +89,7 @@ impl SessionTokenBudget {
             thread_id,
             ThreadBudgetDelivery {
                 window_id: window_id.to_string(),
-                reminder_index,
+                reminder_index: reminder.reminder_index,
             },
         );
     }
@@ -131,12 +100,5 @@ impl SessionTokenBudget {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
         })
-    }
-}
-
-fn snapshot(config: &SessionTokenBudgetConfig, used_tokens: i64) -> SessionTokenBudgetSnapshot {
-    SessionTokenBudgetSnapshot {
-        limit_tokens: config.limit_tokens,
-        remaining_tokens: config.limit_tokens.saturating_sub(used_tokens).max(0),
     }
 }

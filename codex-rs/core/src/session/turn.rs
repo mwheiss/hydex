@@ -216,7 +216,7 @@ pub(crate) async fn run_turn(
         }
 
         let window_id = sess.current_window_id().await;
-        super::token_budget::maybe_record_session_token_budget_context(
+        super::token_budget::maybe_record_session_token_budget_reminder(
             sess.as_ref(),
             turn_context.as_ref(),
             &window_id,

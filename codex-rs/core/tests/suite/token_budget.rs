@@ -71,7 +71,7 @@ fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_token_budget_adds_initial_context_and_periodic_reminders() -> Result<()> {
+async fn session_token_budget_adds_stable_declaration_and_periodic_reminders() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -102,26 +102,33 @@ async fn session_token_budget_adds_initial_context_and_periodic_reminders() -> R
     test.submit_turn("second turn").await?;
 
     let requests = responses.requests();
-    let initial = "<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\nYou have 100 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
+    let declaration = "<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\n</session_token_budget>".to_string();
+    let initial_remaining = "<session_token_budget>\nYou have 100 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
     let remaining = "<session_token_budget>\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
     assert_eq!(
         session_token_budget_texts(&requests[0]),
-        vec![initial.clone()]
+        vec![declaration.clone(), initial_remaining.clone()]
     );
     let initial_developer_group = requests[0]
         .message_input_text_groups("developer")
         .into_iter()
-        .find(|group| group.contains(&initial))
-        .expect("initial session token budget context should be model-visible");
+        .find(|group| group.contains(&declaration))
+        .expect("session token budget declaration should be model-visible");
+    let declaration_index = initial_developer_group
+        .iter()
+        .position(|text| text == &declaration)
+        .expect("developer group should contain the declaration");
+    let context_budget_index = initial_developer_group
+        .iter()
+        .position(|text| text.starts_with("<token_budget>"))
+        .expect("developer group should contain the context budget");
     assert!(
-        initial_developer_group
-            .iter()
-            .any(|text| text.starts_with("<token_budget>")),
-        "initial session token budget context should share the full-context developer message"
+        declaration_index < context_budget_index,
+        "the stable session declaration should precede changing context-window metadata"
     );
     assert_eq!(
         session_token_budget_texts(&requests[1]),
-        vec![initial, remaining]
+        vec![declaration, initial_remaining, remaining]
     );
 
     Ok(())
@@ -598,8 +605,22 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
     );
     assert_eq!(
         session_token_budget_texts(&requests[2]),
-        vec!["<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string()],
-        "a new context window should restate the shared budget after charging compaction"
+        vec![
+            "<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\n</session_token_budget>".to_string(),
+            "<session_token_budget>\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string(),
+        ],
+        "a new context window should restate the stable declaration and current remainder"
+    );
+    let request_body = requests[2].body_json().to_string();
+    let summary_position = request_body
+        .find("compact summary")
+        .expect("post-compaction request should contain the summary");
+    let reminder_position = request_body
+        .find("You have 70 tokens left in the shared session token budget.")
+        .expect("post-compaction request should contain the current remainder");
+    assert!(
+        summary_position < reminder_position,
+        "the current remainder should follow the compaction summary"
     );
 
     Ok(())

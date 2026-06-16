@@ -1,44 +1,25 @@
 use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::context::ContextualUserFragment;
-use crate::session_token_budget::SessionTokenBudgetContextUpdate;
 use codex_features::Feature;
 
 const TOKEN_BUDGET_USAGE_THRESHOLDS: [i64; 3] = [25, 50, 75];
 
-pub(super) async fn maybe_record_session_token_budget_context(
+pub(super) async fn maybe_record_session_token_budget_reminder(
     sess: &Session,
     turn_context: &TurnContext,
     window_id: &str,
 ) {
     let budget = sess.services.agent_control.session_token_budget();
-    let Some(update) = budget.pending_context_update(sess.thread_id(), window_id) else {
+    let Some(reminder) = budget.pending_reminder(sess.thread_id(), window_id) else {
         return;
     };
-    let (response_item, reminder_index) = match update {
-        SessionTokenBudgetContextUpdate::Initial {
-            snapshot,
-            reminder_index,
-        } => (
-            ContextualUserFragment::into(crate::context::SessionTokenBudgetContext::initial(
-                snapshot.limit_tokens,
-                snapshot.remaining_tokens,
-            )),
-            reminder_index,
-        ),
-        SessionTokenBudgetContextUpdate::Remind {
-            snapshot,
-            reminder_index,
-        } => (
-            ContextualUserFragment::into(crate::context::SessionTokenBudgetContext::reminder(
-                snapshot.remaining_tokens,
-            )),
-            reminder_index,
-        ),
-    };
+    let response_item = ContextualUserFragment::into(
+        crate::context::SessionTokenBudgetContext::reminder(reminder.remaining_tokens),
+    );
     sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
         .await;
-    budget.mark_context_delivered(sess.thread_id(), window_id, reminder_index);
+    budget.mark_reminder_delivered(sess.thread_id(), window_id, reminder);
 }
 
 impl Session {

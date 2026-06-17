@@ -17,7 +17,6 @@ use codex_execpolicy::PolicyParser;
 use codex_execpolicy::RuleMatch;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
-use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ENV_KEYS;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -355,7 +354,7 @@ fn shell_request_escalation_execution_is_explicit() {
 }
 
 #[tokio::test]
-async fn unsandboxed_intercepted_exec_strips_managed_network_env() -> anyhow::Result<()> {
+async fn unsandboxed_exec_preserves_only_unbrokered_credentials() -> anyhow::Result<()> {
     let workdir = test_sandbox_cwd();
     let executor = CoreShellCommandExecutor {
         command: Vec::new(),
@@ -374,10 +373,29 @@ async fn unsandboxed_intercepted_exec_strips_managed_network_env() -> anyhow::Re
         use_legacy_landlock: false,
     };
     let mut env = HashMap::new();
-    env.insert(PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string());
     for key in PROXY_ENV_KEYS {
         env.insert((*key).to_string(), format!("proxy-{key}"));
     }
+    env.extend([
+        ("GH_HOST".to_string(), "github.example.com".to_string()),
+        ("GH_TOKEN".to_string(), "ghp_codex_dummy_0000".to_string()),
+        (
+            "GITHUB_TOKEN".to_string(),
+            "ghp_codex_dummy_0001".to_string(),
+        ),
+        (
+            "GH_ENTERPRISE_TOKEN".to_string(),
+            "ghp-enterprise-real".to_string(),
+        ),
+        (
+            "GITHUB_ENTERPRISE_TOKEN".to_string(),
+            "ghp_codex_dummy_0002".to_string(),
+        ),
+        (
+            "OPENAI_API_KEY".to_string(),
+            "sk-codex-dummy-0003".to_string(),
+        ),
+    ]);
 
     let prepared = executor
         .prepare_escalated_exec(
@@ -389,16 +407,16 @@ async fn unsandboxed_intercepted_exec_strips_managed_network_env() -> anyhow::Re
         )
         .await?;
 
-    assert!(
-        !prepared.env.contains_key(PROXY_ACTIVE_ENV_KEY),
-        "unsandboxed intercepted exec should strip the managed-network active marker"
+    assert_eq!(
+        prepared.env,
+        HashMap::from([
+            ("GH_HOST".to_string(), "github.example.com".to_string()),
+            (
+                "GH_ENTERPRISE_TOKEN".to_string(),
+                "ghp-enterprise-real".to_string(),
+            ),
+        ])
     );
-    for key in PROXY_ENV_KEYS {
-        assert!(
-            !prepared.env.contains_key(*key),
-            "unsandboxed intercepted exec should strip managed-network proxy env var {key}"
-        );
-    }
 
     Ok(())
 }

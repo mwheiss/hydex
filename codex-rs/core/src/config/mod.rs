@@ -25,6 +25,7 @@ use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -77,6 +78,7 @@ use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
+use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
@@ -184,6 +186,28 @@ impl Default for GhostSnapshotConfig {
             ignore_large_untracked_files: Some(DEFAULT_IGNORE_LARGE_UNTRACKED_FILES),
             ignore_large_untracked_dirs: Some(DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS),
             disable_warnings: false,
+        }
+    }
+}
+
+/// Resolved route-specific local model offload configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelOffloadConfig {
+    pub enabled: bool,
+    pub provider_id: Option<String>,
+    pub provider: Option<ModelProviderInfo>,
+    pub model: Option<String>,
+    pub compaction_policy: ModelOffloadCompactionPolicy,
+}
+
+impl Default for ModelOffloadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider_id: None,
+            provider: None,
+            model: None,
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
         }
     }
 }
@@ -633,6 +657,9 @@ pub struct Config {
 
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
+
+    /// Optional local provider used only for route-specific model offload.
+    pub model_offload: ModelOffloadConfig,
 
     /// Optionally specify the personality of the model
     pub personality: Option<Personality>,
@@ -2365,6 +2392,61 @@ pub fn resolve_oss_provider(
     }
 }
 
+fn resolve_model_offload_config(
+    cfg: &ConfigToml,
+    model_providers: &HashMap<String, ModelProviderInfo>,
+) -> std::io::Result<ModelOffloadConfig> {
+    let offload = &cfg.model_offload;
+    if !offload.enabled {
+        return Ok(ModelOffloadConfig {
+            enabled: false,
+            provider_id: offload.provider.clone(),
+            provider: None,
+            model: offload.model.clone(),
+            compaction_policy: offload.compaction.policy,
+        });
+    }
+
+    let provider_id = offload.provider.as_ref().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must be set when model_offload.enabled = true",
+        )
+    })?;
+    let provider = model_providers.get(provider_id).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Model offload provider `{provider_id}` not found"),
+        )
+    })?;
+    if provider.requires_openai_auth || provider.is_openai() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must identify a non-OpenAI local provider",
+        ));
+    }
+    if provider.base_url.as_deref().is_none_or(str::is_empty) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must have a base_url",
+        ));
+    }
+    if provider.wire_api != WireApi::Responses {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must use wire_api = \"responses\"",
+        ));
+    }
+
+    Ok(ModelOffloadConfig {
+        enabled: true,
+        provider_id: Some(provider_id.clone()),
+        provider: Some(provider.clone()),
+        model: offload.model.clone(),
+        compaction_policy: offload.compaction.policy,
+    })
+}
+
 /// Resolve the web search mode from explicit config and feature flags.
 fn resolve_web_search_mode(config_toml: &ConfigToml, features: &Features) -> Option<WebSearchMode> {
     if let Some(mode) = config_toml.web_search {
@@ -3153,11 +3235,14 @@ impl Config {
             .filter(|value| !value.is_empty());
 
         let model_providers =
-            merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
+            merge_configured_model_providers(
+                built_in_model_providers(openai_base_url),
+                cfg.model_providers.clone(),
+            )
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
         let model_provider_id = model_provider
-            .or(cfg.model_provider)
+            .or_else(|| cfg.model_provider.clone())
             .unwrap_or_else(|| "openai".to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
@@ -3170,6 +3255,7 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+        let model_offload = resolve_model_offload_config(&cfg, &model_providers)?;
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -3530,6 +3616,7 @@ impl Config {
                 .unwrap_or_default(),
             model_provider_id,
             model_provider,
+            model_offload,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,

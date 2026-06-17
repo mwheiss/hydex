@@ -1423,6 +1423,68 @@
       },
       "type": "object"
     },
+    "ModelOffloadCompactionPolicy": {
+      "oneOf": [
+        {
+          "description": "Use local `/responses` compaction through the normal model-call path.",
+          "enum": [
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Keep the primary provider's upstream compaction behavior.",
+          "enum": [
+            "primary"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ModelOffloadCompactionToml": {
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionPolicy"
+            }
+          ],
+          "default": "local"
+        }
+      },
+      "type": "object"
+    },
+    "ModelOffloadToml": {
+      "additionalProperties": false,
+      "properties": {
+        "compaction": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionToml"
+            }
+          ],
+          "default": {
+            "policy": "local"
+          },
+          "description": "Policy used for compaction after offload has actually been used."
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enables route-specific offload of eligible model inference requests.",
+          "type": "boolean"
+        },
+        "model": {
+          "description": "Optional model id to send to the offload provider. When unset, Codex sends the currently selected model id.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Key in `model_providers` identifying the local Responses-compatible provider.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ModelProviderAuthInfo": {
       "additionalProperties": false,
       "description": "Configuration for obtaining a provider bearer token from a command.",
@@ -5032,6 +5094,22 @@
         }
       ],
       "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codex will likely degrade model performance."
+    },
+    "model_offload": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ModelOffloadToml"
+        }
+      ],
+      "default": {
+        "compaction": {
+          "policy": "local"
+        },
+        "enabled": false,
+        "model": null,
+        "provider": null
+      },
+      "description": "Optional local model offload settings. Disabled by default, preserving standard provider routing unless explicitly enabled."
     },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",

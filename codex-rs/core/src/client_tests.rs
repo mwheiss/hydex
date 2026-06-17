@@ -10,12 +10,17 @@ use super::X_OPENAI_SUBAGENT_HEADER;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
+use crate::client_common::Prompt;
+use crate::config::ModelOffloadConfig;
+use crate::local_offload::transform_request_for_local_offload;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::ApiError;
+use codex_api::Compression;
 use codex_api::ResponseEvent;
 use codex_app_server_protocol::AuthMode;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
@@ -38,6 +43,10 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use codex_tools::ResponsesApiNamespace;
+use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -77,6 +86,34 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*attestation_provider*/ None,
+        crate::config::ModelOffloadConfig::default(),
+    )
+}
+
+fn test_model_client_with_local_offload(session_source: SessionSource) -> ModelClient {
+    let primary_provider =
+        ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    ModelClient::new(
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+        ThreadId::new(),
+        primary_provider,
+        session_source,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
+        ModelOffloadConfig {
+            enabled: true,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+        },
     )
 }
 
@@ -128,6 +165,21 @@ fn test_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+fn test_web_run_namespace_tool() -> ToolSpec {
+    ToolSpec::Namespace(ResponsesApiNamespace {
+        name: "web".to_string(),
+        description: "Web tools.".to_string(),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "run".to_string(),
+            description: "Run web commands.".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: serde_json::from_value(json!({"type": "object"})).expect("valid schema"),
+            output_schema: None,
+        })],
+    })
 }
 
 fn test_session_telemetry() -> SessionTelemetry {
@@ -390,6 +442,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         api_stream,
         test_session_telemetry(),
         attempt,
+        None,
     );
 
     let observed = stream
@@ -439,6 +492,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
+        None,
     );
 
     while stream.next().await.is_some() {}
@@ -480,6 +534,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         api_stream,
         test_session_telemetry(),
         attempt,
+        None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -569,6 +624,7 @@ fn model_client_with_counting_attestation(
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),
+        crate::config::ModelOffloadConfig::default(),
     );
     (model_client, attestation_calls)
 }
@@ -629,4 +685,205 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
         None,
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
+    let primary_provider =
+        ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    let (attestation_client, attestation_calls) =
+        model_client_with_counting_attestation(/*include_attestation*/ true);
+    let client = ModelClient::new(
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+        ThreadId::new(),
+        primary_provider,
+        SessionSource::Exec,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        Some("beta-feature".to_string()),
+        attestation_client.state.attestation_provider.clone(),
+        ModelOffloadConfig {
+            enabled: true,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+        },
+    );
+    let client_session = client.new_session();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        Some(ThreadId::new()),
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    let route = client.route_for_responses_request(&responses_metadata);
+    assert!(route.is_local_offload());
+    let client_setup = client
+        .current_client_setup_for_route(route)
+        .await
+        .expect("local client setup resolves");
+    let prompt = Prompt {
+        input: vec![ResponseItem::FunctionCall {
+            id: None,
+            name: "run".to_string(),
+            namespace: Some("web".to_string()),
+            arguments: "{\"search_query\":[{\"q\":\"codex\"}]}".to_string(),
+            call_id: "call_web".to_string(),
+            metadata: None,
+        }],
+        tools: vec![
+            test_web_run_namespace_tool(),
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            },
+        ],
+        ..Prompt::default()
+    };
+    let options = client_session
+        .build_responses_options(
+            &responses_metadata,
+            Compression::None,
+            /*use_responses_lite*/ false,
+            !route.is_local_offload(),
+        )
+        .await;
+    let request = client
+        .build_responses_request(
+            &client_setup.api_provider,
+            client_setup.model_provider.info(),
+            client_setup.model_override.as_deref(),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &responses_metadata,
+            !route.is_local_offload(),
+        )
+        .expect("local responses request builds");
+    let mut request = request;
+    transform_request_for_local_offload(&mut request, &prompt.tools)
+        .expect("local request transform succeeds");
+
+    assert_eq!(request.model, "local-responses-model");
+    assert!(request.client_metadata.is_none());
+    assert_eq!(request.tools.len(), 1);
+    assert_eq!(request.tools[0]["name"], "ns__web__run");
+    assert_eq!(
+        request.input,
+        vec![ResponseItem::FunctionCall {
+            id: None,
+            name: "ns__web__run".to_string(),
+            namespace: None,
+            arguments: "{\"search_query\":[{\"q\":\"codex\"}]}".to_string(),
+            call_id: "call_web".to_string(),
+            metadata: None,
+        }]
+    );
+    assert!(options.session_id.is_none());
+    assert!(options.thread_id.is_none());
+    assert!(options.session_source.is_none());
+    assert!(options.turn_state.is_none());
+    assert!(
+        options
+            .extra_headers
+            .get(http::header::AUTHORIZATION)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_INSTALLATION_ID_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_WINDOW_ID_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_TURN_METADATA_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_PARENT_THREAD_ID_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_OPENAI_SUBAGENT_HEADER)
+            .is_none()
+    );
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn no_offload_config_preserves_primary_turn_routing() {
+    let client = test_model_client(SessionSource::Exec);
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert!(!client.mark_offload_used_for_responses_request(&responses_metadata));
+    assert!(!client.offload_ever_used());
+}
+
+#[test]
+fn internal_and_subagent_sources_stay_primary_with_offload_configured() {
+    for session_source in [
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        SessionSource::SubAgent(SubAgentSource::Review),
+        SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
+    ] {
+        let client = test_model_client_with_local_offload(session_source.clone());
+        let responses_metadata = test_responses_metadata_for_client(
+            &client,
+            Some("turn-1"),
+            format!("{}:0", client.state.thread_id),
+            None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+
+        assert!(
+            !client
+                .route_for_responses_request(&responses_metadata)
+                .is_local_offload(),
+            "expected {session_source:?} to stay on the primary route",
+        );
+        assert!(!client.mark_offload_used_for_responses_request(&responses_metadata));
+        assert!(!client.offload_ever_used());
+    }
 }

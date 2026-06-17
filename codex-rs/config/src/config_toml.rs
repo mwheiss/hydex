@@ -272,6 +272,11 @@ pub struct ConfigToml {
     #[serde(default, deserialize_with = "deserialize_model_providers")]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// Optional local model offload settings. Disabled by default, preserving
+    /// standard provider routing unless explicitly enabled.
+    #[serde(default)]
+    pub model_offload: ModelOffloadToml,
+
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
@@ -498,6 +503,39 @@ pub struct ConfigToml {
     pub experimental_use_unified_exec_tool: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadToml {
+    /// Enables route-specific offload of eligible model inference requests.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Key in `model_providers` identifying the local Responses-compatible provider.
+    pub provider: Option<String>,
+    /// Optional model id to send to the offload provider. When unset, Codex sends
+    /// the currently selected model id.
+    pub model: Option<String>,
+    /// Policy used for compaction after offload has actually been used.
+    #[serde(default)]
+    pub compaction: ModelOffloadCompactionToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadCompactionToml {
+    #[serde(default)]
+    pub policy: ModelOffloadCompactionPolicy,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadCompactionPolicy {
+    /// Use local `/responses` compaction through the normal model-call path.
+    #[default]
+    Local,
+    /// Keep the primary provider's upstream compaction behavior.
+    Primary,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]

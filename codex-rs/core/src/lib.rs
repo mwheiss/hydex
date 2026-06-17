@@ -48,6 +48,7 @@ mod hook_runtime;
 mod image_preparation;
 mod installation_id;
 pub(crate) mod landlock;
+mod local_offload;
 pub use landlock::spawn_command_under_linux_sandbox;
 pub(crate) mod mcp;
 mod mcp_skill_dependencies;

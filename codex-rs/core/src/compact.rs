@@ -45,6 +45,7 @@ use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
 use tracing::error;
 
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 
 pub use codex_prompts::SUMMARIZATION_PROMPT;
@@ -68,6 +69,18 @@ pub(crate) enum InitialContextInjection {
 
 pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
     provider.supports_remote_compaction()
+}
+
+pub(crate) fn should_use_remote_compact_task_with_offload_policy(
+    provider: &ModelProviderInfo,
+    offload_ever_used: bool,
+    offload_compaction_policy: ModelOffloadCompactionPolicy,
+) -> bool {
+    if offload_ever_used && offload_compaction_policy == ModelOffloadCompactionPolicy::Local {
+        return false;
+    }
+
+    should_use_remote_compact_task(provider)
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
@@ -314,7 +327,9 @@ async fn run_compact_task_inner_impl(
     }
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
+        InitialContextInjection::BeforeLastUserMessage => {
+            Some(sess.turn_context_item(&turn_context))
+        }
     };
     let compacted_item = CompactedItem {
         message: summary_text.clone(),

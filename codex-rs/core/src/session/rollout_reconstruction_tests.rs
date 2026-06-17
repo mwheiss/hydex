@@ -105,6 +105,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let rollout_items = vec![RolloutItem::TurnContext(previous_context_item)];
 
@@ -118,6 +119,58 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
 
     assert_eq!(session.previous_turn_settings().await, None);
     assert!(session.reference_context_item().await.is_none());
+}
+
+#[tokio::test]
+async fn record_initial_history_resumed_seeds_offload_ever_used_from_turn_context() {
+    let (session, turn_context) = make_session_and_context().await;
+    let mut previous_context_item = turn_context.to_turn_context_item();
+    previous_context_item.offload_ever_used = true;
+    let turn_id = previous_context_item
+        .turn_id
+        .clone()
+        .expect("turn context should have turn_id");
+    let rollout_items = vec![
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "seed".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::TurnContext(previous_context_item),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id,
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: rollout_items,
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await;
+
+    assert!(session.services.model_client.offload_ever_used());
 }
 
 #[tokio::test]
@@ -145,6 +198,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let turn_id = previous_context_item
         .turn_id
@@ -1006,6 +1060,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let previous_turn_id = previous_context_item
         .turn_id
@@ -1088,6 +1143,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             realtime_active: Some(turn_context.realtime_active),
             effort: turn_context.reasoning_effort.clone(),
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            offload_ever_used: false,
         }))
         .expect("serialize expected reference context item")
     );
@@ -1118,6 +1174,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let previous_turn_id = previous_context_item
         .turn_id
@@ -1240,6 +1297,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
 
     let rollout_items = vec![
@@ -1360,6 +1418,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let previous_turn_id = previous_context_item
         .turn_id
@@ -1523,6 +1582,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let previous_turn_id = previous_context_item
         .turn_id

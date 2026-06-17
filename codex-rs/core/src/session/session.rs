@@ -1026,6 +1026,7 @@ impl Session {
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
                     attestation_provider,
+                    config.model_offload.clone(),
                 )
                 .with_prompt_cache_key_override(
                     crate::guardian::prompt_cache_key_override_for_review_session(

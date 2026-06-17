@@ -5,6 +5,7 @@ use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ThreadManager;
+use codex_core::config::ModelOffloadConfig;
 use codex_core::resolve_installation_id;
 use codex_core::thread_store_from_config;
 use codex_extension_api::empty_extension_registry;
@@ -1020,6 +1021,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*attestation_provider*/ None,
+        ModelOffloadConfig::default(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();
@@ -2512,6 +2514,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*attestation_provider*/ None,
+        ModelOffloadConfig::default(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();

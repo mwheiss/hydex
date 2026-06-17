@@ -1324,10 +1324,14 @@ impl Session {
             mut history,
             previous_turn_settings,
             reference_context_item,
+            offload_ever_used,
             window_id,
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
+        self.services
+            .model_client
+            .seed_offload_ever_used(offload_ever_used);
         if turn_context
             .config
             .features
@@ -3159,7 +3163,7 @@ impl Session {
         };
         let window_id = window_id?;
         let context_items = self.build_initial_context(turn_context).await;
-        let turn_context_item = turn_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(turn_context);
         let replacement_history = context_items;
         {
             let mut state = self.state.lock().await;
@@ -3185,6 +3189,23 @@ impl Session {
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
         let state = self.state.lock().await;
         state.reference_context_item()
+    }
+
+    pub(crate) fn turn_context_item(&self, turn_context: &TurnContext) -> TurnContextItem {
+        turn_context.to_turn_context_item_with_offload_ever_used(
+            self.services.model_client.offload_ever_used(),
+        )
+    }
+
+    pub(crate) async fn persist_turn_context_item_and_set_reference_context_item(
+        &self,
+        turn_context: &TurnContext,
+    ) {
+        let turn_context_item = self.turn_context_item(turn_context);
+        self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
+            .await;
+        let mut state = self.state.lock().await;
+        state.set_reference_context_item(Some(turn_context_item));
     }
 
     /// Persist the latest turn context snapshot for the first real user turn and for
@@ -3217,7 +3238,7 @@ impl Session {
             self.build_settings_update_items(reference_context_item.as_ref(), turn_context)
                 .await
         };
-        let turn_context_item = turn_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(turn_context);
         if !context_items.is_empty() {
             self.record_conversation_items(turn_context, &context_items)
                 .await;

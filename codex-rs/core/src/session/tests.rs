@@ -29,6 +29,8 @@ use core_test_support::test_codex::local_selections;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
@@ -63,6 +65,7 @@ use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_utils_path_uri::PathUri;
 use tracing::Span;
 
+use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::rollout::recorder::RolloutRecorder;
 use crate::state::ActiveTurn;
 use crate::state::TaskKind;
@@ -82,6 +85,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::McpElicitationSchema;
 use codex_config::config_toml::ConfigToml;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::FilesystemPermissionsToml;
@@ -437,6 +441,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*attestation_provider*/ None,
+        crate::config::ModelOffloadConfig::default(),
     )
     .new_session()
 }
@@ -2690,6 +2695,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let turn_id = previous_context_item
         .turn_id
@@ -5030,6 +5036,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*attestation_provider*/ None,
+            config.model_offload.clone(),
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(),
         tool_search_handler_cache: Default::default(),
@@ -7075,6 +7082,7 @@ where
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*attestation_provider*/ None,
+            config.model_offload.clone(),
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(),
         tool_search_handler_cache: Default::default(),
@@ -8283,6 +8291,76 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
         serde_json::to_value(Some(turn_context.to_turn_context_item()))
             .expect("serialize expected turn context item")
     );
+}
+
+#[tokio::test]
+async fn first_offloaded_turn_persists_offload_marker_for_resume() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    session.services.model_client = ModelClient::new(
+        Some(session.services.auth_manager.clone()),
+        session.thread_id,
+        turn_context.provider.info().clone(),
+        turn_context.session_source.clone(),
+        turn_context.config.model_verbosity,
+        turn_context
+            .config
+            .features
+            .enabled(Feature::EnableRequestCompression),
+        turn_context
+            .config
+            .features
+            .enabled(Feature::RuntimeMetrics),
+        Session::build_model_client_beta_features_header(turn_context.config.as_ref()),
+        /*attestation_provider*/ None,
+        crate::config::ModelOffloadConfig {
+            enabled: true,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+        },
+    );
+    let rollout_path = attach_thread_persistence(&mut session).await;
+
+    session
+        .record_context_updates_and_set_reference_context_item(&turn_context)
+        .await;
+    let window_id = session.current_window_id().await;
+    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
+        session.installation_id.clone(),
+        window_id,
+        CodexResponsesRequestKind::Turn,
+    );
+    assert!(
+        session
+            .services
+            .model_client
+            .mark_offload_used_for_responses_request(&responses_metadata)
+    );
+    session
+        .persist_turn_context_item_and_set_reference_context_item(&turn_context)
+        .await;
+    session.flush_rollout().await.expect("rollout should flush");
+
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await
+        .expect("read rollout history")
+    else {
+        panic!("expected resumed rollout history");
+    };
+    let latest_marker = resumed.history.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(ctx) => Some(ctx.offload_ever_used),
+        _ => None,
+    });
+    assert_eq!(latest_marker, Some(true));
+
+    let (replay_session, _replay_turn_context) = make_session_and_context().await;
+    replay_session
+        .record_initial_history(InitialHistory::Resumed(resumed))
+        .await;
+    assert!(replay_session.services.model_client.offload_ever_used());
 }
 
 #[tokio::test]

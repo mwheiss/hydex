@@ -3023,6 +3023,8 @@ pub struct TurnContextItem {
     // read by context reconstruction and should be removed in a future schema
     // cleanup.
     pub summary: ReasoningSummaryConfig,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offload_ever_used: bool,
 }
 
 impl TurnContextItem {

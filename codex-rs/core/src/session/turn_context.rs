@@ -356,7 +356,22 @@ impl TurnContext {
             .then_some(file_system_sandbox_policy)
     }
 
+    pub(crate) fn compact_prompt(&self) -> &str {
+        self.config
+            .compact_prompt
+            .as_deref()
+            .unwrap_or(compact::SUMMARIZATION_PROMPT)
+    }
+
+    #[cfg(test)]
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
+        self.to_turn_context_item_with_offload_ever_used(false)
+    }
+
+    pub(crate) fn to_turn_context_item_with_offload_ever_used(
+        &self,
+        offload_ever_used: bool,
+    ) -> TurnContextItem {
         let workspace_roots = self.config.effective_workspace_roots();
         #[allow(deprecated)]
         let cwd = self.cwd.clone();
@@ -379,6 +394,7 @@ impl TurnContext {
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort.clone(),
             summary: ReasoningSummaryConfig::Auto,
+            offload_ever_used,
         }
     }
 

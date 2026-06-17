@@ -13,6 +13,7 @@ use codex_config::config_toml::AgentsToml;
 use codex_config::config_toml::AutoReviewToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::ExperimentalRequestUserInput;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeArchitecture;
 use codex_config::config_toml::RealtimeConfig;
@@ -5246,6 +5247,123 @@ async fn config_honors_explicit_file_oauth_store_mode() -> std::io::Result<()> {
     );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!config.model_offload.enabled);
+    assert!(config.model_offload.provider_id.is_none());
+    assert!(config.model_offload.provider.is_none());
+    assert!(config.model_offload.model.is_none());
+    assert_eq!(
+        config.model_offload.compaction_policy,
+        ModelOffloadCompactionPolicy::Local
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_model_offload_provider() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload]
+enabled = true
+provider = "local"
+model = "local-responses-model"
+
+[model_offload.compaction]
+policy = "primary"
+
+[model_providers.local]
+name = "Local Responses"
+base_url = "http://127.0.0.1:11434/v1"
+wire_api = "responses"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.model_offload.enabled);
+    assert_eq!(config.model_offload.provider_id.as_deref(), Some("local"));
+    assert_eq!(
+        config.model_offload.model.as_deref(),
+        Some("local-responses-model")
+    );
+    assert_eq!(
+        config
+            .model_offload
+            .provider
+            .as_ref()
+            .map(|provider| provider.name.as_str()),
+        Some("Local Responses")
+    );
+    assert_eq!(
+        config.model_offload.compaction_policy,
+        ModelOffloadCompactionPolicy::Primary
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_openai_model_offload_provider() {
+    let codex_home = TempDir::new().expect("create tempdir");
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload]
+enabled = true
+provider = "openai"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("OpenAI provider must not be accepted for local offload");
+
+    assert!(
+        err.to_string()
+            .contains("model_offload.provider must identify a non-OpenAI local provider")
+    );
+}
+
+#[test]
+fn config_toml_rejects_non_responses_model_offload_provider() {
+    let err = toml::from_str::<ConfigToml>(
+        r#"
+[model_offload]
+enabled = true
+provider = "local"
+
+[model_providers.local]
+name = "Local Chat"
+base_url = "http://127.0.0.1:11434/v1"
+wire_api = "chat"
+"#,
+    )
+    .expect_err("non-responses provider wire api must be rejected");
+
+    assert!(err.to_string().contains("wire_api = \"chat\""));
 }
 
 #[tokio::test]

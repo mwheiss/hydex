@@ -8,6 +8,7 @@ pub(super) struct RolloutReconstruction {
     pub(super) history: Vec<ResponseItem>,
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
     pub(super) reference_context_item: Option<TurnContextItem>,
+    pub(super) offload_ever_used: bool,
     pub(super) window_id: u64,
 }
 
@@ -104,6 +105,7 @@ impl Session {
         let mut base_replacement_history: Option<&[ResponseItem]> = None;
         let mut previous_turn_settings = None;
         let mut reference_context_item = TurnReferenceContextItem::NeverSet;
+        let mut offload_ever_used = false;
         let mut window_id = None;
         // Rollback is "drop the newest N user turns". While scanning in reverse, that becomes
         // "skip the next N user-turn segments we finalize".
@@ -171,6 +173,7 @@ impl Session {
                     active_segment.counts_as_user_turn = true;
                 }
                 RolloutItem::TurnContext(ctx) => {
+                    offload_ever_used |= ctx.offload_ever_used;
                     let active_segment =
                         active_segment.get_or_insert_with(ActiveReplaySegment::default);
                     // `TurnContextItem` can attach metadata to an existing segment, but only a
@@ -325,11 +328,16 @@ impl Session {
         } else {
             reference_context_item
         };
+        let offload_ever_used = offload_ever_used
+            || reference_context_item
+                .as_ref()
+                .is_some_and(|context_item| context_item.offload_ever_used);
 
         RolloutReconstruction {
             history: history.raw_items().to_vec(),
             previous_turn_settings,
             reference_context_item,
+            offload_ever_used,
             window_id: window_id.unwrap_or(fallback_window_id),
         }
     }

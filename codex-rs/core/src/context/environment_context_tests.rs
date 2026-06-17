@@ -207,6 +207,7 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
         realtime_active: None,
         effort: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
 
     let context = EnvironmentContext::from_turn_context_item(&item, fake_shell_name()).render();

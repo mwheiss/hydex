@@ -29,7 +29,11 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        let _ = if crate::compact::should_use_remote_compact_task(ctx.provider.info()) {
+        let _ = if crate::compact::should_use_remote_compact_task_with_offload_policy(
+            ctx.provider.info(),
+            session.services.model_client.offload_ever_used(),
+            ctx.config.model_offload.compaction_policy,
+        ) {
             if ctx
                 .config
                 .features

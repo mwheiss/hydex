@@ -6,6 +6,7 @@ use codex_core::ResponseEvent;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::config::ModelOffloadConfig;
 use codex_core::content_items_to_text;
 use codex_core::detached_memory_responses_metadata;
 use codex_core::resolve_installation_id;
@@ -236,6 +237,7 @@ impl MemoryStartupContext {
             config.features.enabled(Feature::RuntimeMetrics),
             /*beta_features_header*/ None,
             /*attestation_provider*/ None,
+            ModelOffloadConfig::default(),
         );
 
         let mut client_session = model_client.new_session();

@@ -12,7 +12,7 @@ use crate::client_common::ResponseEvent;
 use crate::collect_explicit_skill_mentions;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
-use crate::compact::should_use_remote_compact_task;
+use crate::compact::should_use_remote_compact_task_with_offload_policy;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
@@ -233,6 +233,14 @@ pub(crate) async fn run_turn(
             window_id,
             CodexResponsesRequestKind::Turn,
         );
+        if sess
+            .services
+            .model_client
+            .mark_offload_used_for_responses_request(&responses_metadata)
+        {
+            sess.persist_turn_context_item_and_set_reference_context_item(turn_context.as_ref())
+                .await;
+        }
         let tokens_before_sampling = sess.get_total_token_usage().await;
         match run_sampling_request(
             Arc::clone(&sess),
@@ -912,7 +920,11 @@ async fn run_auto_compact(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    if should_use_remote_compact_task(turn_context.provider.info()) {
+    if should_use_remote_compact_task_with_offload_policy(
+        turn_context.provider.info(),
+        sess.services.model_client.offload_ever_used(),
+        turn_context.config.model_offload.compaction_policy,
+    ) {
         if turn_context
             .config
             .features
@@ -1072,7 +1084,7 @@ async fn run_sampling_request(
         Arc::clone(&router),
         Arc::clone(&turn_diff_tracker),
     );
-    let max_retries = turn_context.provider.info().stream_max_retries();
+    let max_retries = client_session.stream_max_retries_for(responses_metadata);
     let mut retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;

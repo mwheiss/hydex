@@ -3882,11 +3882,13 @@ dependencies = [
 name = "codex-skills-extension"
 version = "0.0.0"
 dependencies = [
+ "codex-analytics",
  "codex-connectors",
  "codex-core-skills",
  "codex-exec-server",
  "codex-extension-api",
  "codex-mcp",
+ "codex-otel",
  "codex-protocol",
  "codex-tools",
  "codex-utils-absolute-path",

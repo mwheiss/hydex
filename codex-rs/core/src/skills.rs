@@ -3,7 +3,6 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_analytics::InvocationType;
 use codex_analytics::SkillInvocation;
-use codex_analytics::TrackEventsContext;
 use codex_analytics::build_track_events_context;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -42,37 +41,6 @@ pub(crate) fn skills_load_input_from_config(
         config.config_layer_stack.clone(),
         config.bundled_skills_enabled(),
     )
-}
-
-pub(crate) fn record_explicit_skill_invocations(
-    sess: &Session,
-    turn_context: &TurnContext,
-    tracking: TrackEventsContext,
-    mentioned_skills: &[SkillMetadata],
-) {
-    if mentioned_skills.is_empty() {
-        return;
-    }
-    let invocations = mentioned_skills
-        .iter()
-        .map(|skill| {
-            turn_context.session_telemetry.counter(
-                "codex.skill.injected",
-                /*inc*/ 1,
-                &[("status", "ok"), ("skill", skill.name.as_str())],
-            );
-            SkillInvocation {
-                skill_name: skill.name.clone(),
-                skill_scope: skill.scope,
-                skill_path: skill.path_to_skills_md.to_path_buf(),
-                plugin_id: skill.plugin_id.clone(),
-                invocation_type: InvocationType::Explicit,
-            }
-        })
-        .collect();
-    sess.services
-        .analytics_events_client
-        .track_skill_invocations(tracking, invocations);
 }
 
 pub(crate) async fn maybe_emit_implicit_skill_invocation(

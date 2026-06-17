@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
-use crate::collect_explicit_skill_mentions;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
@@ -24,7 +23,6 @@ use crate::hook_runtime::run_pending_session_start_hooks;
 use crate::hook_runtime::run_turn_stop_hooks;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
-use crate::mentions::build_connector_slug_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
 use crate::plugins::build_plugin_injections;
@@ -36,7 +34,6 @@ use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use crate::skills::record_explicit_skill_invocations;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
 use crate::stream_events_utils::finalize_non_tool_response_item;
@@ -521,26 +518,21 @@ async fn build_skills_and_plugins(
     } else {
         Vec::new()
     };
-    let skills_outcome = turn_context.turn_skills.snapshot.outcome();
-    let connector_slug_counts = build_connector_slug_counts(&available_connectors);
     let extension_injection_items =
         build_extension_turn_input_items(sess, turn_context, &user_input, cancellation_token)
             .await?;
-    let mentioned_skills = collect_explicit_skill_mentions(
-        &user_input,
-        &skills_outcome.skills,
-        &skills_outcome.disabled_paths,
-        &connector_slug_counts,
-    );
+    let mcp_dependencies = turn_context
+        .extension_data
+        .get::<codex_mcp::McpServerDependencies>()
+        .unwrap_or_default();
     maybe_prompt_and_install_mcp_dependencies(
         sess,
         turn_context,
         cancellation_token,
-        &mentioned_skills,
+        &mcp_dependencies,
         Some(sess.mcp_elicitation_reviewer()),
     )
     .await;
-    record_explicit_skill_invocations(sess, turn_context, tracking.clone(), &mentioned_skills);
     let skill_connector_ids = turn_context
         .extension_data
         .get::<codex_connectors::ExplicitConnectorMentions>()
@@ -610,6 +602,7 @@ async fn build_extension_turn_input_items(
 
     let input = TurnInputContext {
         turn_id: turn_context.sub_id.to_string(),
+        model: turn_context.model_info.slug.clone(),
         user_input: user_input.to_vec(),
         environments,
     };

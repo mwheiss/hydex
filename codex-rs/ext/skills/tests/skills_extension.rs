@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -10,12 +11,15 @@ use codex_core_skills::SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS;
 use codex_core_skills::SKILLS_INTRO_WITH_ABSOLUTE_PATHS;
 use codex_core_skills::SkillLoadOutcome;
 use codex_core_skills::SkillMetadata;
+use codex_core_skills::model::SkillDependencies;
+use codex_core_skills::model::SkillToolDependency;
 use codex_extension_api::ContextContributionContext;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::TurnInputContext;
+use codex_mcp::McpServerDependencies;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::protocol::Event;
@@ -89,7 +93,16 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
         description: "Demo skill.".to_string(),
         short_description: None,
         interface: None,
-        dependencies: None,
+        dependencies: Some(SkillDependencies {
+            tools: vec![SkillToolDependency {
+                r#type: "mcp".to_string(),
+                value: "docs".to_string(),
+                description: None,
+                transport: Some("streamable_http".to_string()),
+                command: None,
+                url: Some("https://example.com/mcp".to_string()),
+            }],
+        }),
         policy: None,
         path_to_skills_md: skill_path,
         scope: SkillScope::User,
@@ -108,6 +121,7 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
+                model: "test-model".to_string(),
                 user_input: vec![UserInput::Text {
                     text: "$demo".to_string(),
                     text_elements: Vec::new(),
@@ -141,6 +155,16 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
             .ok_or("expected connector mentions")?
             .resolve(&[]),
         ["calendar".to_string()].into_iter().collect()
+    );
+    assert_eq!(
+        turn_store
+            .get::<McpServerDependencies>()
+            .ok_or("expected MCP dependencies")?
+            .missing_from(&HashMap::new())
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["docs".to_string()]
     );
 
     std::fs::remove_dir_all(codex_home)?;
@@ -312,6 +336,7 @@ async fn selected_executor_catalog_is_context_and_selected_entrypoint_is_turn_in
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
+                model: "test-model".to_string(),
                 user_input: vec![UserInput::Text {
                     text: "$lint-fix please".to_string(),
                     text_elements: Vec::new(),
@@ -347,6 +372,7 @@ async fn selected_executor_catalog_is_context_and_selected_entrypoint_is_turn_in
         .contribute(
             TurnInputContext {
                 turn_id: "turn-2".to_string(),
+                model: "test-model".to_string(),
                 user_input: vec![UserInput::Text {
                     text: "no skill this time".to_string(),
                     text_elements: Vec::new(),
@@ -423,6 +449,7 @@ async fn orchestrator_catalog_snapshot_caches_failure() -> TestResult {
             .contribute(
                 TurnInputContext {
                     turn_id: turn_id.to_string(),
+                    model: "test-model".to_string(),
                     user_input: vec![UserInput::Text {
                         text: "$first".to_string(),
                         text_elements: Vec::new(),
@@ -502,6 +529,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
+                model: "test-model".to_string(),
                 user_input: vec![UserInput::Mention {
                     name: "lint-fix".to_string(),
                     path: root_b_locator.to_string(),
@@ -588,6 +616,7 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
+                model: "test-model".to_string(),
                 user_input: vec![UserInput::Text {
                     text: "$hidden-skill".to_string(),
                     text_elements: Vec::new(),

@@ -1,9 +1,40 @@
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
 use super::ChatWidget;
+use super::plugin_catalog::PreferredLocalPluginSource;
+use super::plugin_catalog::RemoteMarketplaceSection;
+use super::plugin_catalog::append_marketplace_load_error_items;
+use super::plugin_catalog::disambiguate_duplicate_tab_labels;
+use super::plugin_catalog::marketplace_display_name;
+use super::plugin_catalog::marketplace_is_by_openai;
+use super::plugin_catalog::marketplace_product_label_from_name;
+use super::plugin_catalog::marketplace_product_tab_order;
+use super::plugin_catalog::marketplace_tab_id;
+use super::plugin_catalog::marketplace_tab_id_from_path;
+use super::plugin_catalog::marketplace_tab_id_matching_saved_id;
+use super::plugin_catalog::merge_remote_marketplaces;
+use super::plugin_catalog::plugin_brief_description;
+use super::plugin_catalog::plugin_brief_description_without_marketplace;
+use super::plugin_catalog::plugin_description;
+use super::plugin_catalog::plugin_detail_description;
+use super::plugin_catalog::plugin_detail_location;
+use super::plugin_catalog::plugin_detail_request_for_entry;
+use super::plugin_catalog::plugin_detail_status_label;
+use super::plugin_catalog::plugin_display_name;
+use super::plugin_catalog::plugin_entries_for_marketplaces;
+use super::plugin_catalog::plugin_metadata_items;
+use super::plugin_catalog::plugin_remote_section_error;
+use super::plugin_catalog::plugin_request_name;
+use super::plugin_catalog::plugin_status_label;
+use super::plugin_catalog::plugin_tab_id_matching_saved_id;
+use super::plugin_catalog::plugin_uninstall_id;
+use super::plugin_catalog::plugins_header;
+use super::plugin_catalog::preferred_local_plugin_sources;
+use super::plugin_catalog::remote_section_error_item;
+use super::plugin_catalog::remote_section_loading_item;
+use super::plugin_catalog::sort_plugin_entries;
 use crate::app_event::AppEvent;
 use crate::app_event::PluginLocation;
 use crate::app_event::PluginRemoteSectionError;
@@ -25,10 +56,8 @@ use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::tui::FrameRequester;
 use codex_app_server_protocol::MarketplaceAddResponse;
-use codex_app_server_protocol::MarketplaceLoadErrorInfo;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
-use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginDetail;
 use codex_app_server_protocol::PluginInstallPolicy;
@@ -36,20 +65,9 @@ use codex_app_server_protocol::PluginInstallResponse;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginReadResponse;
-use codex_app_server_protocol::PluginShareContext;
-use codex_app_server_protocol::PluginShareDiscoverability;
-use codex_app_server_protocol::PluginSharePrincipal;
-use codex_app_server_protocol::PluginSource;
 use codex_app_server_protocol::PluginSummary;
 use codex_app_server_protocol::PluginUninstallResponse;
-use codex_core_plugins::is_openai_curated_marketplace_name;
-use codex_core_plugins::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
-use codex_core_plugins::remote::REMOTE_WORKSPACE_MARKETPLACE_NAME;
-use codex_core_plugins::remote::REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME;
-use codex_core_plugins::remote::REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME;
-use codex_core_plugins::remote::REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME;
 use codex_features::Feature;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -67,37 +85,8 @@ use unicode_width::UnicodeWidthStr;
 const PLUGINS_SELECTION_VIEW_ID: &str = "plugins-selection";
 const ALL_PLUGINS_TAB_ID: &str = "all-plugins";
 const INSTALLED_PLUGINS_TAB_ID: &str = "installed-plugins";
-const MARKETPLACE_TAB_ID_PREFIX: &str = "marketplace:";
 const OPENAI_CURATED_TAB_ID: &str = "marketplace:openai-curated";
 const ADD_MARKETPLACE_TAB_ID: &str = "add-marketplace";
-const PERSONAL_MARKETPLACE_RELATIVE_PATH: &str = ".agents/plugins/marketplace.json";
-const WORKSPACE_SECTION_MARKETPLACE_NAMES: &[&str] = &[REMOTE_WORKSPACE_MARKETPLACE_NAME];
-const SHARED_WITH_ME_SECTION_MARKETPLACE_NAMES: &[&str] = &[
-    REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME,
-    REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME,
-    REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME,
-];
-const WORKSPACE_SECTION_TAB_IDS: &[&str] = &[
-    "marketplace:workspace-directory",
-    "remote-loading:workspace-loading",
-    "remote-empty:workspace",
-    "remote-error:workspace",
-];
-const SHARED_WITH_ME_SECTION_TAB_IDS: &[&str] = &[
-    "marketplace:workspace-shared-with-me",
-    "marketplace:workspace-shared-with-me-private",
-    "marketplace:workspace-shared-with-me-unlisted",
-    "remote-loading:shared-with-me-loading",
-    "remote-empty:shared-with-me",
-    "remote-error:shared-with-me",
-];
-const WORKSPACE_SECTION_TAB_ORDER: u8 = 0;
-const SHARED_WITH_ME_SECTION_TAB_ORDER: u8 = 1;
-const SHARED_WITH_ME_LINK_SECTION_TAB_ORDER: u8 = 2;
-const LOCAL_MARKETPLACE_TAB_ORDER: u8 = 3;
-const OTHER_MARKETPLACE_TAB_ORDER: u8 = 4;
-const WORKSPACE_SECTION_FALLBACK_TAB_ORDER: u8 = 5;
-const SHARED_WITH_ME_SECTION_FALLBACK_TAB_ORDER: u8 = 6;
 const PLUGIN_ROW_PREFIX_WIDTH: usize = 6;
 const LOADING_ANIMATION_DELAY: Duration = Duration::from_secs(1);
 const LOADING_ANIMATION_INTERVAL: Duration = Duration::from_millis(100);
@@ -207,13 +196,6 @@ pub(super) enum PluginsCacheState {
     Loading,
     Ready(PluginListResponse),
     Failed(String),
-}
-
-#[derive(Debug, Clone)]
-struct PreferredLocalPluginSource {
-    remote_plugin_id: String,
-    marketplace_path: AbsolutePathBuf,
-    plugin_name: String,
 }
 
 impl ChatWidget {
@@ -1691,10 +1673,8 @@ impl ChatWidget {
             .filter(|(_, plugin, _)| plugin.installed)
             .count();
         let curated_has_entries = !curated_entries.is_empty();
-        let by_openai_section_error = self
-            .plugin_remote_section_errors
-            .iter()
-            .find(|section_error| section_error.section_id == "vertical");
+        let by_openai_section_error =
+            plugin_remote_section_error(&self.plugin_remote_section_errors, "vertical");
         let (curated_empty_name, curated_empty_description) =
             if self.plugin_remote_sections_loading && !curated_has_entries {
                 (
@@ -1754,64 +1734,18 @@ impl ChatWidget {
             )
         });
 
-        let has_workspace_tab = additional_marketplaces
-            .iter()
-            .any(|marketplace| marketplace.name == REMOTE_WORKSPACE_MARKETPLACE_NAME);
-        let has_shared_with_me_tab = additional_marketplaces.iter().any(|marketplace| {
-            matches!(
-                marketplace.name.as_str(),
-                REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
-                    | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME
-                    | REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME
-            )
-        });
-        let workspace_section_error = self
-            .plugin_remote_section_errors
-            .iter()
-            .find(|section_error| section_error.section_id == "workspace");
-        let shared_with_me_section_error = self
-            .plugin_remote_section_errors
-            .iter()
-            .find(|section_error| section_error.section_id == "shared-with-me");
         let mut additional_tabs = Vec::new();
-        if !has_workspace_tab {
-            if self.plugin_remote_sections_loading {
-                additional_tabs.push((
-                    WORKSPACE_SECTION_FALLBACK_TAB_ORDER,
-                    remote_section_loading_tab("workspace-loading", "Workspace"),
-                ));
-            } else if self.plugin_remote_sections_loaded {
-                let tab = if let Some(section_error) = workspace_section_error {
-                    remote_section_error_tab(section_error)
-                } else {
-                    remote_section_empty_tab(
-                        "workspace",
-                        "Workspace",
-                        "No workspace plugins available",
-                        "No workspace directory plugins are available.",
-                    )
-                };
-                additional_tabs.push((WORKSPACE_SECTION_FALLBACK_TAB_ORDER, tab));
-            }
-        }
-        if !has_shared_with_me_tab {
-            if self.plugin_remote_sections_loading {
-                additional_tabs.push((
-                    SHARED_WITH_ME_SECTION_FALLBACK_TAB_ORDER,
-                    remote_section_loading_tab("shared-with-me-loading", "Shared with me"),
-                ));
-            } else if self.plugin_remote_sections_loaded {
-                let tab = if let Some(section_error) = shared_with_me_section_error {
-                    remote_section_error_tab(section_error)
-                } else {
-                    remote_section_empty_tab(
-                        "shared-with-me",
-                        "Shared with me",
-                        "No shared plugins available",
-                        "No plugins have been shared with you.",
-                    )
-                };
-                additional_tabs.push((SHARED_WITH_ME_SECTION_FALLBACK_TAB_ORDER, tab));
+        for section in [
+            RemoteMarketplaceSection::Workspace,
+            RemoteMarketplaceSection::SharedWithMe,
+        ] {
+            if let Some(fallback_tab) = section.fallback_tab(
+                &additional_marketplaces,
+                self.plugin_remote_sections_loading,
+                self.plugin_remote_sections_loaded,
+                &self.plugin_remote_section_errors,
+            ) {
+                additional_tabs.push(fallback_tab);
             }
         }
 
@@ -2162,8 +2096,8 @@ impl ChatWidget {
             let plugin_detail_request =
                 plugin_detail_request_for_entry(marketplace, plugin, preferred_local_sources);
             let can_view_details = plugin_detail_request.is_some();
-            let can_toggle_plugin =
-                plugin.installed && plugin.availability != PluginAvailability::DisabledByAdmin;
+            let disabled_by_admin = plugin.availability == PluginAvailability::DisabledByAdmin;
+            let can_toggle_plugin = plugin.installed && !disabled_by_admin;
             let selected_status_label = format!("{status_label:<status_label_width$}");
             let selected_description = if can_toggle_plugin {
                 let toggle_action = if plugin.enabled { "disable" } else { "enable" };
@@ -2178,6 +2112,8 @@ impl ChatWidget {
                 format!("{selected_status_label}   Press Enter to view plugin details.")
             } else if plugin.installed {
                 format!("{selected_status_label}   Plugin details are unavailable.")
+            } else if disabled_by_admin && can_view_details {
+                format!("{selected_status_label}   Press Enter to view plugin details.")
             } else if can_view_details {
                 format!("{selected_status_label}   Press Enter to install or view plugin details.")
             } else {
@@ -2278,393 +2214,6 @@ fn plugin_detail_hint_line() -> Line<'static> {
     Line::from("Press esc to close.")
 }
 
-fn plugins_header(subtitle: String, count_line: String) -> Box<dyn Renderable> {
-    let mut header = ColumnRenderable::new();
-    header.push(Line::from("Plugins".bold()));
-    header.push(Line::from(subtitle.dim()));
-    header.push(Line::from(count_line.dim()));
-    Box::new(header)
-}
-
-fn remote_section_loading_tab(id: &str, label: &str) -> SelectionTab {
-    SelectionTab {
-        id: format!("remote-loading:{id}"),
-        label: label.to_string(),
-        header: plugins_header(
-            format!("Loading {label} plugins."),
-            "Local plugin functionality is already available.".to_string(),
-        ),
-        items: vec![remote_section_loading_item(label)],
-    }
-}
-
-fn remote_section_loading_item(label: &str) -> SelectionItem {
-    SelectionItem {
-        name: format!("Loading {label} plugins..."),
-        description: Some("This section updates when app-server returns it.".to_string()),
-        is_disabled: true,
-        ..Default::default()
-    }
-}
-
-fn remote_section_empty_tab(
-    id: &str,
-    label: &str,
-    item_name: &str,
-    item_description: &str,
-) -> SelectionTab {
-    SelectionTab {
-        id: format!("remote-empty:{id}"),
-        label: label.to_string(),
-        header: plugins_header(
-            format!("{label}."),
-            "This section loaded successfully.".to_string(),
-        ),
-        items: vec![SelectionItem {
-            name: item_name.to_string(),
-            description: Some(item_description.to_string()),
-            is_disabled: true,
-            ..Default::default()
-        }],
-    }
-}
-
-fn remote_section_error_tab(section_error: &PluginRemoteSectionError) -> SelectionTab {
-    SelectionTab {
-        id: format!("remote-error:{}", section_error.section_id),
-        label: section_error.label.clone(),
-        header: plugins_header(
-            format!("{} unavailable.", section_error.label),
-            "Local plugin functionality is still available.".to_string(),
-        ),
-        items: vec![remote_section_error_item(
-            &section_error.label,
-            &section_error.message,
-        )],
-    }
-}
-
-fn remote_section_error_item(label: &str, message: &str) -> SelectionItem {
-    SelectionItem {
-        name: format!("{label} unavailable"),
-        description: Some(message.to_string()),
-        is_disabled: true,
-        ..Default::default()
-    }
-}
-
-fn append_marketplace_load_error_items(
-    items: &mut Vec<SelectionItem>,
-    load_errors: &[MarketplaceLoadErrorInfo],
-) {
-    for load_error in load_errors {
-        let marketplace_path = load_error.marketplace_path.as_path().display();
-        let description = format!("{marketplace_path}: {}", load_error.message);
-        items.push(SelectionItem {
-            name: "Marketplace unavailable".to_string(),
-            description: Some(description.clone()),
-            selected_description: Some(description.clone()),
-            search_value: Some(description),
-            is_disabled: true,
-            ..Default::default()
-        });
-    }
-}
-
-fn plugin_entries_for_marketplaces<'a>(
-    marketplaces: impl IntoIterator<Item = &'a PluginMarketplaceEntry>,
-) -> Vec<(&'a PluginMarketplaceEntry, &'a PluginSummary, String)> {
-    let entries = marketplaces
-        .into_iter()
-        .flat_map(|marketplace| {
-            marketplace
-                .plugins
-                .iter()
-                .map(move |plugin| (marketplace, plugin, plugin_display_name(plugin)))
-        })
-        .collect::<Vec<_>>();
-    dedupe_plugin_entries(entries)
-}
-
-fn dedupe_plugin_entries<'a>(
-    entries: Vec<(&'a PluginMarketplaceEntry, &'a PluginSummary, String)>,
-) -> Vec<(&'a PluginMarketplaceEntry, &'a PluginSummary, String)> {
-    // App-server should eventually normalize local/remote duplicates. Keep this
-    // display-only pass narrow so shared plugins do not appear twice meanwhile.
-    let mut deduped: Vec<(&PluginMarketplaceEntry, &PluginSummary, String)> = Vec::new();
-    let mut remote_entry_indexes = std::collections::HashMap::new();
-    for entry in entries {
-        let Some(remote_plugin_id) = plugin_remote_identity(entry.1) else {
-            deduped.push(entry);
-            continue;
-        };
-        if let Some(existing_index) = remote_entry_indexes.get(&remote_plugin_id).copied() {
-            if plugin_entry_preferred(&entry, &deduped[existing_index]) {
-                deduped[existing_index] = entry;
-            }
-        } else {
-            remote_entry_indexes.insert(remote_plugin_id, deduped.len());
-            deduped.push(entry);
-        }
-    }
-    deduped
-}
-
-fn plugin_entry_preferred(
-    candidate: &(&PluginMarketplaceEntry, &PluginSummary, String),
-    existing: &(&PluginMarketplaceEntry, &PluginSummary, String),
-) -> bool {
-    if candidate.1.installed != existing.1.installed {
-        return candidate.1.installed;
-    }
-
-    let candidate_is_local_share =
-        candidate.1.share_context.is_some() && !matches!(candidate.1.source, PluginSource::Remote);
-    let existing_is_local_share =
-        existing.1.share_context.is_some() && !matches!(existing.1.source, PluginSource::Remote);
-    if candidate_is_local_share != existing_is_local_share {
-        return candidate_is_local_share;
-    }
-
-    !matches!(candidate.1.source, PluginSource::Remote)
-        && matches!(existing.1.source, PluginSource::Remote)
-}
-
-fn sort_plugin_entries(entries: &mut [(&PluginMarketplaceEntry, &PluginSummary, String)]) {
-    entries.sort_by(|left, right| {
-        right
-            .1
-            .installed
-            .cmp(&left.1.installed)
-            .then_with(|| {
-                left.2
-                    .to_ascii_lowercase()
-                    .cmp(&right.2.to_ascii_lowercase())
-            })
-            .then_with(|| left.2.cmp(&right.2))
-            .then_with(|| left.1.name.cmp(&right.1.name))
-            .then_with(|| left.1.id.cmp(&right.1.id))
-    });
-}
-
-fn marketplace_tab_id(marketplace: &PluginMarketplaceEntry) -> String {
-    match marketplace.path.as_ref() {
-        Some(path) => marketplace_tab_id_from_path(path.as_path()),
-        None => format!("marketplace:{}", marketplace.name),
-    }
-}
-
-fn marketplace_tab_id_from_path(path: &Path) -> String {
-    format!("{MARKETPLACE_TAB_ID_PREFIX}{}", path.display())
-}
-
-fn marketplace_tab_id_matching_saved_id(
-    saved_tab_id: &str,
-    marketplaces: &[PluginMarketplaceEntry],
-) -> Option<String> {
-    if let Some(tab_id) = remote_section_marketplace_tab_id(saved_tab_id, marketplaces) {
-        return Some(tab_id);
-    }
-
-    if let Some(tab_id) = marketplaces.iter().find_map(|marketplace| {
-        let tab_id = marketplace_tab_id(marketplace);
-        (tab_id == saved_tab_id).then_some(tab_id)
-    }) {
-        return Some(tab_id);
-    }
-
-    let root = saved_tab_id.strip_prefix(MARKETPLACE_TAB_ID_PREFIX)?;
-    if root.is_empty() {
-        return None;
-    }
-    let root = Path::new(root);
-    marketplaces.iter().find_map(|marketplace| {
-        marketplace
-            .path
-            .as_ref()
-            .is_some_and(|path| path.as_path().starts_with(root))
-            .then(|| marketplace_tab_id(marketplace))
-    })
-}
-
-fn remote_section_marketplace_tab_id(
-    saved_tab_id: &str,
-    marketplaces: &[PluginMarketplaceEntry],
-) -> Option<String> {
-    let marketplace_name_matches = match saved_tab_id {
-        "remote-loading:workspace-loading"
-        | "remote-empty:workspace"
-        | "remote-error:workspace" => WORKSPACE_SECTION_MARKETPLACE_NAMES,
-        "remote-loading:shared-with-me-loading"
-        | "remote-empty:shared-with-me"
-        | "remote-error:shared-with-me" => SHARED_WITH_ME_SECTION_MARKETPLACE_NAMES,
-        _ => return None,
-    };
-
-    marketplace_name_matches
-        .iter()
-        .find_map(|marketplace_name| {
-            marketplaces
-                .iter()
-                .find(|marketplace| marketplace.name.as_str() == *marketplace_name)
-                .map(marketplace_tab_id)
-        })
-}
-
-fn plugin_tab_id_matching_saved_id(saved_tab_id: &str, tabs: &[SelectionTab]) -> Option<String> {
-    if let Some(tab_id) = tabs
-        .iter()
-        .find(|tab| tab.id.as_str() == saved_tab_id)
-        .map(|tab| tab.id.clone())
-    {
-        return Some(tab_id);
-    }
-
-    let candidate_tab_ids = match saved_tab_id {
-        "remote-loading:workspace-loading"
-        | "remote-empty:workspace"
-        | "remote-error:workspace"
-        | "marketplace:workspace-directory" => WORKSPACE_SECTION_TAB_IDS,
-        "remote-loading:shared-with-me-loading"
-        | "remote-empty:shared-with-me"
-        | "remote-error:shared-with-me"
-        | "marketplace:workspace-shared-with-me"
-        | "marketplace:workspace-shared-with-me-private"
-        | "marketplace:workspace-shared-with-me-unlisted" => SHARED_WITH_ME_SECTION_TAB_IDS,
-        _ => return None,
-    };
-
-    tabs.iter()
-        .find(|tab| candidate_tab_ids.contains(&tab.id.as_str()))
-        .map(|tab| tab.id.clone())
-}
-
-fn merge_remote_marketplaces(
-    response: &mut PluginListResponse,
-    remote_marketplaces: Vec<PluginMarketplaceEntry>,
-) {
-    let remote_names = remote_marketplaces
-        .iter()
-        .map(|marketplace| marketplace.name.clone())
-        .collect::<std::collections::HashSet<_>>();
-    response.marketplaces.retain(|marketplace| {
-        marketplace.path.is_some()
-            || !remote_marketplace_is_remote_section(marketplace)
-                && !remote_names.contains(marketplace.name.as_str())
-    });
-    response.marketplaces.extend(remote_marketplaces);
-}
-
-fn remote_marketplace_is_remote_section(marketplace: &PluginMarketplaceEntry) -> bool {
-    matches!(
-        marketplace.name.as_str(),
-        REMOTE_WORKSPACE_MARKETPLACE_NAME
-            | REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
-            | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME
-            | REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME
-    )
-}
-
-fn disambiguate_duplicate_tab_labels(labels: Vec<String>) -> Vec<String> {
-    let mut counts: Vec<(String, usize)> = Vec::new();
-    for label in &labels {
-        if let Some((_, count)) = counts.iter_mut().find(|(existing, _)| existing == label) {
-            *count += 1;
-        } else {
-            counts.push((label.clone(), 1));
-        }
-    }
-
-    let mut seen: Vec<(String, usize)> = Vec::new();
-    labels
-        .into_iter()
-        .map(|label| {
-            let total = counts
-                .iter()
-                .find(|(existing, _)| existing == &label)
-                .map(|(_, count)| *count)
-                .unwrap_or(1);
-            if total == 1 {
-                return label;
-            }
-
-            let current = if let Some((_, seen_count)) =
-                seen.iter_mut().find(|(existing, _)| existing == &label)
-            {
-                *seen_count += 1;
-                *seen_count
-            } else {
-                seen.push((label.clone(), 1));
-                1
-            };
-            format!("{label} ({current}/{total})")
-        })
-        .collect()
-}
-
-fn marketplace_display_name(marketplace: &PluginMarketplaceEntry) -> String {
-    if let Some(label) = marketplace_product_label_from_name(&marketplace.name) {
-        return label.to_string();
-    }
-    if marketplace
-        .path
-        .as_ref()
-        .is_some_and(is_personal_marketplace_path)
-    {
-        return "Local".to_string();
-    }
-    marketplace
-        .interface
-        .as_ref()
-        .and_then(|interface| interface.display_name.as_deref())
-        .map(str::trim)
-        .filter(|display_name| !display_name.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| marketplace.name.clone())
-}
-
-fn marketplace_product_tab_order(marketplace: &PluginMarketplaceEntry) -> u8 {
-    match marketplace.name.as_str() {
-        REMOTE_WORKSPACE_MARKETPLACE_NAME => WORKSPACE_SECTION_TAB_ORDER,
-        REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
-        | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME => {
-            SHARED_WITH_ME_SECTION_TAB_ORDER
-        }
-        REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME => {
-            SHARED_WITH_ME_LINK_SECTION_TAB_ORDER
-        }
-        _ if marketplace
-            .path
-            .as_ref()
-            .is_some_and(is_personal_marketplace_path) =>
-        {
-            LOCAL_MARKETPLACE_TAB_ORDER
-        }
-        _ => OTHER_MARKETPLACE_TAB_ORDER,
-    }
-}
-
-fn marketplace_product_label_from_name(marketplace_name: &str) -> Option<&str> {
-    if is_openai_curated_marketplace_name(marketplace_name)
-        || marketplace_name == REMOTE_GLOBAL_MARKETPLACE_NAME
-    {
-        return Some("OpenAI Curated");
-    }
-
-    match marketplace_name {
-        REMOTE_WORKSPACE_MARKETPLACE_NAME => Some("Workspace"),
-        REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
-        | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME => Some("Shared with me"),
-        REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME => Some("Shared with me (link)"),
-        _ => None,
-    }
-}
-
-fn marketplace_is_by_openai(marketplace: &PluginMarketplaceEntry) -> bool {
-    is_openai_curated_marketplace_name(&marketplace.name)
-        || marketplace.name == REMOTE_GLOBAL_MARKETPLACE_NAME
-}
-
 fn marketplace_is_user_configured(config: &Config, marketplace_name: &str) -> bool {
     let Some(user_config) = config.config_layer_stack.effective_user_config() else {
         return false;
@@ -2686,352 +2235,6 @@ fn marketplace_is_user_configured_git(config: &Config, marketplace_name: &str) -
         .and_then(|marketplace| marketplace.get("source_type"))
         .and_then(toml::Value::as_str)
         .is_some_and(|source_type| source_type == "git")
-}
-
-fn plugin_display_name(plugin: &PluginSummary) -> String {
-    plugin
-        .interface
-        .as_ref()
-        .and_then(|interface| interface.display_name.as_deref())
-        .map(str::trim)
-        .filter(|display_name| !display_name.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| plugin.name.clone())
-}
-
-fn plugin_brief_description(
-    plugin: &PluginSummary,
-    marketplace_label: &str,
-    status_label_width: usize,
-) -> String {
-    let status_label = plugin_status_label(plugin);
-    let status_label = format!("{status_label:<status_label_width$}");
-    match plugin_description(plugin) {
-        Some(description) => format!("{status_label} · {marketplace_label} · {description}"),
-        None => format!("{status_label} · {marketplace_label}"),
-    }
-}
-
-fn plugin_brief_description_without_marketplace(
-    plugin: &PluginSummary,
-    status_label_width: usize,
-) -> String {
-    let status_label = plugin_status_label(plugin);
-    let status_label = format!("{status_label:<status_label_width$}");
-    match plugin_description(plugin) {
-        Some(description) => format!("{status_label} · {description}"),
-        None => status_label,
-    }
-}
-
-fn plugin_status_label(plugin: &PluginSummary) -> &'static str {
-    if plugin.availability == PluginAvailability::DisabledByAdmin {
-        return "Disabled by admin";
-    }
-    if plugin.installed {
-        if plugin.enabled {
-            "Installed"
-        } else {
-            "Disabled"
-        }
-    } else {
-        match plugin.install_policy {
-            PluginInstallPolicy::NotAvailable => "Not installable",
-            PluginInstallPolicy::Available => "Available",
-            PluginInstallPolicy::InstalledByDefault => "Available by default",
-        }
-    }
-}
-
-fn plugin_detail_status_label(plugin: &PluginSummary) -> &'static str {
-    if plugin.availability == PluginAvailability::DisabledByAdmin {
-        return "Disabled by admin";
-    }
-    if plugin.installed {
-        if plugin.enabled {
-            "Installed"
-        } else {
-            "Disabled"
-        }
-    } else {
-        match plugin.install_policy {
-            PluginInstallPolicy::NotAvailable => "Not installable",
-            PluginInstallPolicy::Available => "Can be installed",
-            PluginInstallPolicy::InstalledByDefault => "Available by default",
-        }
-    }
-}
-
-fn plugin_location_for_marketplace(
-    marketplace: &PluginMarketplaceEntry,
-    plugin: &PluginSummary,
-) -> Option<PluginLocation> {
-    if let Some(marketplace_path) = marketplace.path.clone() {
-        return Some(PluginLocation::Local { marketplace_path });
-    }
-    plugin_remote_identity(plugin).map(|_| PluginLocation::Remote {
-        marketplace_name: marketplace.name.clone(),
-    })
-}
-
-fn plugin_detail_location(plugin: &PluginDetail) -> Option<PluginLocation> {
-    if let Some(marketplace_path) = plugin.marketplace_path.clone() {
-        return Some(PluginLocation::Local { marketplace_path });
-    }
-    plugin_remote_identity(&plugin.summary).map(|_| PluginLocation::Remote {
-        marketplace_name: plugin.marketplace_name.clone(),
-    })
-}
-
-fn plugin_detail_request_for_entry(
-    marketplace: &PluginMarketplaceEntry,
-    plugin: &PluginSummary,
-    preferred_local_sources: &[PreferredLocalPluginSource],
-) -> Option<(PluginLocation, String)> {
-    if matches!(plugin.source, PluginSource::Remote)
-        && let Some(remote_plugin_id) = plugin_remote_identity(plugin)
-        && let Some(preferred_source) = preferred_local_sources
-            .iter()
-            .find(|source| source.remote_plugin_id == remote_plugin_id)
-    {
-        return Some((
-            PluginLocation::Local {
-                marketplace_path: preferred_source.marketplace_path.clone(),
-            },
-            preferred_source.plugin_name.clone(),
-        ));
-    }
-
-    plugin_location_for_marketplace(marketplace, plugin)
-        .map(|location| (location, plugin_request_name(plugin)))
-}
-
-fn preferred_local_plugin_sources(
-    marketplaces: &[&PluginMarketplaceEntry],
-) -> Vec<PreferredLocalPluginSource> {
-    let mut sources: Vec<PreferredLocalPluginSource> = Vec::new();
-    let mut seen_remote_plugin_ids = std::collections::HashSet::new();
-    for marketplace in marketplaces {
-        let Some(marketplace_path) = marketplace.path.clone() else {
-            continue;
-        };
-        for plugin in &marketplace.plugins {
-            if matches!(plugin.source, PluginSource::Remote) {
-                continue;
-            }
-            let Some(remote_plugin_id) = plugin
-                .share_context
-                .as_ref()
-                .map(|context| context.remote_plugin_id.clone())
-            else {
-                continue;
-            };
-            if !seen_remote_plugin_ids.insert(remote_plugin_id.clone()) {
-                continue;
-            }
-            sources.push(PreferredLocalPluginSource {
-                remote_plugin_id,
-                marketplace_path: marketplace_path.clone(),
-                plugin_name: plugin.name.clone(),
-            });
-        }
-    }
-    sources
-}
-
-fn plugin_request_name(plugin: &PluginSummary) -> String {
-    if matches!(plugin.source, PluginSource::Remote)
-        && let Some(remote_plugin_id) = plugin_remote_identity(plugin)
-    {
-        return remote_plugin_id;
-    }
-    plugin.name.clone()
-}
-
-fn plugin_remote_identity(plugin: &PluginSummary) -> Option<String> {
-    plugin
-        .share_context
-        .as_ref()
-        .map(|context| context.remote_plugin_id.clone())
-        .or_else(|| plugin.remote_plugin_id.clone())
-}
-
-fn plugin_uninstall_id(plugin: &PluginSummary) -> Option<String> {
-    if matches!(plugin.source, PluginSource::Remote) {
-        return plugin_remote_identity(plugin);
-    }
-    Some(plugin.id.clone())
-}
-
-fn is_personal_marketplace_path(marketplace_path: &AbsolutePathBuf) -> bool {
-    dirs::home_dir()
-        .and_then(|home| personal_marketplace_path_from_home(home.as_path()))
-        .is_some_and(|personal_path| personal_path.as_path() == marketplace_path.as_path())
-}
-
-fn personal_marketplace_path_from_home(home: &Path) -> Option<AbsolutePathBuf> {
-    AbsolutePathBuf::try_from(home.join(PERSONAL_MARKETPLACE_RELATIVE_PATH)).ok()
-}
-
-fn plugin_metadata_items(plugin: &PluginDetail) -> Vec<SelectionItem> {
-    let mut items = Vec::new();
-    items.push(SelectionItem {
-        name: "Source".to_string(),
-        description: Some(plugin_source_summary(plugin)),
-        is_disabled: true,
-        ..Default::default()
-    });
-    items.push(SelectionItem {
-        name: "Auth".to_string(),
-        description: Some(plugin_auth_policy_summary(plugin.summary.auth_policy)),
-        is_disabled: true,
-        ..Default::default()
-    });
-    if let Some(version) = plugin_version_summary(&plugin.summary) {
-        items.push(SelectionItem {
-            name: "Version".to_string(),
-            description: Some(version),
-            is_disabled: true,
-            ..Default::default()
-        });
-    }
-    if let Some(share_context) = &plugin.summary.share_context {
-        items.push(SelectionItem {
-            name: "Sharing".to_string(),
-            description: Some(plugin_share_context_summary(share_context)),
-            is_disabled: true,
-            ..Default::default()
-        });
-    }
-    items
-}
-
-fn plugin_source_summary(plugin: &PluginDetail) -> String {
-    match &plugin.summary.source {
-        PluginSource::Local { .. } => "Local".to_string(),
-        PluginSource::Git { url, ref_name, .. } => match ref_name {
-            Some(ref_name) => format!("Git · {url}@{ref_name}"),
-            None => format!("Git · {url}"),
-        },
-        PluginSource::Remote => {
-            let marketplace_label = marketplace_product_label_from_name(&plugin.marketplace_name)
-                .unwrap_or(plugin.marketplace_name.as_str());
-            format!("Remote · {marketplace_label}")
-        }
-    }
-}
-
-fn plugin_auth_policy_summary(auth_policy: PluginAuthPolicy) -> String {
-    match auth_policy {
-        PluginAuthPolicy::OnInstall => "Auth on install".to_string(),
-        PluginAuthPolicy::OnUse => "Auth on use".to_string(),
-    }
-}
-
-fn plugin_version_summary(plugin: &PluginSummary) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(local_version) = plugin.local_version.as_deref() {
-        parts.push(format!("local {local_version}"));
-    }
-    if let Some(remote_version) = plugin
-        .share_context
-        .as_ref()
-        .and_then(|context| context.remote_version.as_deref())
-    {
-        parts.push(format!("remote {remote_version}"));
-    }
-    (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
-fn plugin_share_context_summary(context: &PluginShareContext) -> String {
-    let mut parts = Vec::new();
-    if let Some(discoverability) = context.discoverability {
-        parts.push(plugin_share_discoverability_label(discoverability).to_string());
-    }
-    if let Some(creator_summary) = plugin_share_creator_summary(context) {
-        parts.push(creator_summary);
-    }
-    if let Some(principals) = context.share_principals.as_ref() {
-        parts.push(plugin_share_principals_summary(principals));
-    }
-    if let Some(share_url) = context
-        .share_url
-        .as_deref()
-        .filter(|url| !url.trim().is_empty())
-    {
-        parts.push(share_url.to_string());
-    }
-    if parts.is_empty() {
-        format!("Remote ID {}", context.remote_plugin_id)
-    } else {
-        parts.join(" · ")
-    }
-}
-
-fn plugin_share_discoverability_label(discoverability: PluginShareDiscoverability) -> &'static str {
-    match discoverability {
-        PluginShareDiscoverability::Listed => "Listed",
-        PluginShareDiscoverability::Unlisted => "Workspace link",
-        PluginShareDiscoverability::Private => "Private",
-    }
-}
-
-fn plugin_share_creator_summary(context: &PluginShareContext) -> Option<String> {
-    match (
-        context.creator_name.as_deref(),
-        context.creator_account_user_id.as_deref(),
-    ) {
-        (Some(name), Some(account_id)) => Some(format!("creator {name} ({account_id})")),
-        (Some(name), None) => Some(format!("creator {name}")),
-        (None, Some(account_id)) => Some(format!("creator account {account_id}")),
-        (None, None) => None,
-    }
-}
-
-fn plugin_share_principals_summary(principals: &[PluginSharePrincipal]) -> String {
-    match principals.len() {
-        0 => "No explicit principals".to_string(),
-        1 => format!("1 principal: {}", principals[0].name),
-        count => format!("{count} principals"),
-    }
-}
-
-fn plugin_description(plugin: &PluginSummary) -> Option<String> {
-    plugin
-        .interface
-        .as_ref()
-        .and_then(|interface| {
-            interface
-                .short_description
-                .as_deref()
-                .or(interface.long_description.as_deref())
-        })
-        .map(str::trim)
-        .filter(|description| !description.is_empty())
-        .map(str::to_string)
-}
-
-fn plugin_detail_description(plugin: &PluginDetail) -> Option<String> {
-    plugin
-        .description
-        .as_deref()
-        .or_else(|| {
-            plugin
-                .summary
-                .interface
-                .as_ref()
-                .and_then(|interface| interface.long_description.as_deref())
-        })
-        .or_else(|| {
-            plugin
-                .summary
-                .interface
-                .as_ref()
-                .and_then(|interface| interface.short_description.as_deref())
-        })
-        .map(str::trim)
-        .filter(|description| !description.is_empty())
-        .map(str::to_string)
 }
 
 fn plugin_skill_summary(plugin: &PluginDetail) -> String {

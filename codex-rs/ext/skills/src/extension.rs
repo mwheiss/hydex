@@ -1,6 +1,12 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use codex_connectors::ExplicitConnectorMentions;
 use codex_core_skills::HostSkillsSnapshot;
+use codex_core_skills::injection::ToolMentionKind;
+use codex_core_skills::injection::app_id_from_path;
+use codex_core_skills::injection::extract_tool_mentions;
+use codex_core_skills::injection::tool_kind_for_path;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributionContext;
@@ -210,15 +216,35 @@ where
 
             let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
             let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
+            let skill_names = catalog
+                .entries
+                .iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.name.to_ascii_lowercase())
+                .collect::<HashSet<_>>();
 
             let mut warnings = catalog.warnings.clone();
             let mut main_prompts_injected = false;
+            let mut connector_mentions = ExplicitConnectorMentions::default();
             for entry in &selected_entries {
                 match self
                     .read_main_prompt(entry, host_snapshot.clone(), session_store, &thread_state)
                     .await
                 {
                     Ok(read_result) => {
+                        let tool_mentions = extract_tool_mentions(&read_result.contents);
+                        for path in tool_mentions.paths() {
+                            if tool_kind_for_path(path) == ToolMentionKind::App
+                                && let Some(connector_id) = app_id_from_path(path)
+                            {
+                                connector_mentions.insert_connector_id(connector_id);
+                            }
+                        }
+                        for name in tool_mentions.plain_names() {
+                            if !skill_names.contains(&name.to_ascii_lowercase()) {
+                                connector_mentions.insert_plain_name(name);
+                            }
+                        }
                         let (contents, truncated) =
                             truncate_main_prompt_contents(read_result.contents.as_str());
                         if truncated {
@@ -247,6 +273,9 @@ where
                         warnings.push(warning);
                     }
                 }
+            }
+            if !connector_mentions.is_empty() {
+                turn_store.insert(connector_mentions);
             }
 
             turn_store.insert(SkillsTurnState {

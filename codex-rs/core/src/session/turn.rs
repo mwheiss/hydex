@@ -22,16 +22,11 @@ use crate::hook_runtime::record_pending_input;
 use crate::hook_runtime::run_legacy_after_agent_hook;
 use crate::hook_runtime::run_pending_session_start_hooks;
 use crate::hook_runtime::run_turn_stop_hooks;
-use crate::injection::ToolMentionKind;
-use crate::injection::app_id_from_path;
-use crate::injection::tool_kind_for_path;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
-use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
-use crate::mentions::collect_tool_mentions_from_messages;
 use crate::plugins::build_plugin_injections;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
@@ -531,8 +526,6 @@ async fn build_skills_and_plugins(
     let extension_injection_items =
         build_extension_turn_input_items(sess, turn_context, &user_input, cancellation_token)
             .await?;
-    let skill_name_counts_lower =
-        build_skill_name_counts(&skills_outcome.skills, &skills_outcome.disabled_paths).1;
     let mentioned_skills = collect_explicit_skill_mentions(
         &user_input,
         &skills_outcome.skills,
@@ -548,11 +541,11 @@ async fn build_skills_and_plugins(
     )
     .await;
     record_explicit_skill_invocations(sess, turn_context, tracking.clone(), &mentioned_skills);
-    let skill_connector_ids = collect_explicit_app_ids_from_skill_items(
-        &extension_injection_items,
-        &available_connectors,
-        &skill_name_counts_lower,
-    );
+    let skill_connector_ids = turn_context
+        .extension_data
+        .get::<codex_connectors::ExplicitConnectorMentions>()
+        .map(|mentions| mentions.resolve(&available_connectors))
+        .unwrap_or_default();
     let plugin_items =
         build_plugin_injections(&mentioned_plugins, &mcp_tools, &available_connectors);
     let mut explicitly_enabled_connectors = collect_explicit_app_ids(&user_input);
@@ -928,57 +921,6 @@ async fn run_auto_compact(
         .await?;
     }
     Ok(())
-}
-
-pub(super) fn collect_explicit_app_ids_from_skill_items(
-    skill_items: &[ResponseItem],
-    connectors: &[connectors::AppInfo],
-    skill_name_counts_lower: &HashMap<String, usize>,
-) -> HashSet<String> {
-    if skill_items.is_empty() || connectors.is_empty() {
-        return HashSet::new();
-    }
-
-    let skill_messages = skill_items
-        .iter()
-        .filter_map(|item| match item {
-            ResponseItem::Message { content, .. } => {
-                content.iter().find_map(|content_item| match content_item {
-                    ContentItem::InputText { text } => Some(text.clone()),
-                    _ => None,
-                })
-            }
-            _ => None,
-        })
-        .collect::<Vec<String>>();
-    if skill_messages.is_empty() {
-        return HashSet::new();
-    }
-
-    let mentions = collect_tool_mentions_from_messages(&skill_messages);
-    let mention_names_lower = mentions
-        .plain_names
-        .iter()
-        .map(|name| name.to_ascii_lowercase())
-        .collect::<HashSet<String>>();
-    let mut connector_ids = mentions
-        .paths
-        .iter()
-        .filter(|path| tool_kind_for_path(path) == ToolMentionKind::App)
-        .filter_map(|path| app_id_from_path(path).map(str::to_string))
-        .collect::<HashSet<String>>();
-
-    let connector_slug_counts = build_connector_slug_counts(connectors);
-    for connector in connectors {
-        let slug = codex_connectors::metadata::connector_mention_slug(connector);
-        let connector_count = connector_slug_counts.get(&slug).copied().unwrap_or(0);
-        let skill_count = skill_name_counts_lower.get(&slug).copied().unwrap_or(0);
-        if connector_count == 1 && skill_count == 0 && mention_names_lower.contains(&slug) {
-            connector_ids.insert(connector.id.clone());
-        }
-    }
-
-    connector_ids
 }
 
 #[instrument(level = "trace", skip_all)]

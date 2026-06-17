@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use codex_connectors::ExplicitConnectorMentions;
 use codex_core_skills::HostSkillsSnapshot;
 use codex_core_skills::SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS;
 use codex_core_skills::SKILLS_INTRO_WITH_ABSOLUTE_PATHS;
@@ -49,7 +50,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 static NEXT_CODEX_HOME_ID: AtomicUsize = AtomicUsize::new(0);
 const DEMO_SKILL_CONTENTS: &str =
-    "---\nname: demo\ndescription: Demo skill.\n---\n# Demo\n\nUse the demo skill.\n";
+    "---\nname: demo\ndescription: Demo skill.\n---\n# Demo\n\nUse [$calendar](app://calendar).\n";
 
 #[tokio::test]
 async fn installed_extension_uses_host_service_snapshot() -> TestResult {
@@ -134,8 +135,110 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
             .map(|fragment| (fragment.role(), fragment.render()))
             .collect::<Vec<_>>()
     );
+    assert_eq!(
+        turn_store
+            .get::<ExplicitConnectorMentions>()
+            .ok_or("expected connector mentions")?
+            .resolve(&[]),
+        ["calendar".to_string()].into_iter().collect()
+    );
 
     std::fs::remove_dir_all(codex_home)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn mixed_catalog_preserves_host_budget_and_external_locator() -> TestResult {
+    let host_path =
+        AbsolutePathBuf::try_from(std::env::temp_dir().join("host-demo").join("SKILL.md"))?;
+    let mut outcome = SkillLoadOutcome::default();
+    outcome.skills.push(SkillMetadata {
+        name: "host-demo".to_string(),
+        description: "x".repeat(5_000),
+        short_description: None,
+        interface: None,
+        dependencies: None,
+        policy: None,
+        path_to_skills_md: host_path,
+        scope: SkillScope::User,
+        plugin_id: None,
+    });
+    let providers = SkillProviders::new()
+        .with_host_provider(Arc::new(StaticSkillProvider {
+            catalog: SkillCatalog {
+                entries: vec![test_entry(
+                    SkillSourceKind::Host,
+                    "host",
+                    "host/host-demo",
+                    "host-demo/SKILL.md",
+                )],
+                warnings: Vec::new(),
+            },
+            read_requests: Arc::new(Mutex::new(Vec::new())),
+            list_calls: None,
+            fail_first_list: false,
+        }))
+        .with_executor_provider(Arc::new(StaticSkillProvider {
+            catalog: SkillCatalog {
+                entries: vec![test_entry(
+                    SkillSourceKind::Executor,
+                    "env-1",
+                    "executor/lint-fix",
+                    "lint-fix/SKILL.md",
+                )],
+                warnings: Vec::new(),
+            },
+            read_requests: Arc::new(Mutex::new(Vec::new())),
+            list_calls: None,
+            fail_first_list: false,
+        }));
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let mut builder =
+        ExtensionRegistryBuilder::with_event_sink(Arc::new(ChannelEventSink(event_tx)));
+    install_with_providers(&mut builder, providers, skills_extension_config);
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    thread_store.insert(vec![SelectedCapabilityRoot {
+        id: "lint-fix".to_string(),
+        location: CapabilityRootLocation::Environment {
+            environment_id: "env-1".to_string(),
+            path: "/skills/lint-fix".to_string(),
+        },
+    }]);
+    let session_source = SessionSource::Cli;
+    let config = default_config();
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &session_source,
+            persistent_thread_state_available: true,
+            environments: &[],
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    let turn_store = ExtensionData::new("turn-1");
+    turn_store.insert(HostSkillsSnapshot::new(Arc::new(outcome)));
+
+    let fragments = registry.context_contributors()[0]
+        .contribute(ContextContributionContext {
+            session_store: &session_store,
+            thread_store: &thread_store,
+            turn_store: &turn_store,
+            model_context_window: Some(10_000),
+        })
+        .await;
+
+    assert_eq!(1, fragments.len());
+    let text = fragments[0].text();
+    assert!(text.contains("host-demo"));
+    assert!(text.contains("environment resource: skill://executor/lint-fix/SKILL.md"));
+    let EventMsg::Warning(warning) = event_rx.try_recv()?.msg else {
+        panic!("expected host budget warning");
+    };
+    assert!(warning.message.contains("2% skills context budget"));
+
     Ok(())
 }
 

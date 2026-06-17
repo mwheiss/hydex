@@ -289,8 +289,6 @@ pub(crate) struct PreviousTurnSettings {
 }
 
 #[cfg(test)]
-use crate::skills::SkillLoadOutcome;
-#[cfg(test)]
 use crate::SkillMetadata;
 use crate::SkillsService;
 use crate::agents_md::load_project_instructions;
@@ -301,6 +299,8 @@ use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::rollout::map_session_init_error;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
+#[cfg(test)]
+use crate::skills::SkillLoadOutcome;
 use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
 use crate::state::SessionServices;

@@ -12,7 +12,7 @@ const GITHUB_ENTERPRISE_TOKEN_ENV_VARS: &[&str] =
     &["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
 const OPENAI_API_KEY_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
 pub const CREDENTIAL_BROKER_ACTIVE_ENV_KEY: &str = "CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE";
-pub const CREDENTIAL_BROKER_ENV_KEYS: &[&str] = &[
+pub(crate) const CREDENTIAL_BROKER_ENV_KEYS: &[&str] = &[
     GH_HOST_ENV_VAR,
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -41,6 +41,12 @@ struct CredentialRecord {
     dummy_value: String,
 }
 
+struct CredentialCandidate {
+    env_var: &'static str,
+    kind: CredentialKind,
+    host_binding: CredentialHostBinding,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CredentialKind {
     GitHub,
@@ -52,7 +58,6 @@ enum CredentialHostBinding {
     GitHubCloud,
     ExactHost(String),
     OpenAiApi,
-    AnyHostWithDummy,
 }
 
 impl CredentialBroker {
@@ -75,7 +80,6 @@ impl CredentialBroker {
     }
 
     pub(crate) fn virtualize_child_env(&self, env: &mut HashMap<String, String>) {
-        let github_host_hint = github_host_hint(env);
         let mut state = self.write_state();
         if !state.enabled {
             env.remove(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
@@ -86,37 +90,13 @@ impl CredentialBroker {
             "1".to_string(),
         );
 
-        for env_var in GITHUB_CLOUD_TOKEN_ENV_VARS {
+        for candidate in virtualizable_credential_candidates(env) {
             virtualize_env_var(
                 env,
                 &mut state,
-                env_var,
-                CredentialKind::GitHub,
-                CredentialHostBinding::GitHubCloud,
-            );
-        }
-
-        let host_binding = github_host_hint.map_or(
-            CredentialHostBinding::AnyHostWithDummy,
-            github_enterprise_host_binding,
-        );
-        for env_var in GITHUB_ENTERPRISE_TOKEN_ENV_VARS {
-            virtualize_env_var(
-                env,
-                &mut state,
-                env_var,
-                CredentialKind::GitHub,
-                host_binding.clone(),
-            );
-        }
-
-        for env_var in OPENAI_API_KEY_ENV_VARS {
-            virtualize_env_var(
-                env,
-                &mut state,
-                env_var,
-                CredentialKind::OpenAiApiKey,
-                CredentialHostBinding::OpenAiApi,
+                candidate.env_var,
+                candidate.kind,
+                candidate.host_binding,
             );
         }
     }
@@ -168,6 +148,64 @@ impl CredentialBroker {
     }
 }
 
+/// Discovers supported process credentials that the broker can safely virtualize.
+pub fn discover_process_credential_env_keys() -> Vec<&'static str> {
+    let env = CREDENTIAL_BROKER_ENV_KEYS
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect();
+    virtualizable_credential_env_keys(&env)
+}
+
+fn virtualizable_credential_env_keys(env: &HashMap<String, String>) -> Vec<&'static str> {
+    virtualizable_credential_candidates(env)
+        .into_iter()
+        .map(|candidate| candidate.env_var)
+        .collect()
+}
+
+fn virtualizable_credential_candidates(env: &HashMap<String, String>) -> Vec<CredentialCandidate> {
+    let mut candidates = GITHUB_CLOUD_TOKEN_ENV_VARS
+        .iter()
+        .map(|env_var| CredentialCandidate {
+            env_var,
+            kind: CredentialKind::GitHub,
+            host_binding: CredentialHostBinding::GitHubCloud,
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(host_binding) = github_host_hint(env)
+        .filter(|host| !github_cloud_host(host))
+        .map(CredentialHostBinding::ExactHost)
+    {
+        candidates.extend(GITHUB_ENTERPRISE_TOKEN_ENV_VARS.iter().map(|env_var| {
+            CredentialCandidate {
+                env_var,
+                kind: CredentialKind::GitHub,
+                host_binding: host_binding.clone(),
+            }
+        }));
+    }
+
+    candidates.extend(
+        OPENAI_API_KEY_ENV_VARS
+            .iter()
+            .map(|env_var| CredentialCandidate {
+                env_var,
+                kind: CredentialKind::OpenAiApiKey,
+                host_binding: CredentialHostBinding::OpenAiApi,
+            }),
+    );
+    candidates.retain(|candidate| {
+        brokerable_credential_value(env, candidate.env_var, candidate.kind).is_some()
+    });
+    candidates
+}
+
 fn virtualize_env_var(
     env: &mut HashMap<String, String>,
     state: &mut CredentialBrokerState,
@@ -175,19 +213,24 @@ fn virtualize_env_var(
     kind: CredentialKind,
     host_binding: CredentialHostBinding,
 ) {
-    let Some(real_value) = env.get(env_var).map(String::as_str) else {
+    let Some(real_value) = brokerable_credential_value(env, env_var, kind) else {
         return;
     };
-    let real_value = real_value.trim();
-    if real_value.is_empty()
-        || kind.is_dummy_value(real_value)
-        || kind.authorization_header_value(real_value).is_none()
-    {
-        return;
-    }
 
     let dummy_value = state.register(env_var, kind, host_binding, real_value);
     env.insert(env_var.to_string(), dummy_value);
+}
+
+fn brokerable_credential_value<'a>(
+    env: &'a HashMap<String, String>,
+    env_var: &str,
+    kind: CredentialKind,
+) -> Option<&'a str> {
+    let real_value = env.get(env_var)?.trim();
+    (!real_value.is_empty()
+        && !kind.is_dummy_value(real_value)
+        && kind.authorization_header_value(real_value).is_some())
+    .then_some(real_value)
 }
 
 impl CredentialBrokerState {
@@ -224,10 +267,6 @@ impl CredentialRecord {
     fn matches_host(&self, host: &str) -> bool {
         self.host_binding.matches_host(host)
     }
-
-    fn allows_missing_dummy_fallback(&self) -> bool {
-        self.host_binding.allows_missing_dummy_fallback()
-    }
 }
 
 impl CredentialKind {
@@ -256,25 +295,12 @@ impl CredentialHostBinding {
             Self::GitHubCloud => github_cloud_host(host),
             Self::ExactHost(expected_host) => host == expected_host,
             Self::OpenAiApi => host == "api.openai.com",
-            Self::AnyHostWithDummy => true,
         }
-    }
-
-    fn allows_missing_dummy_fallback(&self) -> bool {
-        !matches!(self, Self::AnyHostWithDummy)
     }
 }
 
 fn github_cloud_host(host: &str) -> bool {
     matches!(host, "api.github.com" | "github.com") || host.ends_with(".ghe.com")
-}
-
-fn github_enterprise_host_binding(host: String) -> CredentialHostBinding {
-    if github_cloud_host(&host) {
-        CredentialHostBinding::AnyHostWithDummy
-    } else {
-        CredentialHostBinding::ExactHost(host)
-    }
 }
 
 fn github_host_hint(env: &HashMap<String, String>) -> Option<String> {
@@ -315,11 +341,6 @@ fn dummy_authorization_match<'a>(
 fn missing_dummy_fallback<'a>(
     matching_credentials: &[&'a CredentialRecord],
 ) -> Option<&'a CredentialRecord> {
-    let matching_credentials = matching_credentials
-        .iter()
-        .copied()
-        .filter(|credential| credential.allows_missing_dummy_fallback())
-        .collect::<Vec<_>>();
     let credential = *matching_credentials.first()?;
     matching_credentials
         .iter()
@@ -327,6 +348,10 @@ fn missing_dummy_fallback<'a>(
             candidate.kind == credential.kind && candidate.real_value == credential.real_value
         })
         .then_some(credential)
+}
+
+pub(crate) fn is_dummy_credential_value(value: &str) -> bool {
+    value.starts_with("ghp_codex_dummy_") || value.starts_with("sk-codex-dummy-")
 }
 
 #[cfg(test)]

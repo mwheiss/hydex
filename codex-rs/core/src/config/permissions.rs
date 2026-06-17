@@ -7,20 +7,11 @@ use std::path::PathBuf;
 
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::FilesystemPermissionsToml;
-use codex_config::permissions_toml::NetworkDomainPermissionToml;
-use codex_config::permissions_toml::NetworkDomainPermissionsToml;
 use codex_config::permissions_toml::NetworkToml;
-use codex_config::permissions_toml::NetworkUnixSocketPermissionToml;
-use codex_config::permissions_toml::NetworkUnixSocketPermissionsToml;
 use codex_config::permissions_toml::PermissionProfileToml;
 use codex_config::permissions_toml::PermissionsToml;
 use codex_config::permissions_toml::WorkspaceRootsToml;
 use codex_config::types::SandboxWorkspaceWrite;
-use codex_features::NetworkProxyConfigToml;
-use codex_features::NetworkProxyDomainPermissionToml;
-use codex_features::NetworkProxyModeToml;
-use codex_features::NetworkProxyUnixSocketPermissionToml;
-use codex_network_proxy::NetworkMode;
 use codex_network_proxy::NetworkProxyConfig;
 #[cfg(test)]
 use codex_network_proxy::NetworkUnixSocketPermission as ProxyNetworkUnixSocketPermission;
@@ -129,69 +120,6 @@ pub(crate) fn network_proxy_config_from_profile_network(
     // access is enabled, but they do not start the managed proxy on their own.
     config.network.enabled = false;
     config
-}
-
-pub(crate) fn apply_network_proxy_feature_config(
-    config: &mut NetworkProxyConfig,
-    feature_config: &NetworkProxyConfigToml,
-) {
-    NetworkToml {
-        enabled: feature_config.enabled,
-        proxy_url: feature_config.proxy_url.clone(),
-        enable_socks5: feature_config.enable_socks5,
-        socks_url: feature_config.socks_url.clone(),
-        enable_socks5_udp: feature_config.enable_socks5_udp,
-        allow_upstream_proxy: feature_config.allow_upstream_proxy,
-        dangerously_allow_non_loopback_proxy: feature_config.dangerously_allow_non_loopback_proxy,
-        dangerously_allow_all_unix_sockets: feature_config.dangerously_allow_all_unix_sockets,
-        mode: feature_config.mode.map(|mode| match mode {
-            NetworkProxyModeToml::Limited => NetworkMode::Limited,
-            NetworkProxyModeToml::Full => NetworkMode::Full,
-        }),
-        domains: feature_config
-            .domains
-            .as_ref()
-            .map(|domains| NetworkDomainPermissionsToml {
-                entries: domains
-                    .iter()
-                    .map(|(pattern, permission)| {
-                        let permission = match permission {
-                            NetworkProxyDomainPermissionToml::Allow => {
-                                NetworkDomainPermissionToml::Allow
-                            }
-                            NetworkProxyDomainPermissionToml::Deny => {
-                                NetworkDomainPermissionToml::Deny
-                            }
-                        };
-                        (pattern.clone(), permission)
-                    })
-                    .collect(),
-            }),
-        unix_sockets: feature_config.unix_sockets.as_ref().map(|unix_sockets| {
-            NetworkUnixSocketPermissionsToml {
-                entries: unix_sockets
-                    .iter()
-                    .map(|(path, permission)| {
-                        let permission = match permission {
-                            NetworkProxyUnixSocketPermissionToml::Allow => {
-                                NetworkUnixSocketPermissionToml::Allow
-                            }
-                            NetworkProxyUnixSocketPermissionToml::Deny => {
-                                NetworkUnixSocketPermissionToml::Deny
-                            }
-                        };
-                        (path.clone(), permission)
-                    })
-                    .collect(),
-            }
-        }),
-        allow_local_binding: feature_config.allow_local_binding,
-        mitm: None,
-    }
-    .apply_to_network_proxy_config(config);
-    if let Some(credential_broker) = feature_config.credential_broker {
-        config.set_credential_broker_enabled(credential_broker);
-    }
 }
 
 pub(crate) fn resolve_permission_profile(

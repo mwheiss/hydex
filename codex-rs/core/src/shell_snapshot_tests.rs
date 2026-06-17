@@ -83,7 +83,7 @@ fn assert_posix_snapshot_sections(snapshot: &str) {
 async fn get_snapshot(shell_type: ShellType) -> Result<String> {
     let dir = tempdir()?;
     let path = dir.path().join("snapshot.sh");
-    write_shell_snapshot(shell_type, &path.abs(), &dir.path().abs()).await?;
+    write_shell_snapshot(shell_type, &path.abs(), &dir.path().abs(), &[]).await?;
     let content = fs::read_to_string(&path).await?;
     Ok(content)
 }
@@ -125,24 +125,41 @@ fn snapshot_file_name_parser_supports_legacy_and_suffixed_names() {
 
 #[cfg(unix)]
 #[test]
-fn bash_snapshot_filters_invalid_exports() -> Result<()> {
-    let output = Command::new("/bin/bash")
+fn bash_snapshot_filters_only_virtualizable_credentials() -> Result<()> {
+    let excluded_env_vars = ["GH_TOKEN", "OPENAI_API_KEY"];
+    let credential_env = std::collections::HashMap::from([
+        ("GH_HOST".to_string(), "github.com".to_string()),
+        ("GH_TOKEN".to_string(), "ghp-cloud-real".to_string()),
+        (
+            "GH_ENTERPRISE_TOKEN".to_string(),
+            "ghp-enterprise-real".to_string(),
+        ),
+        ("OPENAI_API_KEY".to_string(), "sk-openai-real".to_string()),
+    ]);
+    let mut command = Command::new("/bin/bash");
+    command
         .arg("-c")
-        .arg(bash_snapshot_script())
+        .arg(bash_snapshot_script(&excluded_env_vars))
         .env("BASH_ENV", "/dev/null")
+        .envs(&credential_env)
         .env("VALID_NAME", "ok")
         .env("PWD", "/tmp/stale")
         .env("NEXTEST_BIN_EXE_codex-write-config-schema", "/path/to/bin")
-        .env("BAD-NAME", "broken")
-        .output()?;
+        .env("BAD-NAME", "broken");
+    let output = command.output()?;
 
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("VALID_NAME"));
+    assert!(stdout.contains("GH_HOST"));
+    assert!(stdout.contains("GH_ENTERPRISE_TOKEN"));
     assert!(!stdout.contains("PWD=/tmp/stale"));
     assert!(!stdout.contains("NEXTEST_BIN_EXE_codex-write-config-schema"));
     assert!(!stdout.contains("BAD-NAME"));
+    for key in excluded_env_vars {
+        assert!(!stdout.contains(key), "snapshot contains {key}");
+    }
 
     Ok(())
 }
@@ -153,7 +170,7 @@ fn bash_snapshot_preserves_multiline_exports() -> Result<()> {
     let multiline_cert = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----";
     let output = Command::new("/bin/bash")
         .arg("-c")
-        .arg(bash_snapshot_script())
+        .arg(bash_snapshot_script(&[]))
         .env("BASH_ENV", "/dev/null")
         .env("MULTILINE_CERT", multiline_cert)
         .output()?;
@@ -202,6 +219,7 @@ async fn try_create_creates_and_deletes_snapshot_file() -> Result<()> {
         &dir.path().abs(),
         &shell,
         /*state_db*/ None,
+        &[],
     )
     .await
     .expect("snapshot should be created");
@@ -231,6 +249,7 @@ async fn try_create_uses_distinct_generation_paths() -> Result<()> {
         &dir.path().abs(),
         &shell,
         /*state_db*/ None,
+        &[],
     )
     .await
     .expect("initial snapshot should be created");
@@ -240,6 +259,7 @@ async fn try_create_uses_distinct_generation_paths() -> Result<()> {
         &dir.path().abs(),
         &shell,
         /*state_db*/ None,
+        &[],
     )
     .await
     .expect("refreshed snapshot should be created");
@@ -283,7 +303,7 @@ async fn snapshot_shell_does_not_inherit_stdin() -> Result<()> {
     let home_display = home.display();
     let script = format!(
         "HOME=\"{home_display}\"; export HOME; {}",
-        bash_snapshot_script()
+        bash_snapshot_script(&[])
     );
     let output = run_script_with_timeout(
         &shell,

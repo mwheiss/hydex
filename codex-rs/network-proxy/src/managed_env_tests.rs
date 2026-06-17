@@ -41,12 +41,8 @@ fn preserves_unmanaged_ca_env() {
 }
 
 #[test]
-fn strips_only_brokered_credentials() {
-    let mut unbrokered_env = HashMap::from([
-        (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
-        ("OPENAI_API_KEY".to_string(), "sk-real".to_string()),
-    ]);
-    let mut brokered_env = HashMap::from([
+fn strips_dummy_credentials_and_preserves_unbrokered_github_env() {
+    let mut env = HashMap::from([
         (PROXY_ACTIVE_ENV_KEY.to_string(), "1".to_string()),
         (
             CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
@@ -56,14 +52,23 @@ fn strips_only_brokered_credentials() {
             "OPENAI_API_KEY".to_string(),
             "sk-codex-dummy-0000".to_string(),
         ),
+        ("GH_HOST".to_string(), "github.example.com".to_string()),
+        (
+            "GH_ENTERPRISE_TOKEN".to_string(),
+            "ghp-enterprise-real".to_string(),
+        ),
     ]);
 
-    strip_managed_proxy_env(&mut unbrokered_env);
-    strip_managed_proxy_env(&mut brokered_env);
+    strip_managed_proxy_env(&mut env);
 
     assert_eq!(
-        unbrokered_env,
-        HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())])
+        env,
+        HashMap::from([
+            ("GH_HOST".to_string(), "github.example.com".to_string()),
+            (
+                "GH_ENTERPRISE_TOKEN".to_string(),
+                "ghp-enterprise-real".to_string(),
+            ),
+        ])
     );
-    assert_eq!(brokered_env, HashMap::new());
 }

@@ -34,6 +34,7 @@ struct ShellSnapshotConfig {
     session_id: ThreadId,
     session_telemetry: SessionTelemetry,
     state_db: Option<StateDbHandle>,
+    excluded_env_vars: Vec<&'static str>,
 }
 
 pub(crate) struct ShellSnapshotFile {
@@ -51,6 +52,7 @@ impl ShellSnapshot {
         session_id: ThreadId,
         session_telemetry: SessionTelemetry,
         state_db: Option<StateDbHandle>,
+        excluded_env_vars: Vec<&'static str>,
     ) -> Self {
         Self {
             config: Some(Arc::new(ShellSnapshotConfig {
@@ -58,6 +60,7 @@ impl ShellSnapshot {
                 session_id,
                 session_telemetry,
                 state_db,
+                excluded_env_vars,
             })),
         }
     }
@@ -96,6 +99,7 @@ impl ShellSnapshot {
                 &cwd,
                 &shell,
                 config.state_db.clone(),
+                &config.excluded_env_vars,
             )
             .await;
             let success_tag = if snapshot.is_ok() { "true" } else { "false" };
@@ -119,6 +123,7 @@ impl ShellSnapshot {
         session_cwd: &AbsolutePathBuf,
         shell: &Shell,
         state_db: Option<StateDbHandle>,
+        excluded_env_vars: &[&str],
     ) -> std::result::Result<ShellSnapshotFile, &'static str> {
         // File to store the snapshot
         let extension = match shell.shell_type {
@@ -148,7 +153,9 @@ impl ShellSnapshot {
         });
 
         // Make the new snapshot.
-        if let Err(err) = write_shell_snapshot(shell.shell_type, &temp_path, session_cwd).await {
+        if let Err(err) =
+            write_shell_snapshot(shell.shell_type, &temp_path, session_cwd, excluded_env_vars).await
+        {
             tracing::warn!(
                 "Failed to create shell snapshot for {}: {err:?}",
                 shell.name()
@@ -197,6 +204,7 @@ async fn write_shell_snapshot(
     shell_type: ShellType,
     output_path: &AbsolutePathBuf,
     cwd: &AbsolutePathBuf,
+    excluded_env_vars: &[&str],
 ) -> Result<()> {
     if shell_type == ShellType::PowerShell || shell_type == ShellType::Cmd {
         bail!("Shell snapshot not supported yet for {shell_type:?}");
@@ -204,7 +212,7 @@ async fn write_shell_snapshot(
     let shell = get_shell(shell_type, /*path*/ None)
         .with_context(|| format!("No available shell for {shell_type:?}"))?;
 
-    let raw_snapshot = capture_snapshot(&shell, cwd).await?;
+    let raw_snapshot = capture_snapshot(&shell, cwd, excluded_env_vars).await?;
     let snapshot = strip_snapshot_preamble(&raw_snapshot)?;
 
     if let Some(parent) = output_path.parent() {
@@ -222,12 +230,20 @@ async fn write_shell_snapshot(
     Ok(())
 }
 
-async fn capture_snapshot(shell: &Shell, cwd: &AbsolutePathBuf) -> Result<String> {
+async fn capture_snapshot(
+    shell: &Shell,
+    cwd: &AbsolutePathBuf,
+    excluded_env_vars: &[&str],
+) -> Result<String> {
     let shell_type = shell.shell_type;
     match shell_type {
-        ShellType::Zsh => run_shell_script(shell, &zsh_snapshot_script(), cwd).await,
-        ShellType::Bash => run_shell_script(shell, &bash_snapshot_script(), cwd).await,
-        ShellType::Sh => run_shell_script(shell, &sh_snapshot_script(), cwd).await,
+        ShellType::Zsh => {
+            run_shell_script(shell, &zsh_snapshot_script(excluded_env_vars), cwd).await
+        }
+        ShellType::Bash => {
+            run_shell_script(shell, &bash_snapshot_script(excluded_env_vars), cwd).await
+        }
+        ShellType::Sh => run_shell_script(shell, &sh_snapshot_script(excluded_env_vars), cwd).await,
         ShellType::PowerShell => run_shell_script(shell, powershell_snapshot_script(), cwd).await,
         ShellType::Cmd => bail!("Shell snapshotting is not yet supported for {shell_type:?}"),
     }
@@ -309,12 +325,17 @@ async fn run_script_with_timeout(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn excluded_exports_regex() -> String {
-    EXCLUDED_EXPORT_VARS.join("|")
+fn excluded_exports_regex(excluded_env_vars: &[&str]) -> String {
+    EXCLUDED_EXPORT_VARS
+        .iter()
+        .chain(excluded_env_vars)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
-fn zsh_snapshot_script() -> String {
-    let excluded = excluded_exports_regex();
+fn zsh_snapshot_script(excluded_env_vars: &[&str]) -> String {
+    let excluded = excluded_exports_regex(excluded_env_vars);
     let script = r##"if [[ -n "$ZDOTDIR" ]]; then
   rc="$ZDOTDIR/.zshrc"
 else
@@ -357,8 +378,8 @@ fi
     script.replace("EXCLUDED_EXPORTS", &excluded)
 }
 
-fn bash_snapshot_script() -> String {
-    let excluded = excluded_exports_regex();
+fn bash_snapshot_script(excluded_env_vars: &[&str]) -> String {
+    let excluded = excluded_exports_regex(excluded_env_vars);
     let script = r##"if [ -z "$BASH_ENV" ] && [ -r "$HOME/.bashrc" ]; then
   . "$HOME/.bashrc"
 fi
@@ -399,8 +420,8 @@ fi
     script.replace("EXCLUDED_EXPORTS", &excluded)
 }
 
-fn sh_snapshot_script() -> String {
-    let excluded = excluded_exports_regex();
+fn sh_snapshot_script(excluded_env_vars: &[&str]) -> String {
+    let excluded = excluded_exports_regex(excluded_env_vars);
     let script = r##"if [ -n "$ENV" ] && [ -r "$ENV" ]; then
   . "$ENV"
 fi

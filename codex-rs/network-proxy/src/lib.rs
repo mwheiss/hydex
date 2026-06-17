@@ -31,6 +31,7 @@ pub use config::NetworkProxyConfig;
 pub use config::NetworkUnixSocketPermission;
 pub use config::NetworkUnixSocketPermissions;
 pub use config::host_and_port_from_network_addr;
+pub use credential_broker::discover_process_credential_env_keys;
 pub use managed_env::strip_managed_proxy_env;
 pub use mitm_hook::InjectedHeaderConfig;
 pub use mitm_hook::MitmHookActionsConfig;

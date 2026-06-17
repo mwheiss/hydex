@@ -7,6 +7,7 @@ use std::sync::RwLock;
 
 use codex_exec_server::ExecutorFileSystem;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use futures::FutureExt;
 use futures::StreamExt;
 
 use crate::SkillLoadOutcome;
@@ -80,21 +81,24 @@ impl SkillRootLoader {
         I: IntoIterator<Item = SkillRoot>,
     {
         let snapshots = futures::stream::iter(roots)
-            .map(|root| async move {
-                let cache_key = SkillRootCacheKey::from_root(&root);
-                let (cache_generation, cached_snapshot) = cache_key
-                    .as_ref()
-                    .map_or((0, None), |key| self.cached_snapshot(key));
-                match cached_snapshot {
-                    Some(snapshot) => snapshot,
-                    None => {
-                        let snapshot = load_skill_root(root).await;
-                        if let Some(cache_key) = cache_key {
-                            self.cache_snapshot(cache_generation, cache_key, snapshot.clone());
+            .map(|root| {
+                async move {
+                    let cache_key = SkillRootCacheKey::from_root(&root);
+                    let (cache_generation, cached_snapshot) = cache_key
+                        .as_ref()
+                        .map_or((0, None), |key| self.cached_snapshot(key));
+                    match cached_snapshot {
+                        Some(snapshot) => snapshot,
+                        None => {
+                            let snapshot = load_skill_root(root).await;
+                            if let Some(cache_key) = cache_key {
+                                self.cache_snapshot(cache_generation, cache_key, snapshot.clone());
+                            }
+                            snapshot
                         }
-                        snapshot
                     }
                 }
+                .boxed()
             })
             .buffered(MAX_CONCURRENT_SKILL_ROOT_LOADS)
             .collect::<Vec<_>>()

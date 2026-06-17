@@ -2,7 +2,6 @@ use anyhow::Result;
 use codex_core::config::SessionTokenBudgetConfig;
 use codex_features::Feature;
 use codex_model_provider_info::built_in_model_providers;
-use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::TurnAbortReason;
@@ -29,7 +28,6 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
-use tokio::time::sleep;
 use tokio::time::timeout;
 
 const CONFIGURED_CONTEXT_WINDOW: i64 = 128_000;
@@ -55,6 +53,12 @@ fn rollout_budget_texts(request: &ResponsesRequest) -> Vec<String> {
         .into_iter()
         .filter(|text| text.starts_with("<rollout_budget>"))
         .collect()
+}
+
+fn rollout_budget_message(remaining_tokens: i64) -> String {
+    format!(
+        "<rollout_budget>\nYou have {remaining_tokens} weighted tokens left in the shared session token budget.\n</rollout_budget>"
+    )
 }
 
 fn tool_names(request: &ResponsesRequest) -> Vec<String> {
@@ -102,11 +106,6 @@ async fn session_token_budget_adds_weighted_initial_and_periodic_reminders() -> 
     .await;
     let test = test_codex()
         .with_config(|config| {
-            config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
             config.session_token_budget = Some(SessionTokenBudgetConfig {
                 sampling_token_weight: 2.0,
                 prefill_token_weight: 0.5,
@@ -120,15 +119,13 @@ async fn session_token_budget_adds_weighted_initial_and_periodic_reminders() -> 
     test.submit_turn("second turn").await?;
 
     let requests = responses.requests();
-    let initial_remaining = "<rollout_budget>\nYou have 100 weighted tokens left in the shared session token budget.\n</rollout_budget>".to_string();
-    let remaining = "<rollout_budget>\nYou have 60 weighted tokens left in the shared session token budget.\n</rollout_budget>".to_string();
     assert_eq!(
         rollout_budget_texts(&requests[0]),
-        vec![initial_remaining.clone()]
+        vec![rollout_budget_message(100)]
     );
     assert_eq!(
         rollout_budget_texts(&requests[1]),
-        vec![initial_remaining, remaining]
+        vec![rollout_budget_message(100), rollout_budget_message(60)]
     );
 
     Ok(())
@@ -152,8 +149,7 @@ async fn session_token_budget_exhaustion_uses_existing_interrupt_path() -> Resul
             config.session_token_budget = Some(SessionTokenBudgetConfig {
                 limit_tokens: 30,
                 reminder_interval_tokens: 10,
-                sampling_token_weight: 1.0,
-                prefill_token_weight: 1.0,
+                ..SESSION_TOKEN_BUDGET
             });
         })
         .build(&server)
@@ -257,21 +253,16 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
     test.submit_turn(ROOT_PROMPT).await?;
     let child_thread_id = timeout(Duration::from_secs(10), created_threads.recv()).await??;
     let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
-    timeout(Duration::from_secs(10), async {
-        while !matches!(child_thread.agent_status().await, AgentStatus::Completed(_)) {
-            sleep(Duration::from_millis(10)).await;
-        }
+    wait_for_event(child_thread.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
     })
-    .await?;
+    .await;
     test.submit_turn(FOLLOW_UP_PROMPT).await?;
 
     let request = follow_up.single_request();
     assert_eq!(
         rollout_budget_texts(&request).last(),
-        Some(
-            &"<rollout_budget>\nYou have 50 weighted tokens left in the shared session token budget.\n</rollout_budget>"
-                .to_string()
-        )
+        Some(&rollout_budget_message(50))
     );
 
     Ok(())
@@ -607,9 +598,7 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
     );
     assert_eq!(
         rollout_budget_texts(&requests[2]),
-        vec![
-            "<rollout_budget>\nYou have 70 weighted tokens left in the shared session token budget.\n</rollout_budget>".to_string(),
-        ],
+        vec![rollout_budget_message(70)],
         "a new context window should restate the current remainder"
     );
     let request_body = requests[2].body_json().to_string();

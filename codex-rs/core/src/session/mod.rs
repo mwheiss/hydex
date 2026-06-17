@@ -2977,16 +2977,6 @@ impl Session {
         if let Some(user_instructions) = turn_context.user_instructions.as_deref() {
             contextual_user_sections.push(user_instructions.to_string());
         }
-        if let Some(limit_tokens) = self
-            .services
-            .agent_control
-            .session_token_budget()
-            .limit_tokens()
-        {
-            developer_sections.push(
-                crate::context::SessionTokenBudgetContext::Declaration { limit_tokens }.render(),
-            );
-        }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.features.enabled(Feature::TokenBudget)
             && let Some(model_context_window) = turn_context.model_context_window()

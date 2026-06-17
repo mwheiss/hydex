@@ -47,11 +47,11 @@ fn token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
         .collect()
 }
 
-fn session_token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
+fn rollout_budget_texts(request: &ResponsesRequest) -> Vec<String> {
     request
         .message_input_texts("developer")
         .into_iter()
-        .filter(|text| text.starts_with("<session_token_budget>"))
+        .filter(|text| text.starts_with("<rollout_budget>"))
         .collect()
 }
 
@@ -71,7 +71,7 @@ fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_token_budget_adds_stable_declaration_and_periodic_reminders() -> Result<()> {
+async fn session_token_budget_adds_initial_and_periodic_reminders() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -102,33 +102,15 @@ async fn session_token_budget_adds_stable_declaration_and_periodic_reminders() -
     test.submit_turn("second turn").await?;
 
     let requests = responses.requests();
-    let declaration = "<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\n</session_token_budget>".to_string();
-    let initial_remaining = "<session_token_budget>\nYou have 100 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
-    let remaining = "<session_token_budget>\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string();
+    let initial_remaining = "<rollout_budget>\nYou have 100 tokens left in the shared session token budget.\n</rollout_budget>".to_string();
+    let remaining = "<rollout_budget>\nYou have 70 tokens left in the shared session token budget.\n</rollout_budget>".to_string();
     assert_eq!(
-        session_token_budget_texts(&requests[0]),
-        vec![declaration.clone(), initial_remaining.clone()]
-    );
-    let initial_developer_group = requests[0]
-        .message_input_text_groups("developer")
-        .into_iter()
-        .find(|group| group.contains(&declaration))
-        .expect("session token budget declaration should be model-visible");
-    let declaration_index = initial_developer_group
-        .iter()
-        .position(|text| text == &declaration)
-        .expect("developer group should contain the declaration");
-    let context_budget_index = initial_developer_group
-        .iter()
-        .position(|text| text.starts_with("<token_budget>"))
-        .expect("developer group should contain the context budget");
-    assert!(
-        declaration_index < context_budget_index,
-        "the stable session declaration should precede changing context-window metadata"
+        rollout_budget_texts(&requests[0]),
+        vec![initial_remaining.clone()]
     );
     assert_eq!(
-        session_token_budget_texts(&requests[1]),
-        vec![declaration, initial_remaining, remaining]
+        rollout_budget_texts(&requests[1]),
+        vec![initial_remaining, remaining]
     );
 
     Ok(())
@@ -265,9 +247,9 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
 
     let request = follow_up.single_request();
     assert_eq!(
-        session_token_budget_texts(&request).last(),
+        rollout_budget_texts(&request).last(),
         Some(
-            &"<session_token_budget>\nYou have 50 tokens left in the shared session token budget.\n</session_token_budget>"
+            &"<rollout_budget>\nYou have 50 tokens left in the shared session token budget.\n</rollout_budget>"
                 .to_string()
         )
     );
@@ -604,12 +586,11 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
         "post-compaction full context should report context window 1"
     );
     assert_eq!(
-        session_token_budget_texts(&requests[2]),
+        rollout_budget_texts(&requests[2]),
         vec![
-            "<session_token_budget>\nThis session has a shared token budget of 100 tokens across all threads.\n</session_token_budget>".to_string(),
-            "<session_token_budget>\nYou have 70 tokens left in the shared session token budget.\n</session_token_budget>".to_string(),
+            "<rollout_budget>\nYou have 70 tokens left in the shared session token budget.\n</rollout_budget>".to_string(),
         ],
-        "a new context window should restate the stable declaration and current remainder"
+        "a new context window should restate the current remainder"
     );
     let request_body = requests[2].body_json().to_string();
     let summary_position = request_body

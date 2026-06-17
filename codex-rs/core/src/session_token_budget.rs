@@ -49,10 +49,6 @@ impl SessionTokenBudget {
         was_below_limit && state.used_tokens >= state.config.limit_tokens
     }
 
-    pub(crate) fn limit_tokens(&self) -> Option<i64> {
-        Some(self.lock()?.config.limit_tokens)
-    }
-
     pub(crate) fn pending_reminder(
         &self,
         thread_id: ThreadId,

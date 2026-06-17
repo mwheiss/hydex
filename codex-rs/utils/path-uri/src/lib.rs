@@ -19,8 +19,8 @@ use url::Url;
 
 mod api_path_string;
 
-pub use api_path_string::ApiPathString;
-pub use api_path_string::ApiPathStringError;
+pub use api_path_string::LegacyAppPathString;
+pub use api_path_string::LegacyAppPathStringError;
 pub use api_path_string::PathConvention;
 
 pub const FILE_SCHEME: &str = "file";
@@ -162,6 +162,19 @@ impl PathUri {
         } else {
             Some(PathConvention::Posix)
         }
+    }
+
+    /// Renders this URI using the native path syntax inferred from its shape.
+    ///
+    /// This is independent of the current host: a Windows URI renders with
+    /// Windows separators on every host. If the convention cannot be inferred
+    /// or the URI cannot be represented using that convention, the canonical
+    /// URI string is returned instead.
+    pub fn inferred_native_path_string(&self) -> String {
+        self.infer_path_convention()
+            .and_then(|convention| LegacyAppPathString::from_path_uri(self, convention).ok())
+            .map(LegacyAppPathString::into_string)
+            .unwrap_or_else(|| self.to_string())
     }
 
     /// Returns the decoded final URI path segment, or `None` for the URI root

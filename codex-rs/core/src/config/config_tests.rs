@@ -465,6 +465,8 @@ async fn load_config_resolves_session_token_budget() -> std::io::Result<()> {
 enabled = true
 session_limit_tokens = 100000
 session_reminder_interval_tokens = 10000
+sampling_token_weight = 1.0
+prefill_token_weight = 0.1
 "#,
     )
     .expect("TOML deserialization should succeed");
@@ -480,6 +482,8 @@ session_reminder_interval_tokens = 10000
         Some(SessionTokenBudgetConfig {
             limit_tokens: 100_000,
             reminder_interval_tokens: 10_000,
+            sampling_token_weight: 1.0,
+            prefill_token_weight: 0.1,
         })
     );
     Ok(())

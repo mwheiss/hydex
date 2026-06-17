@@ -37,6 +37,8 @@ const EFFECTIVE_CONTEXT_WINDOW: i64 = CONFIGURED_CONTEXT_WINDOW * 95 / 100;
 const SESSION_TOKEN_BUDGET: SessionTokenBudgetConfig = SessionTokenBudgetConfig {
     limit_tokens: 100,
     reminder_interval_tokens: 25,
+    sampling_token_weight: 1.0,
+    prefill_token_weight: 1.0,
 };
 
 fn token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
@@ -71,7 +73,7 @@ fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_token_budget_adds_initial_and_periodic_reminders() -> Result<()> {
+async fn session_token_budget_adds_weighted_initial_and_periodic_reminders() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -80,7 +82,19 @@ async fn session_token_budget_adds_initial_and_periodic_reminders() -> Result<()
         vec![
             sse(vec![
                 ev_response_created("resp-1"),
-                ev_completed_with_tokens("resp-1", /*total_tokens*/ 30),
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp-1",
+                        "usage": {
+                            "input_tokens": 60,
+                            "input_tokens_details": { "cached_tokens": 40 },
+                            "output_tokens": 15,
+                            "output_tokens_details": null,
+                            "total_tokens": 75
+                        }
+                    }
+                }),
             ]),
             sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
         ],
@@ -93,7 +107,11 @@ async fn session_token_budget_adds_initial_and_periodic_reminders() -> Result<()
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("test config should allow token budget");
-            config.session_token_budget = Some(SESSION_TOKEN_BUDGET);
+            config.session_token_budget = Some(SessionTokenBudgetConfig {
+                sampling_token_weight: 2.0,
+                prefill_token_weight: 0.5,
+                ..SESSION_TOKEN_BUDGET
+            });
         })
         .build(&server)
         .await?;
@@ -102,8 +120,8 @@ async fn session_token_budget_adds_initial_and_periodic_reminders() -> Result<()
     test.submit_turn("second turn").await?;
 
     let requests = responses.requests();
-    let initial_remaining = "<rollout_budget>\nYou have 100 tokens left in the shared session token budget.\n</rollout_budget>".to_string();
-    let remaining = "<rollout_budget>\nYou have 70 tokens left in the shared session token budget.\n</rollout_budget>".to_string();
+    let initial_remaining = "<rollout_budget>\nYou have 100 weighted tokens left in the shared session token budget.\n</rollout_budget>".to_string();
+    let remaining = "<rollout_budget>\nYou have 60 weighted tokens left in the shared session token budget.\n</rollout_budget>".to_string();
     assert_eq!(
         rollout_budget_texts(&requests[0]),
         vec![initial_remaining.clone()]
@@ -134,6 +152,8 @@ async fn session_token_budget_exhaustion_uses_existing_interrupt_path() -> Resul
             config.session_token_budget = Some(SessionTokenBudgetConfig {
                 limit_tokens: 30,
                 reminder_interval_tokens: 10,
+                sampling_token_weight: 1.0,
+                prefill_token_weight: 1.0,
             });
         })
         .build(&server)
@@ -249,7 +269,7 @@ async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<(
     assert_eq!(
         rollout_budget_texts(&request).last(),
         Some(
-            &"<rollout_budget>\nYou have 50 tokens left in the shared session token budget.\n</rollout_budget>"
+            &"<rollout_budget>\nYou have 50 weighted tokens left in the shared session token budget.\n</rollout_budget>"
                 .to_string()
         )
     );
@@ -588,7 +608,7 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
     assert_eq!(
         rollout_budget_texts(&requests[2]),
         vec![
-            "<rollout_budget>\nYou have 70 tokens left in the shared session token budget.\n</rollout_budget>".to_string(),
+            "<rollout_budget>\nYou have 70 weighted tokens left in the shared session token budget.\n</rollout_budget>".to_string(),
         ],
         "a new context window should restate the current remainder"
     );
@@ -597,7 +617,7 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
         .find("compact summary")
         .expect("post-compaction request should contain the summary");
     let reminder_position = request_body
-        .find("You have 70 tokens left in the shared session token budget.")
+        .find("You have 70 weighted tokens left in the shared session token budget.")
         .expect("post-compaction request should contain the current remainder");
     assert!(
         summary_position < reminder_position,

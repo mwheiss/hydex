@@ -2733,6 +2733,16 @@
         "enabled": {
           "type": "boolean"
         },
+        "prefill_token_weight": {
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "sampling_token_weight": {
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        },
         "session_limit_tokens": {
           "format": "int64",
           "minimum": 1.0,

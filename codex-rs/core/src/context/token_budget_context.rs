@@ -101,6 +101,8 @@ impl ContextualUserFragment for SessionTokenBudgetContext {
 
     fn body(&self) -> String {
         let remaining_tokens = self.remaining_tokens;
-        format!("You have {remaining_tokens} tokens left in the shared session token budget.")
+        format!(
+            "You have {remaining_tokens} weighted tokens left in the shared session token budget."
+        )
     }
 }

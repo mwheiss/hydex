@@ -2,6 +2,7 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::context::ContextualUserFragment;
 use codex_features::Feature;
+use codex_protocol::protocol::TokenUsage;
 
 const TOKEN_BUDGET_USAGE_THRESHOLDS: [i64; 3] = [25, 50, 75];
 
@@ -23,12 +24,12 @@ pub(super) async fn maybe_record_session_token_budget_reminder(
 }
 
 impl Session {
-    pub(crate) async fn record_session_token_usage(&self, tokens: i64) {
+    pub(crate) async fn record_session_token_usage(&self, usage: &TokenUsage) {
         if self
             .services
             .agent_control
             .session_token_budget()
-            .record_usage(tokens)
+            .record_usage(usage)
         {
             self.services
                 .agent_control

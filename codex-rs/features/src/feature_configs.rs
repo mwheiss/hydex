@@ -68,7 +68,7 @@ impl FeatureConfig for MultiAgentV2ConfigToml {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TokenBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,6 +79,12 @@ pub struct TokenBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     pub session_reminder_interval_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub sampling_token_weight: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub prefill_token_weight: Option<f64>,
 }
 
 impl FeatureConfig for TokenBudgetConfigToml {

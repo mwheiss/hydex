@@ -1062,10 +1062,12 @@ pub struct CodeModeConfig {
     pub excluded_tool_namespaces: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct SessionTokenBudgetConfig {
     pub limit_tokens: i64,
     pub reminder_interval_tokens: i64,
+    pub sampling_token_weight: f64,
+    pub prefill_token_weight: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2484,10 +2486,13 @@ fn resolve_session_token_budget_config(
         return Ok(None);
     };
     let Some(limit_tokens) = config.session_limit_tokens else {
-        if config.session_reminder_interval_tokens.is_some() {
+        if config.session_reminder_interval_tokens.is_some()
+            || config.sampling_token_weight.is_some()
+            || config.prefill_token_weight.is_some()
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "features.token_budget.session_reminder_interval_tokens requires session_limit_tokens",
+                "features.token_budget session settings require session_limit_tokens",
             ));
         }
         return Ok(None);
@@ -2507,9 +2512,24 @@ fn resolve_session_token_budget_config(
             "features.token_budget.session_reminder_interval_tokens must be positive",
         ));
     }
+    let sampling_token_weight = config.sampling_token_weight.unwrap_or(1.0);
+    let prefill_token_weight = config.prefill_token_weight.unwrap_or(1.0);
+    for (field, weight) in [
+        ("sampling_token_weight", sampling_token_weight),
+        ("prefill_token_weight", prefill_token_weight),
+    ] {
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("features.token_budget.{field} must be finite and non-negative"),
+            ));
+        }
+    }
     Ok(Some(SessionTokenBudgetConfig {
         limit_tokens,
         reminder_interval_tokens,
+        sampling_token_weight,
+        prefill_token_weight,
     }))
 }
 

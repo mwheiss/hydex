@@ -356,13 +356,6 @@ impl TurnContext {
             .then_some(file_system_sandbox_policy)
     }
 
-    pub(crate) fn compact_prompt(&self) -> &str {
-        self.config
-            .compact_prompt
-            .as_deref()
-            .unwrap_or(compact::SUMMARIZATION_PROMPT)
-    }
-
     #[cfg(test)]
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
         self.to_turn_context_item_with_offload_ever_used(false)

@@ -1017,7 +1017,7 @@ pub struct Config {
     pub multi_agent_v2: MultiAgentV2Config,
 
     /// Shared token budget for the root thread and its sub-agents.
-    pub session_token_budget: Option<SessionTokenBudgetConfig>,
+    pub rollout_budget: Option<RolloutBudgetConfig>,
 
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
@@ -1063,7 +1063,7 @@ pub struct CodeModeConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub struct SessionTokenBudgetConfig {
+pub struct RolloutBudgetConfig {
     pub limit_tokens: i64,
     pub reminder_interval_tokens: i64,
     pub sampling_token_weight: f64,
@@ -2471,17 +2471,17 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     }
 }
 
-fn resolve_session_token_budget_config(
+fn resolve_rollout_budget_config(
     config_toml: &ConfigToml,
     features: &ManagedFeatures,
-) -> std::io::Result<Option<SessionTokenBudgetConfig>> {
-    if !features.enabled(Feature::TokenBudget) {
+) -> std::io::Result<Option<RolloutBudgetConfig>> {
+    if !features.enabled(Feature::RolloutBudget) {
         return Ok(None);
     }
     let Some(FeatureToml::Config(config)) = config_toml
         .features
         .as_ref()
-        .and_then(|features| features.token_budget.as_ref())
+        .and_then(|features| features.rollout_budget.as_ref())
     else {
         return Ok(None);
     };
@@ -2492,7 +2492,7 @@ fn resolve_session_token_budget_config(
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "features.token_budget session settings require session_limit_tokens",
+                "features.rollout_budget session settings require session_limit_tokens",
             ));
         }
         return Ok(None);
@@ -2500,7 +2500,7 @@ fn resolve_session_token_budget_config(
     if limit_tokens <= 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "features.token_budget.session_limit_tokens must be positive",
+            "features.rollout_budget.session_limit_tokens must be positive",
         ));
     }
     let reminder_interval_tokens = config
@@ -2509,7 +2509,7 @@ fn resolve_session_token_budget_config(
     if reminder_interval_tokens <= 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "features.token_budget.session_reminder_interval_tokens must be positive",
+            "features.rollout_budget.session_reminder_interval_tokens must be positive",
         ));
     }
     let sampling_token_weight = config.sampling_token_weight.unwrap_or(1.0);
@@ -2521,11 +2521,11 @@ fn resolve_session_token_budget_config(
         if !weight.is_finite() || weight < 0.0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("features.token_budget.{field} must be finite and non-negative"),
+                format!("features.rollout_budget.{field} must be finite and non-negative"),
             ));
         }
     }
-    Ok(Some(SessionTokenBudgetConfig {
+    Ok(Some(RolloutBudgetConfig {
         limit_tokens,
         reminder_interval_tokens,
         sampling_token_weight,
@@ -3188,7 +3188,7 @@ impl Config {
             resolve_experimental_request_user_input_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
-        let session_token_budget = resolve_session_token_budget_config(&cfg, &features)?;
+        let rollout_budget = resolve_rollout_budget_config(&cfg, &features)?;
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
 
         let agent_roles =
@@ -3728,7 +3728,7 @@ impl Config {
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,
-            session_token_budget,
+            rollout_budget,
             features,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning

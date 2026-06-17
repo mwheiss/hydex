@@ -593,6 +593,9 @@
             "responses_websockets_v2": {
               "type": "boolean"
             },
+            "rollout_budget": {
+              "$ref": "#/definitions/FeatureToml_for_RolloutBudgetConfigToml"
+            },
             "runtime_metrics": {
               "type": "boolean"
             },
@@ -639,7 +642,7 @@
               "type": "boolean"
             },
             "token_budget": {
-              "$ref": "#/definitions/FeatureToml_for_TokenBudgetConfigToml"
+              "type": "boolean"
             },
             "tool_call_mcp_elicitation": {
               "type": "boolean"
@@ -890,13 +893,13 @@
         }
       ]
     },
-    "FeatureToml_for_TokenBudgetConfigToml": {
+    "FeatureToml_for_RolloutBudgetConfigToml": {
       "anyOf": [
         {
           "type": "boolean"
         },
         {
-          "$ref": "#/definitions/TokenBudgetConfigToml"
+          "$ref": "#/definitions/RolloutBudgetConfigToml"
         }
       ]
     },
@@ -2564,6 +2567,35 @@
         }
       ]
     },
+    "RolloutBudgetConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "prefill_token_weight": {
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "sampling_token_weight": {
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "session_limit_tokens": {
+          "format": "int64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "session_reminder_interval_tokens": {
+          "format": "int64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "SandboxMode": {
       "enum": [
         "read-only",
@@ -2726,35 +2758,6 @@
           "type": "object"
         }
       ]
-    },
-    "TokenBudgetConfigToml": {
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "prefill_token_weight": {
-          "format": "double",
-          "minimum": 0.0,
-          "type": "number"
-        },
-        "sampling_token_weight": {
-          "format": "double",
-          "minimum": 0.0,
-          "type": "number"
-        },
-        "session_limit_tokens": {
-          "format": "int64",
-          "minimum": 1.0,
-          "type": "integer"
-        },
-        "session_reminder_interval_tokens": {
-          "format": "int64",
-          "minimum": 1.0,
-          "type": "integer"
-        }
-      },
-      "type": "object"
     },
     "ToolSuggestConfig": {
       "additionalProperties": false,
@@ -4790,6 +4793,9 @@
         "responses_websockets_v2": {
           "type": "boolean"
         },
+        "rollout_budget": {
+          "$ref": "#/definitions/FeatureToml_for_RolloutBudgetConfigToml"
+        },
         "runtime_metrics": {
           "type": "boolean"
         },
@@ -4836,7 +4842,7 @@
           "type": "boolean"
         },
         "token_budget": {
-          "$ref": "#/definitions/FeatureToml_for_TokenBudgetConfigToml"
+          "type": "boolean"
         },
         "tool_call_mcp_elicitation": {
           "type": "boolean"

@@ -70,7 +70,7 @@ impl FeatureConfig for MultiAgentV2ConfigToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct TokenBudgetConfigToml {
+pub struct RolloutBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,7 +87,7 @@ pub struct TokenBudgetConfigToml {
     pub prefill_token_weight: Option<f64>,
 }
 
-impl FeatureConfig for TokenBudgetConfigToml {
+impl FeatureConfig for RolloutBudgetConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
     }

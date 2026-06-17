@@ -2,42 +2,8 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::context::ContextualUserFragment;
 use codex_features::Feature;
-use codex_protocol::protocol::TokenUsage;
 
 const TOKEN_BUDGET_USAGE_THRESHOLDS: [i64; 3] = [25, 50, 75];
-
-pub(super) async fn maybe_record_session_token_budget_reminder(
-    sess: &Session,
-    turn_context: &TurnContext,
-    window_id: &str,
-) {
-    let budget = sess.services.agent_control.session_token_budget();
-    let Some(reminder) = budget.pending_reminder(sess.thread_id(), window_id) else {
-        return;
-    };
-    let response_item = ContextualUserFragment::into(crate::context::SessionTokenBudgetContext {
-        remaining_tokens: reminder.remaining_tokens,
-    });
-    sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
-        .await;
-    budget.mark_reminder_delivered(sess.thread_id(), window_id, reminder);
-}
-
-impl Session {
-    pub(crate) async fn record_session_token_usage(&self, usage: &TokenUsage) {
-        if self
-            .services
-            .agent_control
-            .session_token_budget()
-            .record_usage(usage)
-        {
-            self.services
-                .agent_control
-                .interrupt_session(self.thread_id())
-                .await;
-        }
-    }
-}
 
 pub(super) async fn maybe_record_token_budget_remaining_context(
     sess: &Session,

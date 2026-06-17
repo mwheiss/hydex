@@ -80,29 +80,3 @@ impl ContextualUserFragment for TokenBudgetRemainingContext {
         }
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionTokenBudgetContext {
-    pub(crate) remaining_tokens: i64,
-}
-
-impl ContextualUserFragment for SessionTokenBudgetContext {
-    fn role(&self) -> &'static str {
-        "developer"
-    }
-
-    fn markers(&self) -> (&'static str, &'static str) {
-        Self::type_markers()
-    }
-
-    fn type_markers() -> (&'static str, &'static str) {
-        ("<rollout_budget>\n", "\n</rollout_budget>")
-    }
-
-    fn body(&self) -> String {
-        let remaining_tokens = self.remaining_tokens;
-        format!(
-            "You have {remaining_tokens} weighted tokens left in the shared session token budget."
-        )
-    }
-}

@@ -457,11 +457,11 @@ excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
 }
 
 #[tokio::test]
-async fn load_config_resolves_session_token_budget() -> std::io::Result<()> {
+async fn load_config_resolves_rollout_budget() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml: ConfigToml = toml::from_str(
         r#"
-[features.token_budget]
+[features.rollout_budget]
 enabled = true
 session_limit_tokens = 100000
 session_reminder_interval_tokens = 10000
@@ -477,9 +477,11 @@ prefill_token_weight = 0.1
     )
     .await?;
 
+    assert!(config.features.enabled(Feature::RolloutBudget));
+    assert!(!config.features.enabled(Feature::TokenBudget));
     assert_eq!(
-        config.session_token_budget,
-        Some(SessionTokenBudgetConfig {
+        config.rollout_budget,
+        Some(RolloutBudgetConfig {
             limit_tokens: 100_000,
             reminder_interval_tokens: 10_000,
             sampling_token_weight: 1.0,

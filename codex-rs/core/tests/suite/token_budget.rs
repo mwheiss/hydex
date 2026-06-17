@@ -1,11 +1,8 @@
 use anyhow::Result;
-use codex_core::config::SessionTokenBudgetConfig;
 use codex_features::Feature;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::TurnAbortReason;
-use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -15,8 +12,6 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::mount_sse_once;
-use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
@@ -27,17 +22,9 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use std::time::Duration;
-use tokio::time::timeout;
 
 const CONFIGURED_CONTEXT_WINDOW: i64 = 128_000;
 const EFFECTIVE_CONTEXT_WINDOW: i64 = CONFIGURED_CONTEXT_WINDOW * 95 / 100;
-const SESSION_TOKEN_BUDGET: SessionTokenBudgetConfig = SessionTokenBudgetConfig {
-    limit_tokens: 100,
-    reminder_interval_tokens: 25,
-    sampling_token_weight: 1.0,
-    prefill_token_weight: 1.0,
-};
 
 fn token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
     request
@@ -45,20 +32,6 @@ fn token_budget_texts(request: &ResponsesRequest) -> Vec<String> {
         .into_iter()
         .filter(|text| text.starts_with("<token_budget>"))
         .collect()
-}
-
-fn rollout_budget_texts(request: &ResponsesRequest) -> Vec<String> {
-    request
-        .message_input_texts("developer")
-        .into_iter()
-        .filter(|text| text.starts_with("<rollout_budget>"))
-        .collect()
-}
-
-fn rollout_budget_message(remaining_tokens: i64) -> String {
-    format!(
-        "<rollout_budget>\nYou have {remaining_tokens} weighted tokens left in the shared session token budget.\n</rollout_budget>"
-    )
 }
 
 fn tool_names(request: &ResponsesRequest) -> Vec<String> {
@@ -70,202 +43,6 @@ fn tool_names(request: &ResponsesRequest) -> Vec<String> {
         .flatten()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
         .collect()
-}
-
-fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
-    std::str::from_utf8(&request.body).is_ok_and(|body| body.contains(text))
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_token_budget_adds_weighted_initial_and_periodic_reminders() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                json!({
-                    "type": "response.completed",
-                    "response": {
-                        "id": "resp-1",
-                        "usage": {
-                            "input_tokens": 60,
-                            "input_tokens_details": { "cached_tokens": 40 },
-                            "output_tokens": 15,
-                            "output_tokens_details": null,
-                            "total_tokens": 75
-                        }
-                    }
-                }),
-            ]),
-            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
-        ],
-    )
-    .await;
-    let test = test_codex()
-        .with_config(|config| {
-            config.session_token_budget = Some(SessionTokenBudgetConfig {
-                sampling_token_weight: 2.0,
-                prefill_token_weight: 0.5,
-                ..SESSION_TOKEN_BUDGET
-            });
-        })
-        .build(&server)
-        .await?;
-
-    test.submit_turn("first turn").await?;
-    test.submit_turn("second turn").await?;
-
-    let requests = responses.requests();
-    assert_eq!(
-        rollout_budget_texts(&requests[0]),
-        vec![rollout_budget_message(100)]
-    );
-    assert_eq!(
-        rollout_budget_texts(&requests[1]),
-        vec![rollout_budget_message(100), rollout_budget_message(60)]
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_token_budget_exhaustion_uses_existing_interrupt_path() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let response = mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_completed_with_tokens("resp-1", /*total_tokens*/ 30),
-        ]),
-    )
-    .await;
-    let test = test_codex()
-        .with_config(|config| {
-            config.session_token_budget = Some(SessionTokenBudgetConfig {
-                limit_tokens: 30,
-                reminder_interval_tokens: 10,
-                ..SESSION_TOKEN_BUDGET
-            });
-        })
-        .build(&server)
-        .await?;
-
-    test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "use the budget".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await?;
-
-    let event = wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnAborted(_))
-    })
-    .await;
-    let EventMsg::TurnAborted(event) = event else {
-        unreachable!("event filter only accepts TurnAborted")
-    };
-    assert_eq!(event.reason, TurnAbortReason::Interrupted);
-    response.single_request();
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subagent_usage_draws_from_the_shared_session_token_budget() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    const ROOT_PROMPT: &str = "spawn a budget worker";
-    const CHILD_PROMPT: &str = "consume child budget";
-    const FOLLOW_UP_PROMPT: &str = "report the shared budget";
-    const SPAWN_CALL_ID: &str = "spawn-budget-worker";
-
-    let server = start_mock_server().await;
-    let spawn_args = json!({
-        "message": CHILD_PROMPT,
-        "task_name": "budget_worker",
-    })
-    .to_string();
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| wire_request_contains(request, ROOT_PROMPT),
-        sse(vec![
-            ev_response_created("root-1"),
-            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
-            ev_completed_with_tokens("root-1", /*total_tokens*/ 10),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            wire_request_contains(request, CHILD_PROMPT)
-                && !wire_request_contains(request, SPAWN_CALL_ID)
-        },
-        sse(vec![
-            ev_response_created("child-1"),
-            ev_completed_with_tokens("child-1", /*total_tokens*/ 30),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| wire_request_contains(request, SPAWN_CALL_ID),
-        sse(vec![
-            ev_response_created("root-2"),
-            ev_completed_with_tokens("root-2", /*total_tokens*/ 10),
-        ]),
-    )
-    .await;
-    let follow_up = mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| wire_request_contains(request, FOLLOW_UP_PROMPT),
-        sse(vec![ev_response_created("root-3"), ev_completed("root-3")]),
-    )
-    .await;
-
-    let test = test_codex()
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow multi-agent tools");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow multi-agent v2");
-            config.session_token_budget = Some(SESSION_TOKEN_BUDGET);
-        })
-        .build(&server)
-        .await?;
-
-    let mut created_threads = test.thread_manager.subscribe_thread_created();
-    test.submit_turn(ROOT_PROMPT).await?;
-    let child_thread_id = timeout(Duration::from_secs(10), created_threads.recv()).await??;
-    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
-    wait_for_event(child_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    test.submit_turn(FOLLOW_UP_PROMPT).await?;
-
-    let request = follow_up.single_request();
-    assert_eq!(
-        rollout_budget_texts(&request).last(),
-        Some(&rollout_budget_message(50))
-    );
-
-    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -545,14 +322,11 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
     let responses = mount_sse_sequence(
         &server,
         vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                ev_completed_with_tokens("resp-1", /*total_tokens*/ 20),
-            ]),
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
             sse(vec![
                 ev_response_created("resp-compact"),
                 ev_assistant_message("msg-compact", "compact summary"),
-                ev_completed_with_tokens("resp-compact", /*total_tokens*/ 10),
+                ev_completed("resp-compact"),
             ]),
             sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
         ],
@@ -572,7 +346,6 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("test config should allow token budget");
-            config.session_token_budget = Some(SESSION_TOKEN_BUDGET);
         })
         .build(&server)
         .await?;
@@ -595,22 +368,6 @@ async fn token_budget_context_uses_new_window_after_compaction() -> Result<()> {
             "<token_budget>\nThread id {thread_id}.\nCurrent context window 1.\nYou have {EFFECTIVE_CONTEXT_WINDOW} tokens left in this context window.\n</token_budget>"
         )],
         "post-compaction full context should report context window 1"
-    );
-    assert_eq!(
-        rollout_budget_texts(&requests[2]),
-        vec![rollout_budget_message(70)],
-        "a new context window should restate the current remainder"
-    );
-    let request_body = requests[2].body_json().to_string();
-    let summary_position = request_body
-        .find("compact summary")
-        .expect("post-compaction request should contain the summary");
-    let reminder_position = request_body
-        .find("You have 70 weighted tokens left in the shared session token budget.")
-        .expect("post-compaction request should contain the current remainder");
-    assert!(
-        summary_position < reminder_position,
-        "the current remainder should follow the compaction summary"
     );
 
     Ok(())

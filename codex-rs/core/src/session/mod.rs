@@ -210,6 +210,7 @@ mod input_queue;
 mod mcp;
 mod multi_agents;
 mod review;
+mod rollout_budget;
 mod rollout_reconstruction;
 #[allow(clippy::module_inception)]
 pub(crate) mod session;
@@ -3190,7 +3191,7 @@ impl Session {
                 }
                 state.token_info()
             };
-            self.record_session_token_usage(token_usage).await;
+            self.record_rollout_budget_usage(token_usage);
             if let Some(token_info) = token_info.as_ref() {
                 for contributor in self.services.extensions.token_usage_contributors() {
                     contributor

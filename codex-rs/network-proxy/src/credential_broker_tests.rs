@@ -28,10 +28,6 @@ fn authorization(headers: &HeaderMap) -> Option<&str> {
 fn virtualize_child_env_replaces_supported_credentials() {
     let broker = CredentialBroker::new(/*enabled*/ true);
     let mut env = env_map([("GH_TOKEN", "ghp-real"), ("OPENAI_API_KEY", "sk-real")]);
-    assert_eq!(
-        virtualizable_credential_env_keys(&env),
-        vec!["GH_TOKEN", "OPENAI_API_KEY"]
-    );
 
     broker.virtualize_child_env(&mut env);
 
@@ -69,7 +65,6 @@ fn virtualize_child_env_preserves_live_dummy_mappings() {
 fn virtualize_child_env_preserves_unbound_enterprise_token() {
     let broker = CredentialBroker::new(/*enabled*/ true);
     let mut env = env_map([("GH_ENTERPRISE_TOKEN", "ghp-enterprise-real")]);
-    assert_eq!(virtualizable_credential_env_keys(&env), Vec::<&str>::new());
 
     broker.virtualize_child_env(&mut env);
     let mut headers = headers_with_bearer("ghp_codex_dummy_0000");

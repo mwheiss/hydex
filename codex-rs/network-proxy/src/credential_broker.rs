@@ -148,26 +148,6 @@ impl CredentialBroker {
     }
 }
 
-/// Discovers supported process credentials that the broker can safely virtualize.
-pub fn discover_process_credential_env_keys() -> Vec<&'static str> {
-    let env = CREDENTIAL_BROKER_ENV_KEYS
-        .iter()
-        .filter_map(|key| {
-            std::env::var(key)
-                .ok()
-                .map(|value| ((*key).to_string(), value))
-        })
-        .collect();
-    virtualizable_credential_env_keys(&env)
-}
-
-fn virtualizable_credential_env_keys(env: &HashMap<String, String>) -> Vec<&'static str> {
-    virtualizable_credential_candidates(env)
-        .into_iter()
-        .map(|candidate| candidate.env_var)
-        .collect()
-}
-
 fn virtualizable_credential_candidates(env: &HashMap<String, String>) -> Vec<CredentialCandidate> {
     let mut candidates = GITHUB_CLOUD_TOKEN_ENV_VARS
         .iter()

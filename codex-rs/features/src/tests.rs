@@ -196,11 +196,6 @@ fn network_proxy_is_experimental_and_disabled_by_default() {
         Stage::Experimental { .. }
     ));
     assert_eq!(Feature::NetworkProxy.default_enabled(), false);
-    let config = crate::NetworkProxyConfigToml {
-        credential_broker: Some(true),
-        ..Default::default()
-    };
-    assert_eq!(crate::FeatureConfig::enabled(&config), Some(true));
 }
 
 #[test]
@@ -706,6 +701,12 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
         FeatureOverrides::default(),
     );
     assert_eq!(replayed.enabled(Feature::ApplyPatchFreeform), false);
+    let config = crate::NetworkProxyConfigToml {
+        credential_broker: Some(true),
+        ..Default::default()
+    };
+
+    assert_eq!(crate::FeatureConfig::enabled(&config), Some(true));
 }
 
 #[test]

@@ -77,10 +77,6 @@ impl NetworkProxySpec {
         self.config.network.enabled
     }
 
-    pub(crate) fn credential_broker_enabled(&self) -> bool {
-        self.config.network.credential_broker
-    }
-
     pub fn proxy_host_and_port(&self) -> String {
         host_and_port_from_network_addr(&self.config.network.proxy_url, /*default_port*/ 3128)
     }

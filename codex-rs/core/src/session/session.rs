@@ -2,7 +2,6 @@ use super::input_queue::InputQueue;
 use super::*;
 use crate::agents_md::LoadedAgentsMd;
 use crate::config::ConstraintError;
-use crate::config::NetworkProxySpec;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshot;
@@ -803,19 +802,11 @@ impl Session {
                 shell::default_user_shell()
             };
             let shell_snapshot = if config.features.enabled(Feature::ShellSnapshot) {
-                let excluded_credential_env_vars = config
-                    .permissions
-                    .network
-                    .as_ref()
-                    .is_some_and(NetworkProxySpec::credential_broker_enabled)
-                    .then(codex_network_proxy::discover_process_credential_env_keys)
-                    .unwrap_or_default();
                 ShellSnapshot::new(
                     config.codex_home.clone(),
                     thread_id,
                     session_telemetry.clone(),
                     state_db_ctx.clone(),
-                    excluded_credential_env_vars,
                 )
             } else {
                 ShellSnapshot::disabled()

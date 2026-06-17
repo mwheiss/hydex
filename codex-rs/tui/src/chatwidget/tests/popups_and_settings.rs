@@ -2201,7 +2201,7 @@ async fn open_plugins_list_preserves_saved_workspace_tab() {
 }
 
 #[tokio::test]
-async fn plugins_popup_installed_remote_row_prefers_local_mapped_share_detail() {
+async fn plugins_popup_installed_remote_row_keeps_remote_detail() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
 
@@ -2280,12 +2280,12 @@ async fn plugins_popup_installed_remote_row_prefers_local_mapped_share_detail() 
     }
     match rx.try_recv() {
         Ok(AppEvent::FetchPluginDetail { params, .. }) => {
+            assert_eq!(params.marketplace_path, None);
             assert_eq!(
-                params.marketplace_path,
-                Some(plugins_test_absolute_path("marketplaces/chatgpt"))
+                params.remote_marketplace_name,
+                Some("workspace-shared-with-me-private".to_string())
             );
-            assert_eq!(params.remote_marketplace_name, None);
-            assert_eq!(params.plugin_name, "docs");
+            assert_eq!(params.plugin_name, remote_plugin_id);
         }
         other => panic!("expected FetchPluginDetail event, got {other:?}"),
     }

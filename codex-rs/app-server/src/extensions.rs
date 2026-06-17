@@ -5,6 +5,7 @@ use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
+use codex_app_server_protocol::WarningNotification;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
@@ -138,6 +139,23 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                                 thread_id: thread_id.to_string(),
                                 turn_id,
                                 goal,
+                            },
+                        ))
+                        .await;
+                });
+            }
+            EventMsg::Warning(warning_event) => {
+                let Ok(thread_id) = ThreadId::from_string(&event.id) else {
+                    tracing::warn!(event_id = %event.id, "dropping extension warning with invalid thread id");
+                    return;
+                };
+                let outgoing = Arc::clone(&self.outgoing);
+                tokio::spawn(async move {
+                    outgoing
+                        .send_server_notification(ServerNotification::Warning(
+                            WarningNotification {
+                                thread_id: Some(thread_id.to_string()),
+                                message: warning_event.message,
                             },
                         ))
                         .await;

@@ -6,7 +6,8 @@ use codex_core::StateDbHandle;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
-use codex_extension_api::empty_extension_registry;
+use codex_extension_api::ExtensionRegistry;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
 use codex_login::default_client::USER_AGENT_SUFFIX;
@@ -71,7 +72,7 @@ impl MessageProcessor {
             auth_manager,
             SessionSource::Mcp,
             environment_manager,
-            empty_extension_registry(),
+            default_extensions(),
             user_instructions_provider,
             /*analytics_events_client*/ None,
             codex_core::thread_store_from_config(config.as_ref(), state_db.clone()),
@@ -570,4 +571,15 @@ impl MessageProcessor {
     fn handle_initialized_notification(&self) {
         tracing::info!("notifications/initialized");
     }
+}
+
+fn default_extensions() -> Arc<ExtensionRegistry<Config>> {
+    let mut builder = ExtensionRegistryBuilder::new();
+    codex_skills_extension::install(&mut builder, |config: &Config| {
+        codex_skills_extension::SkillsExtensionConfig {
+            include_instructions: config.include_skill_instructions,
+            bundled_skills_enabled: config.bundled_skills_enabled(),
+        }
+    });
+    Arc::new(builder.build())
 }

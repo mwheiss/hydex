@@ -9,7 +9,7 @@ use codex_core_skills::SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS;
 use codex_core_skills::SKILLS_INTRO_WITH_ABSOLUTE_PATHS;
 use codex_core_skills::SkillLoadOutcome;
 use codex_core_skills::SkillMetadata;
-use codex_core_skills::injection::InjectedHostSkillPrompts;
+use codex_extension_api::ContextContributionContext;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -99,6 +99,10 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
     let turn_store = ExtensionData::new("turn-1");
     turn_store.insert(HostSkillsSnapshot::new(Arc::clone(&loaded_skills)));
 
+    let prompt_fragments = registry.context_contributors()[0]
+        .contribute(prompt_context(&session_store, &thread_store, &turn_store))
+        .await;
+
     let fragments = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
@@ -121,17 +125,15 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
     let expected_skill = format!(
         "<skill>\n<name>demo</name>\n<path>{skill_prompt_path}</path>\n{DEMO_SKILL_CONTENTS}\n</skill>"
     );
+    assert_eq!(1, prompt_fragments.len());
+    assert_eq!(expected_catalog, prompt_fragments[0].text());
     assert_eq!(
-        vec![("developer", expected_catalog), ("user", expected_skill),],
+        vec![("user", expected_skill)],
         fragments
             .iter()
             .map(|fragment| (fragment.role(), fragment.render()))
             .collect::<Vec<_>>()
     );
-    let injected_host_skill_prompts = turn_store
-        .get::<InjectedHostSkillPrompts>()
-        .ok_or("host skill prompt marker should be set")?;
-    assert!(injected_host_skill_prompts.contains_path(&skill_path_string));
 
     std::fs::remove_dir_all(codex_home)?;
     Ok(())
@@ -183,7 +185,11 @@ async fn selected_executor_catalog_is_context_and_selected_entrypoint_is_turn_in
         .await;
 
     let prompt_fragments = registry.context_contributors()[0]
-        .contribute(&session_store, &thread_store)
+        .contribute(prompt_context(
+            &session_store,
+            &thread_store,
+            &ExtensionData::new("initial-turn"),
+        ))
         .await;
     assert_eq!(1, prompt_fragments.len());
     assert!(
@@ -228,7 +234,7 @@ async fn selected_executor_catalog_is_context_and_selected_entrypoint_is_turn_in
         read_request_keys(&read_requests)
     );
     let rebuilt_prompt_fragments = registry.context_contributors()[0]
-        .contribute(&session_store, &thread_store)
+        .contribute(prompt_context(&session_store, &thread_store, &turn_store))
         .await;
     assert_eq!(1, rebuilt_prompt_fragments.len());
     assert!(rebuilt_prompt_fragments[0].text().contains("lint-fix"));
@@ -294,7 +300,11 @@ async fn orchestrator_catalog_snapshot_caches_failure() -> TestResult {
         .await;
 
     let initial_fragments = registry.context_contributors()[0]
-        .contribute(&session_store, &thread_store)
+        .contribute(prompt_context(
+            &session_store,
+            &thread_store,
+            &ExtensionData::new("initial-turn"),
+        ))
         .await;
     assert!(initial_fragments.is_empty());
     let EventMsg::Warning(warning) = event_rx.try_recv()?.msg else {
@@ -460,6 +470,17 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
         })
         .await;
 
+    let initial_fragments = registry.context_contributors()[0]
+        .contribute(prompt_context(
+            &session_store,
+            &thread_store,
+            &ExtensionData::new("initial-turn"),
+        ))
+        .await;
+    assert_eq!(1, initial_fragments.len());
+    assert!(initial_fragments[0].text().contains("visible-skill"));
+    assert!(!initial_fragments[0].text().contains("hidden-skill"));
+
     let fragments = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
@@ -476,10 +497,8 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
         )
         .await;
 
-    assert_eq!(2, fragments.len());
-    assert!(fragments[0].render().contains("visible-skill"));
-    assert!(!fragments[0].render().contains("hidden-skill"));
-    assert!(fragments[1].render().contains("<name>hidden-skill</name>"));
+    assert_eq!(1, fragments.len());
+    assert!(fragments[0].render().contains("<name>hidden-skill</name>"));
     assert_eq!(
         vec![(
             SkillAuthority::new(SkillSourceKind::Host, "host"),
@@ -604,4 +623,17 @@ fn read_request_keys(
             )
         })
         .collect()
+}
+
+fn prompt_context<'a>(
+    session_store: &'a ExtensionData,
+    thread_store: &'a ExtensionData,
+    turn_store: &'a ExtensionData,
+) -> ContextContributionContext<'a> {
+    ContextContributionContext {
+        session_store,
+        thread_store,
+        turn_store,
+        model_context_window: None,
+    }
 }

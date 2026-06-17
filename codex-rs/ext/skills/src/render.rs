@@ -4,6 +4,10 @@ use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillSourceKind;
 use crate::fragments::AvailableSkillsInstructions;
+use codex_core_skills::HostSkillsSnapshot;
+use codex_core_skills::build_available_skills;
+use codex_core_skills::default_skill_metadata_budget;
+use codex_core_skills::render::SkillRenderSideEffects;
 
 const MAX_AVAILABLE_SKILLS_BYTES: usize = 8_000;
 const MAX_MAIN_PROMPT_BYTES: usize = 8_000;
@@ -12,7 +16,28 @@ pub(crate) const MAX_SKILL_PATH_BYTES: usize = 1_024;
 
 pub(crate) fn available_skills_fragment(
     catalog: &SkillCatalog,
-) -> Option<AvailableSkillsInstructions> {
+    host_snapshot: Option<&HostSkillsSnapshot>,
+    model_context_window: Option<i64>,
+) -> Option<(AvailableSkillsInstructions, Option<String>)> {
+    if catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.enabled && entry.prompt_visible)
+        .all(|entry| entry.authority.kind == SkillSourceKind::Host)
+        && let Some(host_snapshot) = host_snapshot
+        && let Some(available) = build_available_skills(
+            host_snapshot.outcome(),
+            default_skill_metadata_budget(model_context_window),
+            SkillRenderSideEffects::None,
+        )
+    {
+        let warning = available.warning_message.clone();
+        return Some((
+            AvailableSkillsInstructions::from_available_skills(available),
+            warning,
+        ));
+    }
+
     let mut total_bytes = 0usize;
     let mut omitted = 0usize;
     let mut skill_lines = Vec::new();
@@ -46,7 +71,10 @@ pub(crate) fn available_skills_fragment(
         ));
     }
 
-    Some(AvailableSkillsInstructions::from_skill_lines(skill_lines))
+    Some((
+        AvailableSkillsInstructions::from_skill_lines(skill_lines),
+        None,
+    ))
 }
 
 fn render_skill_line(entry: &SkillCatalogEntry, description: &str) -> String {

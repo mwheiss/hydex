@@ -198,6 +198,7 @@ pub struct ModelOffloadConfig {
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
     pub compaction_policy: ModelOffloadCompactionPolicy,
+    pub context: ModelOffloadContextConfig,
 }
 
 impl Default for ModelOffloadConfig {
@@ -208,7 +209,47 @@ impl Default for ModelOffloadConfig {
             provider: None,
             model: None,
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            context: ModelOffloadContextConfig::default(),
         }
+    }
+}
+
+/// Resolved local offload context-window settings used for auto-compaction pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelOffloadContextConfig {
+    pub context_window: Option<i64>,
+    pub effective_context_window_percent: i64,
+    pub auto_compact_token_limit: Option<i64>,
+}
+
+impl Default for ModelOffloadContextConfig {
+    fn default() -> Self {
+        Self {
+            context_window: None,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+        }
+    }
+}
+
+impl ModelOffloadContextConfig {
+    pub(crate) fn effective_context_window(&self) -> Option<i64> {
+        self.context_window.map(|context_window| {
+            context_window.saturating_mul(self.effective_context_window_percent) / 100
+        })
+    }
+
+    pub(crate) fn auto_compact_token_limit(&self) -> Option<i64> {
+        let context_limit = self
+            .context_window
+            .map(|context_window| context_window.saturating_mul(9) / 10);
+        let config_limit = self.auto_compact_token_limit;
+        if let Some(context_limit) = context_limit {
+            return Some(
+                config_limit.map_or(context_limit, |limit| std::cmp::min(limit, context_limit)),
+            );
+        }
+        config_limit
     }
 }
 
@@ -2404,6 +2445,11 @@ fn resolve_model_offload_config(
             provider: None,
             model: offload.model.clone(),
             compaction_policy: offload.compaction.policy,
+            context: ModelOffloadContextConfig {
+                context_window: offload.context.context_window,
+                effective_context_window_percent: offload.context.effective_context_window_percent,
+                auto_compact_token_limit: offload.context.auto_compact_token_limit,
+            },
         });
     }
 
@@ -2444,6 +2490,11 @@ fn resolve_model_offload_config(
         provider: Some(provider.clone()),
         model: offload.model.clone(),
         compaction_policy: offload.compaction.policy,
+        context: ModelOffloadContextConfig {
+            context_window: offload.context.context_window,
+            effective_context_window_percent: offload.context.effective_context_window_percent,
+            auto_compact_token_limit: offload.context.auto_compact_token_limit,
+        },
     })
 }
 

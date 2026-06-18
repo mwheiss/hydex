@@ -8320,6 +8320,7 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            context: Default::default(),
         },
     );
     let rollout_path = attach_thread_persistence(&mut session).await;

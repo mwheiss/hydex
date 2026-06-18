@@ -519,6 +519,9 @@ pub struct ModelOffloadToml {
     /// Policy used for compaction after offload has actually been used.
     #[serde(default)]
     pub compaction: ModelOffloadCompactionToml,
+    /// Local offload context-window settings used for auto-compaction pressure.
+    #[serde(default)]
+    pub context: ModelOffloadContextToml,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
@@ -536,6 +539,33 @@ pub enum ModelOffloadCompactionPolicy {
     Local,
     /// Keep the primary provider's upstream compaction behavior.
     Primary,
+}
+
+fn default_model_offload_effective_context_window_percent() -> i64 {
+    95
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadContextToml {
+    /// Size of the local offload model context window, in tokens.
+    pub context_window: Option<i64>,
+    /// Percentage of the raw context window used as the effective context limit.
+    #[serde(default = "default_model_offload_effective_context_window_percent")]
+    pub effective_context_window_percent: i64,
+    /// Token usage threshold triggering auto-compaction for local offload.
+    pub auto_compact_token_limit: Option<i64>,
+}
+
+impl Default for ModelOffloadContextToml {
+    fn default() -> Self {
+        Self {
+            context_window: None,
+            effective_context_window_percent:
+                default_model_offload_effective_context_window_percent(),
+            auto_compact_token_limit: None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]

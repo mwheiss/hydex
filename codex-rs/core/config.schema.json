@@ -1455,6 +1455,28 @@
       },
       "type": "object"
     },
+    "ModelOffloadContextToml": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_compact_token_limit": {
+          "description": "Token usage threshold triggering auto-compaction for local offload.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "context_window": {
+          "description": "Size of the local offload model context window, in tokens.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "effective_context_window_percent": {
+          "default": 95,
+          "description": "Percentage of the raw context window used as the effective context limit.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "ModelOffloadToml": {
       "additionalProperties": false,
       "properties": {
@@ -1468,6 +1490,19 @@
             "policy": "local"
           },
           "description": "Policy used for compaction after offload has actually been used."
+        },
+        "context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadContextToml"
+            }
+          ],
+          "default": {
+            "auto_compact_token_limit": null,
+            "context_window": null,
+            "effective_context_window_percent": 95
+          },
+          "description": "Local offload context-window settings used for auto-compaction pressure."
         },
         "enabled": {
           "default": false,
@@ -5104,6 +5139,11 @@
       "default": {
         "compaction": {
           "policy": "local"
+        },
+        "context": {
+          "auto_compact_token_limit": null,
+          "context_window": null,
+          "effective_context_window_percent": 95
         },
         "enabled": false,
         "model": null,

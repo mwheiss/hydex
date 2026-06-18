@@ -5284,6 +5284,10 @@ model = "local-responses-model"
 [model_offload.compaction]
 policy = "primary"
 
+[model_offload.context]
+context_window = 200000
+auto_compact_token_limit = 250000
+
 [model_providers.local]
 name = "Local Responses"
 base_url = "http://127.0.0.1:11434/v1"
@@ -5316,6 +5320,22 @@ wire_api = "responses"
     assert_eq!(
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Primary
+    );
+    assert_eq!(config.model_offload.context.context_window, Some(200_000));
+    assert_eq!(
+        config
+            .model_offload
+            .context
+            .effective_context_window_percent,
+        95
+    );
+    assert_eq!(
+        config.model_offload.context.effective_context_window(),
+        Some(190_000)
+    );
+    assert_eq!(
+        config.model_offload.context.auto_compact_token_limit(),
+        Some(180_000)
     );
 
     Ok(())

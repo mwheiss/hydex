@@ -490,6 +490,10 @@ impl ModelClient {
         self.state.offload_ever_used.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
+        self.state.offload_provider.is_some() && self.session_source_allows_local_offload()
+    }
+
     pub(crate) fn seed_offload_ever_used(&self, offload_ever_used: bool) {
         if offload_ever_used {
             self.state.offload_ever_used.store(true, Ordering::Relaxed);

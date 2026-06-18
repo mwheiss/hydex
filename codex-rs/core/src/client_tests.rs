@@ -113,6 +113,7 @@ fn test_model_client_with_local_offload(session_source: SessionSource) -> ModelC
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            context: Default::default(),
         },
     )
 }
@@ -713,6 +714,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            context: Default::default(),
         },
     );
     let client_session = client.new_session();

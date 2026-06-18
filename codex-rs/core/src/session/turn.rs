@@ -15,6 +15,7 @@ use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task_with_offload_policy;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
+use crate::config::ModelOffloadContextConfig;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::feedback_tags;
@@ -92,6 +93,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -754,34 +756,95 @@ struct AutoCompactTokenStatus {
     token_limit_reached: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoCompactThresholds {
+    auto_compact_token_limit: Option<i64>,
+    effective_context_window: Option<i64>,
+}
+
+fn model_auto_compact_thresholds(model_info: &ModelInfo) -> AutoCompactThresholds {
+    AutoCompactThresholds {
+        auto_compact_token_limit: model_info.auto_compact_token_limit(),
+        effective_context_window: model_info.resolved_context_window().map(|context_window| {
+            context_window.saturating_mul(model_info.effective_context_window_percent) / 100
+        }),
+    }
+}
+
+fn local_offload_context_applies_to_auto_compaction(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> bool {
+    turn_context
+        .config
+        .model_offload
+        .context
+        .context_window
+        .is_some()
+        && (sess.services.model_client.offload_ever_used()
+            || sess.services.model_client.local_offload_enabled_for_turns())
+}
+
+fn local_offload_auto_compact_thresholds(
+    context: &ModelOffloadContextConfig,
+) -> AutoCompactThresholds {
+    AutoCompactThresholds {
+        auto_compact_token_limit: context.auto_compact_token_limit(),
+        effective_context_window: context.effective_context_window(),
+    }
+}
+
+fn select_auto_compact_thresholds(
+    model_info: &ModelInfo,
+    local_context: &ModelOffloadContextConfig,
+    use_local_thresholds: bool,
+) -> AutoCompactThresholds {
+    if use_local_thresholds {
+        local_offload_auto_compact_thresholds(local_context)
+    } else {
+        model_auto_compact_thresholds(model_info)
+    }
+}
+
+fn auto_compact_thresholds(sess: &Session, turn_context: &TurnContext) -> AutoCompactThresholds {
+    select_auto_compact_thresholds(
+        &turn_context.model_info,
+        &turn_context.config.model_offload.context,
+        local_offload_context_applies_to_auto_compaction(sess, turn_context),
+    )
+}
+
 async fn auto_compact_token_status(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> AutoCompactTokenStatus {
     let active_context_tokens = sess.get_total_token_usage().await;
     let mut auto_compact_window_prefill_tokens = None;
+    let use_local_thresholds = local_offload_context_applies_to_auto_compaction(sess, turn_context);
+    let thresholds = auto_compact_thresholds(sess, turn_context);
     let (auto_compact_scope_tokens, auto_compact_scope_limit, full_context_window_limit) =
         match turn_context.config.model_auto_compact_token_limit_scope {
             AutoCompactTokenLimitScope::Total => (
                 active_context_tokens,
-                turn_context
-                    .model_info
-                    .auto_compact_token_limit()
-                    .unwrap_or(i64::MAX),
+                thresholds.auto_compact_token_limit.unwrap_or(i64::MAX),
                 None,
             ),
             AutoCompactTokenLimitScope::BodyAfterPrefix => {
                 let window = sess.auto_compact_window_snapshot().await;
                 auto_compact_window_prefill_tokens = window.prefill_input_tokens;
                 let baseline = window.prefill_input_tokens.unwrap_or(active_context_tokens);
-                (
-                    active_context_tokens.saturating_sub(baseline),
+                let auto_compact_token_limit = if use_local_thresholds {
+                    thresholds.auto_compact_token_limit
+                } else {
                     turn_context
                         .config
                         .model_auto_compact_token_limit
-                        .or_else(|| turn_context.model_info.auto_compact_token_limit())
-                        .unwrap_or(i64::MAX),
-                    turn_context.model_context_window(),
+                        .or(thresholds.auto_compact_token_limit)
+                };
+                (
+                    active_context_tokens.saturating_sub(baseline),
+                    auto_compact_token_limit.unwrap_or(i64::MAX),
+                    thresholds.effective_context_window,
                 )
             }
         };
@@ -869,10 +932,12 @@ async fn maybe_run_previous_model_inline_compact(
         return Ok(());
     }
 
-    let Some(old_context_window) = previous_model_turn_context.model_context_window() else {
+    let old_thresholds = auto_compact_thresholds(sess, &previous_model_turn_context);
+    let new_thresholds = auto_compact_thresholds(sess, turn_context);
+    let Some(old_context_window) = old_thresholds.effective_context_window else {
         return Ok(());
     };
-    let Some(new_context_window) = turn_context.model_context_window() else {
+    let Some(new_context_window) = new_thresholds.effective_context_window else {
         return Ok(());
     };
     let active_context_tokens = sess.get_total_token_usage().await;
@@ -881,10 +946,8 @@ async fn maybe_run_previous_model_inline_compact(
         .model_auto_compact_token_limit_scope
     {
         AutoCompactTokenLimitScope::Total => {
-            let new_auto_compact_limit = turn_context
-                .model_info
-                .auto_compact_token_limit()
-                .unwrap_or(i64::MAX);
+            let new_auto_compact_limit =
+                new_thresholds.auto_compact_token_limit.unwrap_or(i64::MAX);
             active_context_tokens > new_auto_compact_limit
                 || active_context_tokens >= new_context_window
         }

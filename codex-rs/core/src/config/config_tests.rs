@@ -5267,6 +5267,7 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Local
     );
+    assert!(config.model_offload.compaction_model.is_none());
 
     Ok(())
 }
@@ -5283,6 +5284,7 @@ model = "local-responses-model"
 
 [model_offload.compaction]
 policy = "primary"
+model = "gpt-5.4"
 
 [model_offload.context]
 context_window = 200000
@@ -5320,6 +5322,10 @@ wire_api = "responses"
     assert_eq!(
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Primary
+    );
+    assert_eq!(
+        config.model_offload.compaction_model.as_deref(),
+        Some("gpt-5.4")
     );
     assert_eq!(config.model_offload.context.context_window, Some(200_000));
     assert_eq!(
@@ -5365,6 +5371,46 @@ provider = "openai"
         err.to_string()
             .contains("model_offload.provider must identify a non-OpenAI local provider")
     );
+}
+
+#[tokio::test]
+async fn load_config_preserves_model_offload_local_compaction_model() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload]
+enabled = true
+provider = "local"
+
+[model_offload.compaction]
+policy = "local"
+model = "gpt-5.4"
+
+[model_providers.local]
+name = "Local Responses"
+base_url = "http://127.0.0.1:11434/v1"
+wire_api = "responses"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.model_offload.compaction_policy,
+        ModelOffloadCompactionPolicy::Local
+    );
+    assert_eq!(
+        config.model_offload.compaction_model.as_deref(),
+        Some("gpt-5.4")
+    );
+
+    Ok(())
 }
 
 #[test]

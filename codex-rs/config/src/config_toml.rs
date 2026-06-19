@@ -524,11 +524,13 @@ pub struct ModelOffloadToml {
     pub context: ModelOffloadContextToml,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelOffloadCompactionToml {
     #[serde(default)]
     pub policy: ModelOffloadCompactionPolicy,
+    /// Optional primary-provider model override for remote compaction requests.
+    pub model: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]

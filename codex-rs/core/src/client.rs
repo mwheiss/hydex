@@ -181,6 +181,7 @@ struct ModelClientState {
     offload_provider: Option<SharedModelProvider>,
     offload_model: Option<String>,
     offload_compaction_policy: ModelOffloadCompactionPolicy,
+    offload_compaction_model: Option<String>,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -440,6 +441,7 @@ impl ModelClient {
                 offload_provider,
                 offload_model: model_offload.model,
                 offload_compaction_policy: model_offload.compaction_policy,
+                offload_compaction_model: model_offload.compaction_model,
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -567,7 +569,9 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
-        let client_setup = self.current_client_setup().await?;
+        let client_setup = self
+            .current_client_setup_for_request(ModelRequestRoute::Primary, Some(responses_metadata))
+            .await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(
             session_telemetry,
@@ -935,6 +939,14 @@ impl ModelClient {
         &self,
         route: ModelRequestRoute,
     ) -> Result<CurrentClientSetup> {
+        self.current_client_setup_for_request(route, None).await
+    }
+
+    async fn current_client_setup_for_request(
+        &self,
+        route: ModelRequestRoute,
+        responses_metadata: Option<&CodexResponsesMetadata>,
+    ) -> Result<CurrentClientSetup> {
         let model_provider = match route {
             ModelRequestRoute::Primary => self.state.provider.clone(),
             ModelRequestRoute::LocalOffload => self
@@ -951,12 +963,34 @@ impl ModelClient {
             api_provider,
             api_auth,
             model_provider,
-            model_override: route
-                .is_local_offload()
-                .then(|| self.state.offload_model.clone())
-                .flatten(),
+            model_override: self.model_override_for_request(route, responses_metadata),
             route,
         })
+    }
+
+    fn model_override_for_request(
+        &self,
+        route: ModelRequestRoute,
+        responses_metadata: Option<&CodexResponsesMetadata>,
+    ) -> Option<String> {
+        if route.is_local_offload() {
+            return self.state.offload_model.clone();
+        }
+
+        let is_primary_compaction = matches!(route, ModelRequestRoute::Primary)
+            && responses_metadata
+                .and_then(|metadata| metadata.request_kind)
+                .is_some_and(|request_kind| {
+                    matches!(request_kind, CodexResponsesRequestKind::Compaction(_))
+                });
+        if is_primary_compaction
+            && self.state.offload_provider.is_some()
+            && self.state.offload_compaction_policy == ModelOffloadCompactionPolicy::Primary
+        {
+            return self.state.offload_compaction_model.clone();
+        }
+
+        None
     }
 
     fn route_for_responses_request(
@@ -1443,7 +1477,10 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup_for_route(route).await?;
+            let client_setup = self
+                .client
+                .current_client_setup_for_request(route, Some(responses_metadata))
+                .await?;
             info!(
                 model_route = route.as_str(),
                 provider = %client_setup.model_provider.info().name,
@@ -1583,7 +1620,13 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let client_setup = self
+                .client
+                .current_client_setup_for_request(
+                    ModelRequestRoute::Primary,
+                    Some(responses_metadata),
+                )
+                .await?;
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),

@@ -14,8 +14,14 @@ use crate::client_common::Prompt;
 use crate::config::ModelOffloadConfig;
 use crate::local_offload::transform_request_for_local_offload;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_metadata::CodexResponsesRequestKind;
+use crate::responses_metadata::CompactionTurnMetadata;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
+use codex_analytics::CompactionImplementation;
+use codex_analytics::CompactionPhase;
+use codex_analytics::CompactionReason;
+use codex_analytics::CompactionTrigger;
 use codex_api::ApiError;
 use codex_api::Compression;
 use codex_api::ResponseEvent;
@@ -91,6 +97,18 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
 }
 
 fn test_model_client_with_local_offload(session_source: SessionSource) -> ModelClient {
+    test_model_client_with_local_offload_config(
+        session_source,
+        ModelOffloadCompactionPolicy::Local,
+        None,
+    )
+}
+
+fn test_model_client_with_local_offload_config(
+    session_source: SessionSource,
+    compaction_policy: ModelOffloadCompactionPolicy,
+    compaction_model: Option<&str>,
+) -> ModelClient {
     let primary_provider =
         ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
     let local_provider =
@@ -112,7 +130,8 @@ fn test_model_client_with_local_offload(session_source: SessionSource) -> ModelC
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
-            compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_policy,
+            compaction_model: compaction_model.map(str::to_string),
             context: Default::default(),
         },
     )
@@ -136,6 +155,28 @@ fn test_responses_metadata_for_client(
         parent_thread_id,
         request_kind,
     )
+}
+
+fn compaction_responses_metadata_for_client(
+    client: &ModelClient,
+    implementation: CompactionImplementation,
+) -> CodexResponsesMetadata {
+    let mut metadata = CodexResponsesMetadata::new(
+        TEST_INSTALLATION_ID.to_string(),
+        client.state.thread_id.to_string(),
+        client.state.thread_id.to_string(),
+        format!("{}:0", client.state.thread_id),
+    );
+    metadata.turn_id = Some("turn-compact".to_string());
+    metadata.request_kind = Some(CodexResponsesRequestKind::Compaction(
+        CompactionTurnMetadata::new(
+            CompactionTrigger::Manual,
+            CompactionReason::UserRequested,
+            implementation,
+            CompactionPhase::StandaloneTurn,
+        ),
+    ));
+    metadata
 }
 
 fn test_model_info() -> ModelInfo {
@@ -714,6 +755,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_model: None,
             context: Default::default(),
         },
     );
@@ -888,4 +930,131 @@ fn internal_and_subagent_sources_stay_primary_with_offload_configured() {
         assert!(!client.mark_offload_used_for_responses_request(&responses_metadata));
         assert!(!client.offload_ever_used());
     }
+}
+
+async fn request_model_for_metadata(
+    client: &ModelClient,
+    responses_metadata: &CodexResponsesMetadata,
+) -> String {
+    let route = client.route_for_responses_request(responses_metadata);
+    let client_setup = client
+        .current_client_setup_for_request(route, Some(responses_metadata))
+        .await
+        .expect("client setup resolves");
+    client
+        .build_responses_request(
+            &client_setup.api_provider,
+            client_setup.model_provider.info(),
+            client_setup.model_override.as_deref(),
+            &Prompt::default(),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            responses_metadata,
+            !route.is_local_offload(),
+        )
+        .expect("responses request builds")
+        .model
+}
+
+#[tokio::test]
+async fn offload_primary_compaction_uses_configured_compaction_model_override() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+        Some("gpt-5.4"),
+    );
+
+    for implementation in [
+        CompactionImplementation::ResponsesCompact,
+        CompactionImplementation::ResponsesCompactionV2,
+    ] {
+        let responses_metadata = compaction_responses_metadata_for_client(&client, implementation);
+        assert!(
+            !client
+                .route_for_responses_request(&responses_metadata)
+                .is_local_offload()
+        );
+        assert_eq!(
+            request_model_for_metadata(&client, &responses_metadata).await,
+            "gpt-5.4"
+        );
+    }
+}
+
+#[tokio::test]
+async fn offload_primary_non_compaction_request_ignores_compaction_model_override() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        ModelOffloadCompactionPolicy::Primary,
+        Some("gpt-5.4"),
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "gpt-test"
+    );
+}
+
+#[tokio::test]
+async fn local_turn_uses_offload_model_not_compaction_model_override() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+        Some("gpt-5.4"),
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "local-responses-model"
+    );
+}
+
+#[tokio::test]
+async fn offload_local_compaction_policy_ignores_compaction_model_override_for_execution() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        Some("gpt-5.4"),
+    );
+    client.seed_offload_ever_used(true);
+    let responses_metadata = compaction_responses_metadata_for_client(
+        &client,
+        CompactionImplementation::ResponsesCompactionV2,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "local-responses-model"
+    );
 }

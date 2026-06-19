@@ -198,6 +198,7 @@ pub struct ModelOffloadConfig {
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
     pub compaction_policy: ModelOffloadCompactionPolicy,
+    pub compaction_model: Option<String>,
     pub context: ModelOffloadContextConfig,
 }
 
@@ -209,6 +210,7 @@ impl Default for ModelOffloadConfig {
             provider: None,
             model: None,
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_model: None,
             context: ModelOffloadContextConfig::default(),
         }
     }
@@ -2445,6 +2447,7 @@ fn resolve_model_offload_config(
             provider: None,
             model: offload.model.clone(),
             compaction_policy: offload.compaction.policy,
+            compaction_model: offload.compaction.model.clone(),
             context: ModelOffloadContextConfig {
                 context_window: offload.context.context_window,
                 effective_context_window_percent: offload.context.effective_context_window_percent,
@@ -2490,6 +2493,7 @@ fn resolve_model_offload_config(
         provider: Some(provider.clone()),
         model: offload.model.clone(),
         compaction_policy: offload.compaction.policy,
+        compaction_model: offload.compaction.model.clone(),
         context: ModelOffloadContextConfig {
             context_window: offload.context.context_window,
             effective_context_window_percent: offload.context.effective_context_window_percent,

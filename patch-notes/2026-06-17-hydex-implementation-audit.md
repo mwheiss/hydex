@@ -66,7 +66,11 @@ These are the specific implementation-plan changes from the design docs.
      - `[model_offload] enabled`
      - `[model_offload] provider`
      - `[model_offload] model`
+     - `[model_offload.context] context_window`
+     - `[model_offload.context] effective_context_window_percent`
+     - `[model_offload.context] auto_compact_token_limit`
      - `[model_offload.compaction] policy = "local" | "primary"`
+     - `[model_offload.compaction] model`
    - Not implemented as separate v1 knobs:
      - `transport`
      - `flatten_namespaces`
@@ -74,7 +78,6 @@ These are the specific implementation-plan changes from the design docs.
      - `allow_namespace_tools`
      - `allow_hosted_tools`
      - `persist_usage_marker`
-     - `compaction_model`
    - The omitted knobs are currently fixed by policy: HTTP-only local responses, namespace flattening enabled for local, hosted tools stripped from local wire, marker always persisted when offload is used.
 
 4. Compaction policy names changed.
@@ -100,7 +103,6 @@ These are the specific implementation-plan changes from the design docs.
 
 ## Remaining gaps or follow-ups
 
-- There is source-level protection for local `401` errors not triggering OpenAI auth recovery, but no dedicated local-401 regression test was found.
 - Integration smoke tests with a real local `ik_llama.cpp` or equivalent server were not run here.
 - UI/status display distinguishing logical model and local wire model was a later-plan idea and is not implemented.
 - The outer Hydex planning docs and example config still use older names such as `ns_web_run` and `compaction_when_used`; they should be refreshed before treating them as end-user documentation.
@@ -113,4 +115,13 @@ After the upstream refresh and conflict resolution:
 - `cargo test -p codex-core offload --lib`
 - `cargo check -p codex-cli --bin codex`
 
-The focused offload test run passed 14 tests.
+The focused offload test run passed 23 tests.
+
+Additional audit pass verification:
+
+- `cargo test -p codex-core local_offload_401_does_not_trigger_primary_auth_recovery --test all`
+- `cargo test -p codex-core offload --lib`
+
+The local-401 regression proves a local route receives no `Authorization` header, uses the
+local wire model override, makes exactly one `/v1/responses` request, and surfaces the
+`401` without primary auth recovery retrying.

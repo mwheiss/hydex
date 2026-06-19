@@ -103,7 +103,6 @@ These are the specific implementation-plan changes from the design docs.
 
 ## Remaining gaps or follow-ups
 
-- Integration smoke tests with a real local `ik_llama.cpp` or equivalent server were not run here.
 - UI/status display distinguishing logical model and local wire model was a later-plan idea and is not implemented.
 - The outer Hydex planning docs and example config still use older names such as `ns_web_run` and `compaction_when_used`; they should be refreshed before treating them as end-user documentation.
 
@@ -121,7 +120,13 @@ Additional audit pass verification:
 
 - `cargo test -p codex-core local_offload_401_does_not_trigger_primary_auth_recovery --test all`
 - `cargo test -p codex-core offload --lib`
+- `HYDEX_LLAMA_SERVER_SMOKE=1 cargo test -p codex-core live_local_offload_responses_turn_completes --test all -- --ignored --nocapture`
 
 The local-401 regression proves a local route receives no `Authorization` header, uses the
 local wire model override, makes exactly one `/v1/responses` request, and surfaces the
 `401` without primary auth recovery retrying.
+
+The live offload smoke test is committed as an ignored integration test in
+`codex-rs/core/tests/suite/live_hydex_offload.rs`. It was run outside the sandbox against
+the llama-server on `http://localhost:8020/v1`, discovered the server's reported model
+from `/v1/models`, and completed a local-routed Responses turn.

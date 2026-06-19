@@ -103,7 +103,6 @@ These are the specific implementation-plan changes from the design docs.
 
 ## Remaining gaps or follow-ups
 
-- UI/status display distinguishing logical model and local wire model was a later-plan idea and is not implemented.
 - The outer Hydex planning docs and example config still use older names such as `ns_web_run` and `compaction_when_used`; they should be refreshed before treating them as end-user documentation.
 
 ## Verification run
@@ -121,6 +120,8 @@ Additional audit pass verification:
 - `cargo test -p codex-core local_offload_401_does_not_trigger_primary_auth_recovery --test all`
 - `cargo test -p codex-core offload --lib`
 - `HYDEX_LLAMA_SERVER_SMOKE=1 cargo test -p codex-core live_local_offload_responses_turn_completes --test all -- --ignored --nocapture`
+- `cargo test -p codex-tui status_model_offload --lib`
+- `cargo check -p codex-cli --bin codex`
 
 The local-401 regression proves a local route receives no `Authorization` header, uses the
 local wire model override, makes exactly one `/v1/responses` request, and surfaces the
@@ -130,3 +131,7 @@ The live offload smoke test is committed as an ignored integration test in
 `codex-rs/core/tests/suite/live_hydex_offload.rs`. It was run outside the sandbox against
 the llama-server on `http://localhost:8020/v1`, discovered the server's reported model
 from `/v1/models`, and completed a local-routed Responses turn.
+
+The TUI `/status` card now preserves the primary logical model line and adds a
+`Model offload` line only when Hydex offload is enabled, showing the local wire model,
+local provider, and sanitized local endpoint.

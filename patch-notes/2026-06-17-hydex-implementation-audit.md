@@ -103,7 +103,8 @@ These are the specific implementation-plan changes from the design docs.
 
 ## Remaining gaps or follow-ups
 
-- The outer Hydex planning docs and example config still use older names such as `ns_web_run` and `compaction_when_used`; they should be refreshed before treating them as end-user documentation.
+- The outer Hydex planning skeleton is not a git repository. Its docs and example config
+  have been refreshed on disk, but those edits are not part of the pushed Codex branch.
 
 ## Verification run
 

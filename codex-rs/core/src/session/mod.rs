@@ -1407,6 +1407,7 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let model_offload_override = updates.model_offload_override;
         let (previous_config, new_config, permission_profile_changed) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1433,6 +1434,11 @@ impl Session {
             state.session_configuration = updated;
             (previous_config, new_config, permission_profile_changed)
         };
+        if let Some(model_offload_override) = model_offload_override {
+            self.services
+                .model_client
+                .set_model_offload_runtime_override(model_offload_override);
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()

@@ -32,6 +32,10 @@ impl SessionTask for CompactTask {
         let _ = if crate::compact::should_use_remote_compact_task_with_offload_policy(
             ctx.provider.info(),
             session.services.model_client.offload_ever_used(),
+            session
+                .services
+                .model_client
+                .effective_model_offload_enabled(),
             ctx.config.model_offload.compaction_policy,
         ) {
             if ctx

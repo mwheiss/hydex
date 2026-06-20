@@ -8877,6 +8877,14 @@
       "title": "ModelListResponse",
       "type": "object"
     },
+    "ModelOffloadRuntimeOverride": {
+      "description": "Runtime override for Hydex local model offload.\n\nThis is intentionally not a persisted TOML setting. `None` at the call site means \"use `model_offload.enabled` from config\".",
+      "enum": [
+        "force_on",
+        "force_off"
+      ],
+      "type": "string"
+    },
     "ModelProviderCapabilitiesReadParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ModelProviderCapabilitiesReadParams",
@@ -16600,6 +16608,16 @@
         },
         "model": {
           "type": "string"
+        },
+        "modelOffloadOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadRuntimeOverride"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "modelProvider": {
           "type": "string"

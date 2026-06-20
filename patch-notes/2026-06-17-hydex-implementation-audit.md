@@ -69,7 +69,8 @@ These are the specific implementation-plan changes from the design docs.
      - `[model_offload.context] effective_context_window_percent`
      - `[model_offload.context] auto_compact_token_limit`
      - `[model_offload.compaction] policy = "local" | "primary"`
-     - `[model_offload.compaction] model`
+     - process/session runtime override via `--offload`, `--no-offload`,
+       and `/offload on|off|status`
    - Not implemented as separate v1 knobs:
      - `transport`
      - `flatten_namespaces`
@@ -78,6 +79,9 @@ These are the specific implementation-plan changes from the design docs.
      - `allow_hosted_tools`
      - `persist_usage_marker`
    - The omitted knobs are currently fixed by policy: HTTP-only local responses, namespace flattening enabled for local, hosted tools stripped from local wire, marker always persisted when offload is used.
+   - A previous Hydex-only `[model_offload.compaction] model` override was
+     removed. Primary/remote compaction now uses the currently selected primary
+     Codex model.
 
 4. Compaction policy names changed.
    - Design docs used `compaction_when_used = "standard" | "local" | "primary_remote"`.
@@ -99,6 +103,14 @@ These are the specific implementation-plan changes from the design docs.
 7. Memory model-client call sites explicitly opt out of offload.
    - Memory write/runtime paths pass `ModelOffloadConfig::default()`.
    - This matches the later audit decision that memory workflows stay OpenAI/Codex-backed until explicit memory offload support exists.
+
+8. Runtime offload control was added instead of a special compaction model override.
+   - `--offload` and `--no-offload` force effective offload state for a process.
+   - `/offload on`, `/offload off`, and `/offload status` update/report the
+     session runtime override for future turns.
+   - Turning offload off does not clear `offload_ever_used`.
+   - If compaction policy is `primary`, remote compaction uses the current
+     primary model selected by the normal model setting.
 
 ## Remaining gaps or follow-ups
 
@@ -135,5 +147,6 @@ the llama-server on `http://localhost:8020/v1`, discovered the server's reported
 from `/v1/models`, and completed a local-routed Responses turn.
 
 The TUI `/status` card now preserves the primary logical model line and adds a
-`Model offload` line only when Hydex offload is enabled, showing the local wire model,
-local provider, and sanitized local endpoint.
+`Model offload` line when Hydex offload is configured or runtime-forced, showing
+effective state, local wire model, local provider, sanitized local endpoint, and
+whether state is configured or forced.

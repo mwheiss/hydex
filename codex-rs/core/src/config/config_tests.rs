@@ -72,6 +72,7 @@ use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ActivePermissionProfile;
@@ -5267,7 +5268,8 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Local
     );
-    assert!(config.model_offload.compaction_model.is_none());
+    assert!(config.model_offload.runtime_override.is_none());
+    assert!(!config.model_offload.effective_enabled());
 
     Ok(())
 }
@@ -5284,7 +5286,6 @@ model = "local-responses-model"
 
 [model_offload.compaction]
 policy = "primary"
-model = "gpt-5.4"
 
 [model_offload.context]
 context_window = 200000
@@ -5323,10 +5324,7 @@ wire_api = "responses"
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Primary
     );
-    assert_eq!(
-        config.model_offload.compaction_model.as_deref(),
-        Some("gpt-5.4")
-    );
+    assert!(config.model_offload.effective_enabled());
     assert_eq!(config.model_offload.context.context_window, Some(200_000));
     assert_eq!(
         config
@@ -5374,17 +5372,13 @@ provider = "openai"
 }
 
 #[tokio::test]
-async fn load_config_preserves_model_offload_local_compaction_model() -> std::io::Result<()> {
+async fn load_config_runtime_force_off_disables_effective_model_offload() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg: ConfigToml = toml::from_str(
         r#"
 [model_offload]
 enabled = true
 provider = "local"
-
-[model_offload.compaction]
-policy = "local"
-model = "gpt-5.4"
 
 [model_providers.local]
 name = "Local Responses"
@@ -5396,19 +5390,57 @@ wire_api = "responses"
 
     let config = Config::load_from_base_config_with_overrides(
         cfg,
-        ConfigOverrides::default(),
+        ConfigOverrides {
+            model_offload_override: Some(ModelOffloadRuntimeOverride::ForceOff),
+            ..Default::default()
+        },
         codex_home.abs(),
     )
     .await?;
 
+    assert!(config.model_offload.enabled);
+    assert!(!config.model_offload.effective_enabled());
+    assert!(config.model_offload.provider.is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_runtime_force_on_enables_config_disabled_model_offload() -> std::io::Result<()>
+{
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload]
+enabled = false
+provider = "local"
+model = "local-responses-model"
+
+[model_providers.local]
+name = "Local Responses"
+base_url = "http://127.0.0.1:11434/v1"
+wire_api = "responses"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides {
+            model_offload_override: Some(ModelOffloadRuntimeOverride::ForceOn),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!config.model_offload.enabled);
     assert_eq!(
-        config.model_offload.compaction_policy,
-        ModelOffloadCompactionPolicy::Local
+        config.model_offload.runtime_override,
+        Some(ModelOffloadRuntimeOverride::ForceOn)
     );
-    assert_eq!(
-        config.model_offload.compaction_model.as_deref(),
-        Some("gpt-5.4")
-    );
+    assert!(config.model_offload.effective_enabled());
+    assert!(config.model_offload.provider.is_some());
 
     Ok(())
 }

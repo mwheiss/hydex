@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::*;
+use crate::app_command::AppCommand;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
@@ -36,6 +37,7 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
+const OFFLOAD_USAGE: &str = "Usage: /offload [status|on|off]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to use /usage.";
 
 impl ChatWidget {
@@ -129,6 +131,82 @@ impl ChatWidget {
     fn emit_raw_output_mode_changed(&self, enabled: bool) {
         self.app_event_tx
             .send(AppEvent::RawOutputModeChanged { enabled });
+    }
+
+    fn model_offload_status_text(&self) -> String {
+        let offload = &self.config.model_offload;
+        let configured = if offload.enabled { "on" } else { "off" };
+        let override_text = match offload.runtime_override {
+            Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn) => "forced on",
+            Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff) => {
+                "forced off"
+            }
+            None => "configured",
+        };
+        let effective = if offload.effective_enabled() {
+            "on"
+        } else {
+            "off"
+        };
+        let local_model = offload.model.as_deref().unwrap_or("inherited");
+        format!(
+            "Model offload: {effective} ({override_text}; config {configured}; local model {local_model})"
+        )
+    }
+
+    fn add_model_offload_status_message(&mut self) {
+        self.add_info_message(
+            self.model_offload_status_text(),
+            Some(OFFLOAD_USAGE.to_string()),
+        );
+    }
+
+    fn set_model_offload_override(
+        &mut self,
+        runtime_override: codex_protocol::config_types::ModelOffloadRuntimeOverride,
+    ) {
+        self.config.model_offload.runtime_override = Some(runtime_override);
+        self.app_event_tx
+            .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                approvals_reviewer: None,
+                permission_profile: None,
+                active_permission_profile: None,
+                windows_sandbox_level: None,
+                model: None,
+                model_offload_override: Some(runtime_override),
+                effort: None,
+                summary: None,
+                service_tier: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        match runtime_override {
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn => {
+                let local_model = self
+                    .config
+                    .model_offload
+                    .model
+                    .as_deref()
+                    .unwrap_or("inherited");
+                self.add_info_message(
+                    format!(
+                        "Model offload enabled for this session. Eligible turns will use local model {local_model}."
+                    ),
+                    None,
+                );
+            }
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff => {
+                let primary_model = self.config.model.as_deref().unwrap_or("the primary model");
+                self.add_info_message(
+                    format!(
+                        "Model offload disabled for this session. Eligible turns will use primary model {primary_model}."
+                    ),
+                    None,
+                );
+            }
+        }
     }
 
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -263,6 +341,9 @@ impl ChatWidget {
             }
             SlashCommand::Model => {
                 self.open_model_popup();
+            }
+            SlashCommand::Offload => {
+                self.add_model_offload_status_message();
             }
             SlashCommand::Personality => {
                 self.open_personality_popup();
@@ -699,6 +780,16 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Offload => match trimmed.to_ascii_lowercase().as_str() {
+                "status" => self.add_model_offload_status_message(),
+                "on" => self.set_model_offload_override(
+                    codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn,
+                ),
+                "off" => self.set_model_offload_override(
+                    codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff,
+                ),
+                _ => self.add_error_message(OFFLOAD_USAGE.to_string()),
+            },
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;
@@ -1044,6 +1135,7 @@ impl ChatWidget {
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Offload
             | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::App

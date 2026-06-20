@@ -39,7 +39,6 @@ model = "local-codex-model"
 
 [model_offload.compaction]
 policy = "local" # local | primary
-# model = "gpt-5.1-codex" # optional primary compaction model override
 
 [model_offload.context]
 # context_window = 200000
@@ -61,6 +60,38 @@ stream_idle_timeout_ms = 300000
 `wire_api = "responses"` and a `base_url`. Hydex rejects OpenAI-backed providers
 and non-Responses wire APIs for local offload.
 
+## Runtime Control
+
+Hydex local offload can be forced on or off for a process without editing
+`config.toml`:
+
+```bash
+hydex --offload
+hydex --no-offload
+hydex exec --offload "summarize this"
+hydex exec --no-offload "solve this on the primary model"
+```
+
+Inside the TUI, use:
+
+```text
+/offload
+/offload status
+/offload on
+/offload off
+```
+
+The runtime override controls future routing only. Turning offload off does not
+clear the persisted `offload_ever_used` marker.
+
+Recommended workflow:
+
+1. Set the primary model to a cheaper OpenAI/Codex model such as `gpt-5.4`.
+2. Keep `[model_offload] enabled = true` for normal local turns.
+3. Use `/offload off` and `/model gpt-5.5` when a particularly hard turn should
+   run on the primary model.
+4. Use `/offload on` and `/model gpt-5.4` to return to local/offloaded mode.
+
 ## Routing
 
 Hydex currently has two runtime model request routes:
@@ -81,6 +112,11 @@ Responses streaming, omit OpenAI/ChatGPT auth and account metadata, disable
 local WebSocket/prewarm behavior, and use `[model_offload].model` when set.
 
 Local provider failures do not trigger OpenAI auth recovery.
+
+Hydex strips OpenAI auth/control-plane headers and Codex metadata from local
+model requests. Local endpoints should still tolerate Codex Responses-style
+request body fields. A stricter local request scrubber may be added later if
+needed.
 
 ## Tools
 
@@ -128,10 +164,11 @@ used. After that, `[model_offload.compaction]` controls compaction routing:
 | `local` | Use the normal local model-call compaction path. |
 | `primary` | Keep primary-provider compaction behavior, including remote v1/v2 when supported. |
 
-`model_offload.compaction.model` is an optional primary-only compaction model
-override. It is applied only to primary-routed compaction requests. Normal
-primary turns do not use it, local turns still use `[model_offload].model`, and
-`policy = "local"` parses but ignores the compaction model for execution.
+If `policy = "primary"`, remote/primary compaction uses the currently selected
+primary Codex model. Hydex no longer has a separate compaction model override.
+If `policy = "local"`, compaction uses the local offload model when offload is
+effectively enabled, offload has already been used in the session, and the local
+policy applies.
 
 Manual compaction and auto-compaction both use the offload-aware policy.
 

@@ -298,15 +298,24 @@ fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
     assert!(should_use_remote_compact_task_with_offload_policy(
         &provider,
         false,
+        true,
         ModelOffloadCompactionPolicy::Local,
     ));
     assert!(!should_use_remote_compact_task_with_offload_policy(
         &provider,
         true,
+        true,
         ModelOffloadCompactionPolicy::Local,
     ));
     assert!(should_use_remote_compact_task_with_offload_policy(
         &provider,
+        true,
+        false,
+        ModelOffloadCompactionPolicy::Local,
+    ));
+    assert!(should_use_remote_compact_task_with_offload_policy(
+        &provider,
+        true,
         true,
         ModelOffloadCompactionPolicy::Primary,
     ));

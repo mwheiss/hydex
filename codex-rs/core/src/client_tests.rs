@@ -36,6 +36,7 @@ use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
@@ -97,17 +98,12 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
 }
 
 fn test_model_client_with_local_offload(session_source: SessionSource) -> ModelClient {
-    test_model_client_with_local_offload_config(
-        session_source,
-        ModelOffloadCompactionPolicy::Local,
-        None,
-    )
+    test_model_client_with_local_offload_config(session_source, ModelOffloadCompactionPolicy::Local)
 }
 
 fn test_model_client_with_local_offload_config(
     session_source: SessionSource,
     compaction_policy: ModelOffloadCompactionPolicy,
-    compaction_model: Option<&str>,
 ) -> ModelClient {
     let primary_provider =
         ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
@@ -127,11 +123,11 @@ fn test_model_client_with_local_offload_config(
         /*attestation_provider*/ None,
         ModelOffloadConfig {
             enabled: true,
+            runtime_override: None,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy,
-            compaction_model: compaction_model.map(str::to_string),
             context: Default::default(),
         },
     )
@@ -751,11 +747,11 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         attestation_client.state.attestation_provider.clone(),
         ModelOffloadConfig {
             enabled: true,
+            runtime_override: None,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
-            compaction_model: None,
             context: Default::default(),
         },
     );
@@ -959,11 +955,10 @@ async fn request_model_for_metadata(
 }
 
 #[tokio::test]
-async fn offload_primary_compaction_uses_configured_compaction_model_override() {
+async fn offload_primary_compaction_uses_current_primary_model() {
     let client = test_model_client_with_local_offload_config(
         SessionSource::Exec,
         ModelOffloadCompactionPolicy::Primary,
-        Some("gpt-5.4"),
     );
 
     for implementation in [
@@ -978,18 +973,18 @@ async fn offload_primary_compaction_uses_configured_compaction_model_override() 
         );
         assert_eq!(
             request_model_for_metadata(&client, &responses_metadata).await,
-            "gpt-5.4"
+            "gpt-test"
         );
     }
 }
 
 #[tokio::test]
-async fn offload_primary_non_compaction_request_ignores_compaction_model_override() {
+async fn runtime_force_off_routes_eligible_turn_primary() {
     let client = test_model_client_with_local_offload_config(
-        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        SessionSource::Exec,
         ModelOffloadCompactionPolicy::Primary,
-        Some("gpt-5.4"),
     );
+    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff));
     let responses_metadata = test_responses_metadata_for_client(
         &client,
         Some("turn-1"),
@@ -1010,11 +1005,47 @@ async fn offload_primary_non_compaction_request_ignores_compaction_model_overrid
 }
 
 #[tokio::test]
-async fn local_turn_uses_offload_model_not_compaction_model_override() {
+async fn runtime_force_off_does_not_clear_offload_ever_used() {
+    let client = test_model_client_with_local_offload(SessionSource::Exec);
+    client.seed_offload_ever_used(true);
+
+    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff));
+
+    assert!(!client.local_offload_enabled_for_turns());
+    assert!(client.offload_ever_used());
+}
+
+#[tokio::test]
+async fn runtime_force_on_routes_eligible_turn_local() {
     let client = test_model_client_with_local_offload_config(
         SessionSource::Exec,
         ModelOffloadCompactionPolicy::Primary,
-        Some("gpt-5.4"),
+    );
+    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn));
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "local-responses-model"
+    );
+}
+
+#[tokio::test]
+async fn local_turn_uses_offload_model() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
     );
     let responses_metadata = test_responses_metadata_for_client(
         &client,
@@ -1036,11 +1067,10 @@ async fn local_turn_uses_offload_model_not_compaction_model_override() {
 }
 
 #[tokio::test]
-async fn offload_local_compaction_policy_ignores_compaction_model_override_for_execution() {
+async fn offload_local_compaction_policy_uses_local_only_when_effectively_enabled() {
     let client = test_model_client_with_local_offload_config(
         SessionSource::Exec,
         ModelOffloadCompactionPolicy::Local,
-        Some("gpt-5.4"),
     );
     client.seed_offload_ever_used(true);
     let responses_metadata = compaction_responses_metadata_for_client(
@@ -1056,5 +1086,12 @@ async fn offload_local_compaction_policy_ignores_compaction_model_override_for_e
     assert_eq!(
         request_model_for_metadata(&client, &responses_metadata).await,
         "local-responses-model"
+    );
+
+    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff));
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
     );
 }

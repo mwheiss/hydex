@@ -8316,11 +8316,11 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
         /*attestation_provider*/ None,
         crate::config::ModelOffloadConfig {
             enabled: true,
+            runtime_override: None,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
-            compaction_model: None,
             context: Default::default(),
         },
     );

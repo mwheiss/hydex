@@ -455,6 +455,9 @@ pub struct ThreadSettingsOverrides {
     /// Updated model slug. When set, the model info is derived automatically.
     pub model: Option<String>,
 
+    /// Runtime override for local model offload. `None` follows config.
+    pub model_offload_override: Option<crate::config_types::ModelOffloadRuntimeOverride>,
+
     /// Updated reasoning effort (honored only for reasoning-capable models).
     ///
     /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear the
@@ -1989,6 +1992,9 @@ pub struct ThreadSettingsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_offload_override: Option<crate::config_types::ModelOffloadRuntimeOverride>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]

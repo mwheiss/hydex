@@ -992,11 +992,11 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
     };
     let offload_config = ModelOffloadConfig {
         enabled: true,
+        runtime_override: None,
         provider_id: Some(local_provider.name.clone()),
         provider: Some(local_provider.clone()),
         model: Some("local-responses-model".to_string()),
         compaction_policy: ModelOffloadCompactionPolicy::Local,
-        compaction_model: None,
         context: Default::default(),
     };
 

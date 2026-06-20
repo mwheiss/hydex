@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use codex_api::ApiError;
@@ -71,6 +72,7 @@ use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ResponseItem;
@@ -179,9 +181,10 @@ struct ModelClientState {
     thread_id: ThreadId,
     provider: SharedModelProvider,
     offload_provider: Option<SharedModelProvider>,
+    offload_configured_enabled: bool,
+    offload_runtime_override: AtomicU8,
     offload_model: Option<String>,
     offload_compaction_policy: ModelOffloadCompactionPolicy,
-    offload_compaction_model: Option<String>,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -260,6 +263,26 @@ impl ModelRequestRoute {
 pub struct ModelClient {
     state: Arc<ModelClientState>,
     prompt_cache_key_override: Option<String>,
+}
+
+const OFFLOAD_OVERRIDE_UNSET: u8 = 0;
+const OFFLOAD_OVERRIDE_FORCE_ON: u8 = 1;
+const OFFLOAD_OVERRIDE_FORCE_OFF: u8 = 2;
+
+fn encode_offload_runtime_override(runtime_override: Option<ModelOffloadRuntimeOverride>) -> u8 {
+    match runtime_override {
+        None => OFFLOAD_OVERRIDE_UNSET,
+        Some(ModelOffloadRuntimeOverride::ForceOn) => OFFLOAD_OVERRIDE_FORCE_ON,
+        Some(ModelOffloadRuntimeOverride::ForceOff) => OFFLOAD_OVERRIDE_FORCE_OFF,
+    }
+}
+
+fn decode_offload_runtime_override(value: u8) -> Option<ModelOffloadRuntimeOverride> {
+    match value {
+        OFFLOAD_OVERRIDE_FORCE_ON => Some(ModelOffloadRuntimeOverride::ForceOn),
+        OFFLOAD_OVERRIDE_FORCE_OFF => Some(ModelOffloadRuntimeOverride::ForceOff),
+        _ => None,
+    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -423,9 +446,7 @@ impl ModelClient {
     ) -> Self {
         let model_provider = create_model_provider(provider_info, auth_manager);
         let offload_provider = model_offload
-            .enabled
-            .then(|| model_offload.provider.clone())
-            .flatten()
+            .provider
             .map(|provider_info| create_model_provider(provider_info, None));
         let codex_api_key_env_enabled = model_provider
             .auth_manager()
@@ -439,9 +460,12 @@ impl ModelClient {
                 thread_id,
                 provider: model_provider,
                 offload_provider,
+                offload_configured_enabled: model_offload.enabled,
+                offload_runtime_override: AtomicU8::new(encode_offload_runtime_override(
+                    model_offload.runtime_override,
+                )),
                 offload_model: model_offload.model,
                 offload_compaction_policy: model_offload.compaction_policy,
-                offload_compaction_model: model_offload.compaction_model,
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -492,8 +516,30 @@ impl ModelClient {
         self.state.offload_ever_used.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn model_offload_runtime_override(&self) -> Option<ModelOffloadRuntimeOverride> {
+        decode_offload_runtime_override(self.state.offload_runtime_override.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn set_model_offload_runtime_override(
+        &self,
+        runtime_override: Option<ModelOffloadRuntimeOverride>,
+    ) {
+        self.state.offload_runtime_override.store(
+            encode_offload_runtime_override(runtime_override),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn effective_model_offload_enabled(&self) -> bool {
+        self.model_offload_runtime_override()
+            .map(ModelOffloadRuntimeOverride::effective_enabled)
+            .unwrap_or(self.state.offload_configured_enabled)
+    }
+
     pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
-        self.state.offload_provider.is_some() && self.session_source_allows_local_offload()
+        self.effective_model_offload_enabled()
+            && self.state.offload_provider.is_some()
+            && self.session_source_allows_local_offload()
     }
 
     pub(crate) fn seed_offload_ever_used(&self, offload_ever_used: bool) {
@@ -971,25 +1017,11 @@ impl ModelClient {
     fn model_override_for_request(
         &self,
         route: ModelRequestRoute,
-        responses_metadata: Option<&CodexResponsesMetadata>,
+        _responses_metadata: Option<&CodexResponsesMetadata>,
     ) -> Option<String> {
         if route.is_local_offload() {
             return self.state.offload_model.clone();
         }
-
-        let is_primary_compaction = matches!(route, ModelRequestRoute::Primary)
-            && responses_metadata
-                .and_then(|metadata| metadata.request_kind)
-                .is_some_and(|request_kind| {
-                    matches!(request_kind, CodexResponsesRequestKind::Compaction(_))
-                });
-        if is_primary_compaction
-            && self.state.offload_provider.is_some()
-            && self.state.offload_compaction_policy == ModelOffloadCompactionPolicy::Primary
-        {
-            return self.state.offload_compaction_model.clone();
-        }
-
         None
     }
 
@@ -997,7 +1029,7 @@ impl ModelClient {
         &self,
         responses_metadata: &CodexResponsesMetadata,
     ) -> ModelRequestRoute {
-        if self.state.offload_provider.is_none() || !self.session_source_allows_local_offload() {
+        if !self.local_offload_enabled_for_turns() {
             return ModelRequestRoute::Primary;
         }
 

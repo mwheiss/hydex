@@ -14,6 +14,7 @@ use codex_experimental_api_macros::ExperimentalApi;
 pub use codex_protocol::capabilities::CapabilityRootLocation;
 pub use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 pub use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
@@ -207,6 +208,9 @@ pub struct ThreadSettingsUpdateParams {
     /// Override the model for subsequent turns.
     #[ts(optional = nullable)]
     pub model: Option<String>,
+    /// Runtime override for Hydex local model offload. Omission follows config.
+    #[ts(optional = nullable)]
+    pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
     /// Override the service tier for subsequent turns. `null` clears the
     /// current service tier; omission leaves it unchanged.
     #[serde(
@@ -254,6 +258,7 @@ pub struct ThreadSettings {
     pub service_tier: Option<String>,
     pub effort: Option<ReasoningEffort>,
     pub summary: Option<ReasoningSummary>,
+    pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,
 }

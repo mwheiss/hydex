@@ -74,9 +74,13 @@ pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bo
 pub(crate) fn should_use_remote_compact_task_with_offload_policy(
     provider: &ModelProviderInfo,
     offload_ever_used: bool,
+    effective_model_offload_enabled: bool,
     offload_compaction_policy: ModelOffloadCompactionPolicy,
 ) -> bool {
-    if offload_ever_used && offload_compaction_policy == ModelOffloadCompactionPolicy::Local {
+    if effective_model_offload_enabled
+        && offload_ever_used
+        && offload_compaction_policy == ModelOffloadCompactionPolicy::Local
+    {
         return false;
     }
 

@@ -986,6 +986,7 @@ async fn run_auto_compact(
     if should_use_remote_compact_task_with_offload_policy(
         turn_context.provider.info(),
         sess.services.model_client.offload_ever_used(),
+        sess.services.model_client.effective_model_offload_enabled(),
         turn_context.config.model_offload.compaction_policy,
     ) {
         if turn_context

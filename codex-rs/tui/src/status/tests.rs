@@ -401,7 +401,7 @@ async fn status_model_offload_shows_local_wire_model() {
     assert!(
         rendered.contains("Model offload:")
             && rendered.contains(
-                "local turns -> Qwopus3.6-27B-Q4_K_S via Llama Server - http://localhost:8020/v1"
+                "on - Qwopus3.6-27B-Q4_K_S via Llama Server - http://localhost:8020/v1 - configured"
             ),
         "local offload wire model should be visible and URL sanitized, got: {rendered}"
     );

@@ -1444,10 +1444,6 @@
     "ModelOffloadCompactionToml": {
       "additionalProperties": false,
       "properties": {
-        "model": {
-          "description": "Optional primary-provider model override for remote compaction requests.",
-          "type": "string"
-        },
         "policy": {
           "allOf": [
             {
@@ -1491,7 +1487,6 @@
             }
           ],
           "default": {
-            "model": null,
             "policy": "local"
           },
           "description": "Policy used for compaction after offload has actually been used."
@@ -5143,7 +5138,6 @@
       ],
       "default": {
         "compaction": {
-          "model": null,
           "policy": "local"
         },
         "context": {

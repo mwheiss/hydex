@@ -22,6 +22,7 @@ fn thread_settings_for_test(
             service_tier: Some(ServiceTier::Fast.request_value().to_string()),
             effort: Some(ReasoningEffortConfig::High),
             summary: None,
+            model_offload_override: None,
             collaboration_mode: CollaborationMode {
                 mode: ModeKind::Plan,
                 settings: codex_protocol::config_types::Settings {

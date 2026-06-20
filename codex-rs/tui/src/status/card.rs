@@ -938,8 +938,27 @@ fn format_model_provider(config: &Config, runtime_base_url: Option<&str>) -> Opt
 
 fn format_model_offload(config: &Config) -> Option<String> {
     let offload = &config.model_offload;
-    if !offload.enabled {
+    if !offload.enabled && offload.runtime_override.is_none() {
         return None;
+    }
+
+    let effective = if offload.effective_enabled() {
+        "on"
+    } else {
+        "off"
+    };
+    let source = match offload.runtime_override {
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn) => {
+            "forced by --offload"
+        }
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff) => {
+            "forced by --no-offload"
+        }
+        None if offload.enabled => "configured",
+        None => "disabled in config",
+    };
+    if !offload.effective_enabled() {
+        return Some(format!("{effective} - {source}"));
     }
 
     let provider_name = offload
@@ -957,8 +976,10 @@ fn format_model_offload(config: &Config) -> Option<String> {
         .and_then(sanitize_base_url);
 
     Some(match base_url {
-        Some(base_url) => format!("local turns -> {model} via {provider_name} - {base_url}"),
-        None => format!("local turns -> {model} via {provider_name}"),
+        Some(base_url) => {
+            format!("{effective} - {model} via {provider_name} - {base_url} - {source}")
+        }
+        None => format!("{effective} - {model} via {provider_name} - {source}"),
     })
 }
 

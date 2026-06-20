@@ -594,7 +594,7 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn local_offload_turn_uses_namespace_tools(turn_context: &TurnContext) -> bool {
-    turn_context.config.model_offload.enabled
+    turn_context.config.model_offload.effective_enabled()
         && matches!(
             turn_context.session_source,
             SessionSource::Cli

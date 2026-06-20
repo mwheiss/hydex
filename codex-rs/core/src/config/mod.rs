@@ -85,6 +85,7 @@ use codex_models_manager::ModelsManagerConfig;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -194,23 +195,31 @@ impl Default for GhostSnapshotConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelOffloadConfig {
     pub enabled: bool,
+    pub runtime_override: Option<ModelOffloadRuntimeOverride>,
     pub provider_id: Option<String>,
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
     pub compaction_policy: ModelOffloadCompactionPolicy,
-    pub compaction_model: Option<String>,
     pub context: ModelOffloadContextConfig,
+}
+
+impl ModelOffloadConfig {
+    pub fn effective_enabled(&self) -> bool {
+        self.runtime_override
+            .map(ModelOffloadRuntimeOverride::effective_enabled)
+            .unwrap_or(self.enabled)
+    }
 }
 
 impl Default for ModelOffloadConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            runtime_override: None,
             provider_id: None,
             provider: None,
             model: None,
             compaction_policy: ModelOffloadCompactionPolicy::Local,
-            compaction_model: None,
             context: ModelOffloadContextConfig::default(),
         }
     }
@@ -2396,6 +2405,7 @@ pub struct ConfigOverrides {
     pub permission_profile: Option<PermissionProfile>,
     pub default_permissions: Option<String>,
     pub model_provider: Option<String>,
+    pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
     pub service_tier: Option<Option<String>>,
     pub codex_self_exe: Option<PathBuf>,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
@@ -2438,30 +2448,47 @@ pub fn resolve_oss_provider(
 fn resolve_model_offload_config(
     cfg: &ConfigToml,
     model_providers: &HashMap<String, ModelProviderInfo>,
+    runtime_override: Option<ModelOffloadRuntimeOverride>,
 ) -> std::io::Result<ModelOffloadConfig> {
     let offload = &cfg.model_offload;
-    if !offload.enabled {
-        return Ok(ModelOffloadConfig {
-            enabled: false,
-            provider_id: offload.provider.clone(),
-            provider: None,
-            model: offload.model.clone(),
-            compaction_policy: offload.compaction.policy,
-            compaction_model: offload.compaction.model.clone(),
-            context: ModelOffloadContextConfig {
-                context_window: offload.context.context_window,
-                effective_context_window_percent: offload.context.effective_context_window_percent,
-                auto_compact_token_limit: offload.context.auto_compact_token_limit,
-            },
-        });
-    }
+    let effective_enabled = runtime_override
+        .map(ModelOffloadRuntimeOverride::effective_enabled)
+        .unwrap_or(offload.enabled);
+    let must_validate_provider = offload.enabled || effective_enabled;
+    let provider = match offload.provider.as_ref() {
+        Some(provider_id) => match validate_model_offload_provider(provider_id, model_providers) {
+            Ok(provider) => Some(provider),
+            Err(err) if must_validate_provider => return Err(err),
+            Err(_) => None,
+        },
+        None if must_validate_provider => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "model_offload.provider must be set when model_offload is enabled",
+            ));
+        }
+        None => None,
+    };
 
-    let provider_id = offload.provider.as_ref().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "model_offload.provider must be set when model_offload.enabled = true",
-        )
-    })?;
+    Ok(ModelOffloadConfig {
+        enabled: offload.enabled,
+        runtime_override,
+        provider_id: offload.provider.clone(),
+        provider: provider.cloned(),
+        model: offload.model.clone(),
+        compaction_policy: offload.compaction.policy,
+        context: ModelOffloadContextConfig {
+            context_window: offload.context.context_window,
+            effective_context_window_percent: offload.context.effective_context_window_percent,
+            auto_compact_token_limit: offload.context.auto_compact_token_limit,
+        },
+    })
+}
+
+fn validate_model_offload_provider<'a>(
+    provider_id: &str,
+    model_providers: &'a HashMap<String, ModelProviderInfo>,
+) -> std::io::Result<&'a ModelProviderInfo> {
     let provider = model_providers.get(provider_id).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -2486,20 +2513,7 @@ fn resolve_model_offload_config(
             "model_offload.provider must use wire_api = \"responses\"",
         ));
     }
-
-    Ok(ModelOffloadConfig {
-        enabled: true,
-        provider_id: Some(provider_id.clone()),
-        provider: Some(provider.clone()),
-        model: offload.model.clone(),
-        compaction_policy: offload.compaction.policy,
-        compaction_model: offload.compaction.model.clone(),
-        context: ModelOffloadContextConfig {
-            context_window: offload.context.context_window,
-            effective_context_window_percent: offload.context.effective_context_window_percent,
-            auto_compact_token_limit: offload.context.auto_compact_token_limit,
-        },
-    })
+    Ok(provider)
 }
 
 /// Resolve the web search mode from explicit config and feature flags.
@@ -2859,6 +2873,7 @@ impl Config {
             permission_profile,
             default_permissions: default_permissions_override,
             model_provider,
+            model_offload_override,
             service_tier: service_tier_override,
             codex_self_exe,
             codex_linux_sandbox_exe,
@@ -3310,7 +3325,8 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
-        let model_offload = resolve_model_offload_config(&cfg, &model_providers)?;
+        let model_offload =
+            resolve_model_offload_config(&cfg, &model_providers, model_offload_override)?;
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);

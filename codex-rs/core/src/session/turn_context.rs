@@ -592,6 +592,7 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> CodexResult<Arc<TurnContext>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let model_offload_override = updates.model_offload_override;
         let update_result: CodexResult<_> = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
@@ -639,6 +640,11 @@ impl Session {
                     return Err(CodexErr::InvalidRequest(message));
                 }
             };
+        if let Some(model_offload_override) = model_offload_override {
+            self.services
+                .model_client
+                .set_model_offload_runtime_override(model_offload_override);
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
 
         if permission_profile_changed {

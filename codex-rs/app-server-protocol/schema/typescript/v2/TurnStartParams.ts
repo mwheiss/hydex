@@ -32,10 +32,10 @@ model?: string | null, /**
  * subsequent turns. Omission leaves the current setting unchanged; null
  * clears the override and follows config.
  */
-modelOffloadOverride?: ModelOffloadRuntimeOverride | null | null, /**
+modelOffloadOverride?: ModelOffloadRuntimeOverride | null, /**
  * Override the service tier for this turn and subsequent turns.
  */
-serviceTier?: string | null | null, /**
+serviceTier?: string | null, /**
  * Override the reasoning effort for this turn and subsequent turns.
  */
 effort?: ReasoningEffort | null, /**

@@ -49,6 +49,8 @@ use codex_app_server_protocol::ThreadDeletedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -309,6 +311,25 @@ async fn send_hydex_turn_start(
     .await
 }
 
+async fn send_hydex_thread_settings_update(
+    mcp: &mut TestAppServer,
+    params: ThreadSettingsUpdateParams,
+) -> Result<()> {
+    let request_id = mcp.send_thread_settings_update_request(params).await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let _: ThreadSettingsUpdateResponse = to_response(response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/settings/updated"),
+    )
+    .await??;
+    Ok(())
+}
+
 async fn await_hydex_turn_start_completed(mcp: &mut TestAppServer, request_id: i64) -> Result<()> {
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -497,6 +518,54 @@ async fn turn_start_model_offload_omitted_override_follows_config_v2() -> Result
     let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
 
     let turn_req = send_hydex_turn_start(&mut mcp, thread.id, None).await?;
+    await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
+
+    assert_eq!(primary_mock.requests().len(), 0);
+    assert_eq!(local_mock.requests().len(), 1);
+    assert_eq!(
+        local_mock.single_request().body_json()["model"],
+        "local-model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_null_override_clears_to_config_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let local = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+    let local_mock = responses::mount_sse_once(
+        &local,
+        hydex_turn_start_sse_response("resp-local", "msg-local"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        Some(&local.uri()),
+        /*offload_enabled*/ true,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    send_hydex_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model_offload_override: Some(Some(ModelOffloadRuntimeOverride::ForceOff)),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let turn_req = send_hydex_turn_start(&mut mcp, thread.id, Some(None)).await?;
     await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
 
     assert_eq!(primary_mock.requests().len(), 0);

@@ -441,7 +441,7 @@ impl TurnRequestProcessor {
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
                     model: params.model,
-                    model_offload_override: None,
+                    model_offload_override: params.model_offload_override,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,

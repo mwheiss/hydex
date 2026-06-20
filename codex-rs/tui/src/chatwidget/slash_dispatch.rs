@@ -37,7 +37,7 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
-const OFFLOAD_USAGE: &str = "Usage: /offload [status|on|off]";
+const OFFLOAD_USAGE: &str = "Usage: /offload [status|on|off|auto]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to use /usage.";
 
 impl ChatWidget {
@@ -165,6 +165,17 @@ impl ChatWidget {
         &mut self,
         runtime_override: codex_protocol::config_types::ModelOffloadRuntimeOverride,
     ) {
+        if matches!(
+            runtime_override,
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn
+        ) && !self.config.model_offload.can_route_local()
+        {
+            self.add_error_message(
+                "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            );
+            return;
+        }
         self.config.model_offload.runtime_override = Some(runtime_override);
         self.app_event_tx
             .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
@@ -175,7 +186,7 @@ impl ChatWidget {
                 active_permission_profile: None,
                 windows_sandbox_level: None,
                 model: None,
-                model_offload_override: Some(runtime_override),
+                model_offload_override: Some(Some(runtime_override)),
                 effort: None,
                 summary: None,
                 service_tier: None,
@@ -207,6 +218,35 @@ impl ChatWidget {
                 );
             }
         }
+    }
+
+    fn clear_model_offload_override(&mut self) {
+        self.config.model_offload.runtime_override = None;
+        self.app_event_tx
+            .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                approvals_reviewer: None,
+                permission_profile: None,
+                active_permission_profile: None,
+                windows_sandbox_level: None,
+                model: None,
+                model_offload_override: Some(None),
+                effort: None,
+                summary: None,
+                service_tier: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        let effective = if self.config.model_offload.effective_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        self.add_info_message(
+            format!("Model offload now follows config.toml and is {effective}."),
+            None,
+        );
     }
 
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -781,6 +821,7 @@ impl ChatWidget {
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
             SlashCommand::Offload => match trimmed.to_ascii_lowercase().as_str() {
+                "" => self.add_model_offload_status_message(),
                 "status" => self.add_model_offload_status_message(),
                 "on" => self.set_model_offload_override(
                     codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn,
@@ -788,6 +829,7 @@ impl ChatWidget {
                 "off" => self.set_model_offload_override(
                     codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff,
                 ),
+                "auto" | "config" | "default" => self.clear_model_offload_override(),
                 _ => self.add_error_message(OFFLOAD_USAGE.to_string()),
             },
             SlashCommand::Rename if !trimmed.is_empty() => {

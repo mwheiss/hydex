@@ -455,8 +455,11 @@ pub struct ThreadSettingsOverrides {
     /// Updated model slug. When set, the model info is derived automatically.
     pub model: Option<String>,
 
-    /// Runtime override for local model offload. `None` follows config.
-    pub model_offload_override: Option<crate::config_types::ModelOffloadRuntimeOverride>,
+    /// Runtime override for local model offload.
+    ///
+    /// Use `Some(Some(_))` to set a runtime override, `Some(None)` to clear it
+    /// and follow config, or `None` to leave the existing value unchanged.
+    pub model_offload_override: Option<Option<crate::config_types::ModelOffloadRuntimeOverride>>,
 
     /// Updated reasoning effort (honored only for reasoning-capable models).
     ///

@@ -208,9 +208,16 @@ pub struct ThreadSettingsUpdateParams {
     /// Override the model for subsequent turns.
     #[ts(optional = nullable)]
     pub model: Option<String>,
-    /// Runtime override for Hydex local model offload. Omission follows config.
+    /// Runtime override for Hydex local model offload. Omission leaves the
+    /// current setting unchanged; null clears the override and follows config.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional = nullable)]
-    pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
+    pub model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
     /// Override the service tier for subsequent turns. `null` clears the
     /// current service tier; omission leaves it unchanged.
     #[serde(

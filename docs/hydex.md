@@ -79,10 +79,20 @@ Inside the TUI, use:
 /offload status
 /offload on
 /offload off
+/offload auto
 ```
 
 The runtime override controls future routing only. Turning offload off does not
-clear the persisted `offload_ever_used` marker.
+clear the persisted `offload_ever_used` marker. `/offload auto` clears the
+runtime override and returns to the configured `model_offload.enabled` value.
+`/offload on` requires a valid resolved local provider; Hydex rejects it with a
+clear error if `model_offload.provider` is missing or invalid.
+
+App-server clients can use `modelOffloadOverride` on both
+`thread/settings/update` and the first `turn/start` request. Omitted means no
+change, `null` clears the runtime override and follows config, and
+`"force_on"` / `"force_off"` force the runtime state for that turn and later
+turns. `"force_on"` has the same provider validation as `/offload on`.
 
 Recommended workflow:
 
@@ -172,6 +182,16 @@ policy applies.
 
 Manual compaction and auto-compaction both use the offload-aware policy.
 
+When switching a large primary/offload-off session back into local mode, Hydex
+checks local context thresholds before sending the first local sampling request.
+If the pending local request is above the local auto-compaction threshold but
+below the local effective context window, Hydex compacts with the normal
+configured policy. If the pending request is already too large for the local
+effective context window, or local compaction would still leave it too large,
+Hydex forces primary remote compaction first, then rebuilds the local request
+from compacted history. This remote re-entry compaction uses the currently
+selected primary model.
+
 ## Auto-Compaction Thresholds
 
 `[model_offload.context]` lets local offload use a local model context window for
@@ -210,6 +230,10 @@ histories without the field default to `false`. Resume, replay, and fork
 reconstruct this marker so offload-aware compaction policy can be applied after
 a session has used local inference.
 
+After a session has used local offload, Hydex may continue using configured
+local context thresholds for auto-compaction pressure so the thread remains safe
+to route back to local mode.
+
 The persisted marker is deliberately minimal. Hydex does not persist local flat
 tool names, local provider IDs, or local wire models into canonical history.
 
@@ -218,6 +242,12 @@ Vanilla Codex compatibility:
 - vanilla Codex can load Hydex sessions because unknown JSON fields are ignored;
 - vanilla Codex ignores `[model_offload]` in normal config loading;
 - vanilla Codex rejects `[model_offload]` only when `--strict-config` is used.
+
+Known inherited caveat: Codex pre-turn compaction currently runs before incoming
+user/context items are recorded, so that first pre-turn check does not account
+for new turn input. Hydex adds a local re-entry check at the sampling boundary,
+but the upstream pre-turn estimate gap remains more visible when the local
+offload model has a smaller context window than the primary model.
 
 ## Implementation Map
 

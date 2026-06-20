@@ -54,7 +54,7 @@ pub(crate) enum AppCommand {
         active_permission_profile: Option<ActivePermissionProfile>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
-        model_offload_override: Option<ModelOffloadRuntimeOverride>,
+        model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,

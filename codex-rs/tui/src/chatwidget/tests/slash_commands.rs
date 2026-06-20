@@ -2867,6 +2867,48 @@ async fn raw_slash_command_reports_usage_for_invalid_arg() {
 }
 
 #[tokio::test]
+async fn offload_slash_command_without_args_shows_status() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Offload);
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Model offload:"),
+        "expected offload status, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn offload_auto_clears_runtime_override() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model_offload.runtime_override =
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff);
+
+    chat.dispatch_command_with_args(SlashCommand::Offload, "auto".to_string(), Vec::new());
+
+    assert_eq!(chat.config.model_offload.runtime_override, None);
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                    model_offload_override: Some(None),
+                    ..
+                })
+            )
+        }),
+        "expected offload clear override event, got {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn compact_queues_user_messages_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::FileChangeItem;
@@ -3638,6 +3639,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         sandbox_policy: None,
         permissions: None,
         model: None,
+        model_offload_override: None,
         service_tier: None,
         effort: None,
         summary: None,
@@ -3648,6 +3650,46 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn turn_start_params_preserve_model_offload_override_states() {
+    let force_on: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "modelOffloadOverride": "force_on"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        force_on.model_offload_override,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOn))
+    );
+
+    let force_off: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "modelOffloadOverride": "force_off"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        force_off.model_offload_override,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOff))
+    );
+
+    let clear: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "modelOffloadOverride": null
+    }))
+    .expect("params should deserialize");
+    assert_eq!(clear.model_offload_override, Some(None));
+
+    let omitted: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": []
+    }))
+    .expect("params should deserialize");
+    assert_eq!(omitted.model_offload_override, None);
 }
 
 #[test]
@@ -3673,6 +3715,48 @@ fn thread_settings_update_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn thread_settings_update_params_preserve_model_offload_override_states() {
+    let force_on: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "modelOffloadOverride": "force_on"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        force_on.model_offload_override,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOn))
+    );
+
+    let force_off: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "modelOffloadOverride": "force_off"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        force_off.model_offload_override,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOff))
+    );
+
+    let clear: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "modelOffloadOverride": null
+    }))
+    .expect("params should deserialize");
+    assert_eq!(clear.model_offload_override, Some(None));
+
+    let omitted = ThreadSettingsUpdateParams {
+        thread_id: "thread_123".to_string(),
+        model_offload_override: None,
+        ..Default::default()
+    };
+    let serialized_without_override =
+        serde_json::to_value(&omitted).expect("params should serialize");
+    assert_eq!(
+        serialized_without_override.get("modelOffloadOverride"),
+        None
+    );
 }
 
 #[test]

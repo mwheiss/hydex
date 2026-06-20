@@ -643,7 +643,7 @@ impl Session {
         if let Some(model_offload_override) = model_offload_override {
             self.services
                 .model_client
-                .set_model_offload_runtime_override(model_offload_override);
+                .set_model_offload_runtime_override(model_offload_override)?;
         }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
 

@@ -17564,6 +17564,24 @@
             "null"
           ]
         },
+        "modelOffloadOverride": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelOffloadRuntimeOverride"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runtime override for Hydex local model offload for this turn and subsequent turns. Omission leaves the current setting unchanged; null clears the override and follows config."
+        },
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for this turn."
         },

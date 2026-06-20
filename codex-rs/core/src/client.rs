@@ -75,6 +75,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -523,11 +524,20 @@ impl ModelClient {
     pub(crate) fn set_model_offload_runtime_override(
         &self,
         runtime_override: Option<ModelOffloadRuntimeOverride>,
-    ) {
+    ) -> CodexResult<()> {
+        if matches!(runtime_override, Some(ModelOffloadRuntimeOverride::ForceOn))
+            && self.state.offload_provider.is_none()
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            ));
+        }
         self.state.offload_runtime_override.store(
             encode_offload_runtime_override(runtime_override),
             Ordering::Relaxed,
         );
+        Ok(())
     }
 
     pub(crate) fn effective_model_offload_enabled(&self) -> bool {

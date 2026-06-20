@@ -209,6 +209,10 @@ impl ModelOffloadConfig {
             .map(ModelOffloadRuntimeOverride::effective_enabled)
             .unwrap_or(self.enabled)
     }
+
+    pub fn can_route_local(&self) -> bool {
+        self.provider.is_some()
+    }
 }
 
 impl Default for ModelOffloadConfig {

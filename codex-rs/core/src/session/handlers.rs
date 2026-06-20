@@ -152,7 +152,7 @@ async fn thread_settings_update(
         collaboration_mode: Some(collaboration_mode),
         reasoning_summary: summary,
         service_tier,
-        model_offload_override: model_offload_override.map(Some),
+        model_offload_override,
         personality,
         ..Default::default()
     }

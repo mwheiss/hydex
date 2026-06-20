@@ -254,6 +254,20 @@ impl SessionConfiguration {
         }
         if let Some(model_offload_override) = updates.model_offload_override {
             let mut config = (*next_configuration.original_config_do_not_use).clone();
+            if matches!(
+                model_offload_override,
+                Some(ModelOffloadRuntimeOverride::ForceOn)
+            ) && !config.model_offload.can_route_local()
+            {
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed:
+                        "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                            .to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
             config.model_offload.runtime_override = model_offload_override;
             next_configuration.original_config_do_not_use = Arc::new(config);
         }

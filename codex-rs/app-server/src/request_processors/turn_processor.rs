@@ -56,7 +56,8 @@ struct ThreadSettingsBuildParams {
     sandbox_policy: Option<codex_app_server_protocol::SandboxPolicy>,
     permissions: Option<String>,
     model: Option<String>,
-    model_offload_override: Option<codex_protocol::config_types::ModelOffloadRuntimeOverride>,
+    model_offload_override:
+        Option<Option<codex_protocol::config_types::ModelOffloadRuntimeOverride>>,
     service_tier: Option<Option<String>>,
     effort: Option<ReasoningEffort>,
     summary: Option<ReasoningSummary>,
@@ -658,7 +659,7 @@ impl TurnRequestProcessor {
                     profile_workspace_roots: profile_workspace_roots.clone(),
                     windows_sandbox_level: None,
                     model: model.clone(),
-                    model_offload_override: model_offload_override.map(Some),
+                    model_offload_override,
                     effort: effort.clone(),
                     summary,
                     service_tier: service_tier.clone(),

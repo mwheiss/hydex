@@ -70,7 +70,7 @@ These are the specific implementation-plan changes from the design docs.
      - `[model_offload.context] auto_compact_token_limit`
      - `[model_offload.compaction] policy = "local" | "primary"`
      - process/session runtime override via `--offload`, `--no-offload`,
-       and `/offload on|off|status`
+       and `/offload on|off|auto|status`
    - Not implemented as separate v1 knobs:
      - `transport`
      - `flatten_namespaces`
@@ -106,14 +106,38 @@ These are the specific implementation-plan changes from the design docs.
 
 8. Runtime offload control was added instead of a special compaction model override.
    - `--offload` and `--no-offload` force effective offload state for a process.
-   - `/offload on`, `/offload off`, and `/offload status` update/report the
+   - `/offload on`, `/offload off`, `/offload auto`, and `/offload status` update/report the
      session runtime override for future turns.
+   - `/offload auto` clears the runtime override and follows config.
+   - `ForceOn` is rejected unless a valid local offload provider was resolved.
    - Turning offload off does not clear `offload_ever_used`.
    - If compaction policy is `primary`, remote compaction uses the current
      primary model selected by the normal model setting.
 
+9. App-server first-turn offload override is supported.
+   - v2 `turn/start` accepts `modelOffloadOverride`.
+   - Omitted means no change, `null` clears/follows config, and `"force_on"` /
+     `"force_off"` set the runtime override before the first user input is
+     submitted.
+   - Thread settings updates use the same nullable/clear semantics.
+
+10. Remote re-entry compaction was added for switching back into local mode.
+   - Before an eligible local sampling request is sent, Hydex checks local
+     context thresholds.
+   - Above the local auto-compaction threshold but below the effective local
+     context window, Hydex uses the normal configured compaction policy.
+   - Above the effective local context window, Hydex forces primary remote
+     compaction first, even when policy is `local`, then rebuilds the local
+     request from compacted history.
+   - Primary remote re-entry compaction uses the currently selected primary
+     model; the removed compaction model override was not reintroduced.
+
 ## Remaining gaps or follow-ups
 
+- Upstream-inherited caveat: pre-turn compaction still runs before incoming
+  user/context items are recorded, so that initial check excludes new turn
+  input. Hydex now adds a local re-entry sampling-boundary check, but the
+  broader upstream pre-turn estimate gap remains.
 - No current documentation-only gap is known. The original outer Hydex planning
   skeleton has been consolidated into the actual Codex checkout as
   `docs/hydex.md`; stale planning-only module and test skeletons were not copied

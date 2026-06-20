@@ -18,6 +18,7 @@ use crate::agents_md::LoadedAgentsMd;
 use crate::attestation::AttestationProvider;
 use crate::build_available_skills;
 use crate::compact;
+use crate::config::ConstraintError;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::connectors;
@@ -1437,7 +1438,13 @@ impl Session {
         if let Some(model_offload_override) = model_offload_override {
             self.services
                 .model_client
-                .set_model_offload_runtime_override(model_offload_override);
+                .set_model_offload_runtime_override(model_offload_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
         }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if permission_profile_changed {

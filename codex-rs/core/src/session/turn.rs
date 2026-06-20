@@ -12,6 +12,7 @@ use crate::client_common::ResponseEvent;
 use crate::collect_explicit_skill_mentions;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
+use crate::compact::should_use_remote_compact_task;
 use crate::compact::should_use_remote_compact_task_with_offload_policy;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
@@ -220,7 +221,17 @@ pub(crate) async fn run_turn(
             break;
         }
 
-        // Construct the input that we will send to the model.
+        // Construct the input that we will send to the model. If this turn is
+        // about to re-enter local offload with a history that is too large for
+        // the local context window, compact before building the local request.
+        if let Err(err) =
+            maybe_compact_before_local_sampling(&sess, &turn_context, &mut client_session).await
+        {
+            let error = err.to_codex_protocol_error();
+            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                .await;
+            return None;
+        }
         let sampling_request_input: Vec<ResponseItem> = async {
             sess.clone_history()
                 .await
@@ -876,15 +887,154 @@ async fn run_pre_sampling_compact(
     let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
     if token_status.token_limit_reached {
-        run_auto_compact(
+        let route = if sess.services.model_client.local_offload_enabled_for_turns()
+            && token_status.full_context_window_limit_reached
+        {
+            AutoCompactRoute::ForcePrimaryRemote
+        } else {
+            AutoCompactRoute::Policy
+        };
+        run_auto_compact_with_route(
             sess,
             turn_context,
             client_session,
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            route,
         )
         .await?;
+        if route == AutoCompactRoute::ForcePrimaryRemote {
+            ensure_local_effective_context_after_remote_reentry(sess, turn_context).await?;
+        }
+    }
+    Ok(())
+}
+
+#[instrument(level = "trace", skip_all)]
+async fn maybe_compact_before_local_sampling(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    client_session: &mut ModelClientSession,
+) -> CodexResult<bool> {
+    if !sess.services.model_client.local_offload_enabled_for_turns()
+        || turn_context
+            .config
+            .model_offload
+            .context
+            .context_window
+            .is_none()
+    {
+        return Ok(false);
+    }
+
+    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    let Some(route) = local_reentry_compaction_route(&token_status) else {
+        return Ok(false);
+    };
+    if route == AutoCompactRoute::ForcePrimaryRemote {
+        run_auto_compact_with_route(
+            sess,
+            turn_context,
+            client_session,
+            InitialContextInjection::DoNotInject,
+            CompactionReason::ContextLimit,
+            CompactionPhase::PreTurn,
+            AutoCompactRoute::ForcePrimaryRemote,
+        )
+        .await?;
+        ensure_local_effective_context_after_remote_reentry(sess, turn_context).await?;
+        return Ok(true);
+    }
+
+    run_auto_compact(
+        sess,
+        turn_context,
+        client_session,
+        InitialContextInjection::DoNotInject,
+        CompactionReason::ContextLimit,
+        CompactionPhase::PreTurn,
+    )
+    .await?;
+
+    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    if token_status.full_context_window_limit_reached {
+        run_auto_compact_with_route(
+            sess,
+            turn_context,
+            client_session,
+            InitialContextInjection::DoNotInject,
+            CompactionReason::ContextLimit,
+            CompactionPhase::PreTurn,
+            AutoCompactRoute::ForcePrimaryRemote,
+        )
+        .await?;
+        ensure_local_effective_context_after_remote_reentry(sess, turn_context).await?;
+    }
+    Ok(true)
+}
+
+fn local_reentry_compaction_route(
+    token_status: &AutoCompactTokenStatus,
+) -> Option<AutoCompactRoute> {
+    if !token_status.token_limit_reached {
+        return None;
+    }
+    if token_status.full_context_window_limit_reached {
+        Some(AutoCompactRoute::ForcePrimaryRemote)
+    } else {
+        Some(AutoCompactRoute::Policy)
+    }
+}
+
+#[cfg(test)]
+mod offload_reentry_tests {
+    use super::*;
+
+    fn status(
+        token_limit_reached: bool,
+        full_context_window_limit_reached: bool,
+    ) -> AutoCompactTokenStatus {
+        AutoCompactTokenStatus {
+            active_context_tokens: 0,
+            auto_compact_scope_tokens: 0,
+            auto_compact_scope_limit: 0,
+            full_context_window_limit: Some(100),
+            auto_compact_window_prefill_tokens: None,
+            full_context_window_limit_reached,
+            token_limit_reached,
+        }
+    }
+
+    #[test]
+    fn local_reentry_below_threshold_does_not_compact() {
+        assert_eq!(local_reentry_compaction_route(&status(false, false)), None);
+    }
+
+    #[test]
+    fn local_reentry_above_auto_below_effective_uses_configured_policy() {
+        assert_eq!(
+            local_reentry_compaction_route(&status(true, false)),
+            Some(AutoCompactRoute::Policy)
+        );
+    }
+
+    #[test]
+    fn local_reentry_above_effective_forces_primary_remote() {
+        assert_eq!(
+            local_reentry_compaction_route(&status(true, true)),
+            Some(AutoCompactRoute::ForcePrimaryRemote)
+        );
+    }
+}
+
+async fn ensure_local_effective_context_after_remote_reentry(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+) -> CodexResult<()> {
+    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    if token_status.full_context_window_limit_reached {
+        return Err(CodexErr::ContextWindowExceeded);
     }
     Ok(())
 }
@@ -983,12 +1133,53 @@ async fn run_auto_compact(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    if should_use_remote_compact_task_with_offload_policy(
-        turn_context.provider.info(),
-        sess.services.model_client.offload_ever_used(),
-        sess.services.model_client.effective_model_offload_enabled(),
-        turn_context.config.model_offload.compaction_policy,
-    ) {
+    run_auto_compact_with_route(
+        sess,
+        turn_context,
+        client_session,
+        initial_context_injection,
+        reason,
+        phase,
+        AutoCompactRoute::Policy,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoCompactRoute {
+    Policy,
+    ForcePrimaryRemote,
+}
+
+#[instrument(level = "trace", skip_all, fields(route = ?route))]
+async fn run_auto_compact_with_route(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    client_session: &mut ModelClientSession,
+    initial_context_injection: InitialContextInjection,
+    reason: CompactionReason,
+    phase: CompactionPhase,
+    route: AutoCompactRoute,
+) -> CodexResult<()> {
+    let use_remote = match route {
+        AutoCompactRoute::Policy => should_use_remote_compact_task_with_offload_policy(
+            turn_context.provider.info(),
+            sess.services.model_client.offload_ever_used(),
+            sess.services.model_client.effective_model_offload_enabled(),
+            turn_context.config.model_offload.compaction_policy,
+        ),
+        AutoCompactRoute::ForcePrimaryRemote => {
+            if !should_use_remote_compact_task(turn_context.provider.info()) {
+                return Err(CodexErr::InvalidRequest(
+                    "Cannot enable model offload for this oversized thread: primary remote compaction is unavailable."
+                        .to_string(),
+                ));
+            }
+            true
+        }
+    };
+
+    if use_remote {
         if turn_context
             .config
             .features

@@ -984,7 +984,9 @@ async fn runtime_force_off_routes_eligible_turn_primary() {
         SessionSource::Exec,
         ModelOffloadCompactionPolicy::Primary,
     );
-    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff));
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
     let responses_metadata = test_responses_metadata_for_client(
         &client,
         Some("turn-1"),
@@ -1009,10 +1011,33 @@ async fn runtime_force_off_does_not_clear_offload_ever_used() {
     let client = test_model_client_with_local_offload(SessionSource::Exec);
     client.seed_offload_ever_used(true);
 
-    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff));
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
 
     assert!(!client.local_offload_enabled_for_turns());
     assert!(client.offload_ever_used());
+}
+
+#[tokio::test]
+async fn runtime_force_on_requires_resolved_offload_provider() {
+    let client = test_model_client(SessionSource::Exec);
+
+    let err = client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn))
+        .expect_err("force_on without a local provider must fail");
+    assert!(
+        err.to_string()
+            .contains("model_offload.provider is not configured or invalid"),
+        "unexpected error: {err}"
+    );
+
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .expect("force_off remains allowed");
+    client
+        .set_model_offload_runtime_override(None)
+        .expect("clearing override remains allowed");
 }
 
 #[tokio::test]
@@ -1021,7 +1046,9 @@ async fn runtime_force_on_routes_eligible_turn_local() {
         SessionSource::Exec,
         ModelOffloadCompactionPolicy::Primary,
     );
-    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn));
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn))
+        .unwrap();
     let responses_metadata = test_responses_metadata_for_client(
         &client,
         Some("turn-1"),
@@ -1088,7 +1115,9 @@ async fn offload_local_compaction_policy_uses_local_only_when_effectively_enable
         "local-responses-model"
     );
 
-    client.set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff));
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
     assert!(
         !client
             .route_for_responses_request(&responses_metadata)

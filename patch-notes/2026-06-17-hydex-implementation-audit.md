@@ -1,9 +1,8 @@
 # 2026-06-17 - Hydex implementation audit
 
-This audit compares the Hydex planning docs and bootstrap prompt against the current
-Codex patch on branch `hydex/main`. The Hydex patch is committed as
-`b4206c2b67 Hydex: local model offload MVP` on top of upstream `origin/main` at
-`a5229e0686`.
+This audit compares the original Hydex planning docs and bootstrap prompt
+against the current Codex patch on branch `hydex/main`. The integrated user
+documentation now lives in `docs/hydex.md`.
 
 ## Summary
 
@@ -103,8 +102,10 @@ These are the specific implementation-plan changes from the design docs.
 
 ## Remaining gaps or follow-ups
 
-- The outer Hydex planning skeleton is not a git repository. Its docs and example config
-  have been refreshed on disk, but those edits are not part of the pushed Codex branch.
+- No current documentation-only gap is known. The original outer Hydex planning
+  skeleton has been consolidated into the actual Codex checkout as
+  `docs/hydex.md`; stale planning-only module and test skeletons were not copied
+  into the branch.
 
 ## Verification run
 

@@ -1,0 +1,221 @@
+# Hydex Local Model Offload
+
+Hydex is this fork's route-specific model offload layer for Codex CLI. It keeps
+the normal OpenAI/Codex provider as the authenticated primary control plane, but
+can send eligible ordinary Responses model turns to a local Responses-compatible
+endpoint.
+
+The goal is split responsibility, not a global provider switch:
+
+```text
+primary OpenAI/Codex provider:
+  auth, account state, backend APIs, web.run alpha/search, image APIs,
+  apps/plugins, files, realtime, cloud, remote compaction when selected
+
+local offload provider:
+  eligible HTTP /responses inference, ordinary function tools,
+  namespace tools after local wire flattening, local compaction when selected
+```
+
+When model offload is disabled, Codex behavior is unchanged.
+
+## Configuration
+
+Hydex uses the standard Codex config and cache locations. This is intentional:
+Hydex and vanilla Codex can continue each other's sessions and share ordinary
+settings. Vanilla Codex ignores Hydex-only config keys in normal mode, but
+`--strict-config` rejects unknown Hydex keys.
+
+Example config:
+
+```toml
+model_provider = "openai"
+model = "gpt-5.1-codex"
+
+[model_offload]
+enabled = true
+provider = "local_responses"
+model = "local-codex-model"
+
+[model_offload.compaction]
+policy = "local" # local | primary
+# model = "gpt-5.1-codex" # optional primary compaction model override
+
+[model_offload.context]
+# context_window = 200000
+# effective_context_window_percent = 95
+# auto_compact_token_limit = 180000
+
+[model_providers.local_responses]
+name = "Local Responses Offload"
+base_url = "http://127.0.0.1:8020/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0
+stream_idle_timeout_ms = 300000
+```
+
+`model_offload.provider` must identify a non-OpenAI provider with
+`wire_api = "responses"` and a `base_url`. Hydex rejects OpenAI-backed providers
+and non-Responses wire APIs for local offload.
+
+## Routing
+
+Hydex currently has two runtime model request routes:
+
+| Route | Provider |
+|---|---|
+| `Primary` | The normal configured Codex/OpenAI provider. |
+| `LocalOffload` | The configured local Responses-compatible provider. |
+
+Normal turn inference is locally routed when offload is enabled and the session
+source is eligible. CLI, VS Code, exec, MCP, custom, and unknown session sources
+are eligible. Internal, review, guardian, subagent, memory, and control-plane
+workflows stay primary by default.
+
+Primary routes keep the existing Codex request setup, auth recovery, backend
+metadata, WebSocket behavior, and provider model. Local routes use HTTP
+Responses streaming, omit OpenAI/ChatGPT auth and account metadata, disable
+local WebSocket/prewarm behavior, and use `[model_offload].model` when set.
+
+Local provider failures do not trigger OpenAI auth recovery.
+
+## Tools
+
+Local offload accepts ordinary function tools. Codex namespace tools are flattened
+only on the local wire:
+
+```text
+canonical Codex history:
+  namespace = "web"
+  name      = "run"
+
+local wire:
+  namespace = None
+  name      = "ns__web__run"
+```
+
+Examples:
+
+```text
+web.run                                      -> ns__web__run
+mcp__codex_apps__google_calendar.search     -> ns__mcp__codex_apps__google_calendar__search
+```
+
+The implementation uses a per-request flat-name to canonical `ToolName` map for
+unflattening. It does not decode by splitting on `__`, because MCP namespaces can
+already contain that sequence. Collision suffixes are deterministic, for example
+`ns__web__run__2`.
+
+The same wire-only transform is applied to outbound prior function-call history
+in a local request. Canonical rollout history remains namespace/name based.
+
+Hosted OpenAI tool specs such as `web_search`, `image_generation`, and
+`tool_search` are not sent to the local endpoint as-is. When local offload is
+active and `web.run` can be exposed, Codex prefers the namespace tool so a local
+model can call flattened `ns__web__run`; execution still goes through the primary
+OpenAI/Codex `alpha/search` backend.
+
+## Compaction
+
+Hydex preserves upstream compaction behavior until offload has actually been
+used. After that, `[model_offload.compaction]` controls compaction routing:
+
+| Policy | Behavior |
+|---|---|
+| `local` | Use the normal local model-call compaction path. |
+| `primary` | Keep primary-provider compaction behavior, including remote v1/v2 when supported. |
+
+`model_offload.compaction.model` is an optional primary-only compaction model
+override. It is applied only to primary-routed compaction requests. Normal
+primary turns do not use it, local turns still use `[model_offload].model`, and
+`policy = "local"` parses but ignores the compaction model for execution.
+
+Manual compaction and auto-compaction both use the offload-aware policy.
+
+## Auto-Compaction Thresholds
+
+`[model_offload.context]` lets local offload use a local model context window for
+auto-compaction pressure without changing the global `model_context_window`.
+
+If `context_window` is unset, Hydex keeps current Codex threshold behavior. If it
+is set and local offload applies to the active session, Hydex derives thresholds
+with the same ratios as upstream model metadata:
+
+```text
+effective_context_window = context_window * effective_context_window_percent / 100
+auto_compact_token_limit = min(configured_limit, context_window * 9 / 10)
+```
+
+`effective_context_window_percent` defaults to `95`. If
+`auto_compact_token_limit` is omitted, it defaults to `context_window * 9 / 10`.
+
+For example:
+
+```toml
+[model_offload.context]
+context_window = 200000
+```
+
+derives:
+
+```text
+effective context window = 190000
+auto-compact token limit = 180000
+```
+
+## Persistence and Compatibility
+
+Hydex persists `TurnContextItem.offload_ever_used` in rollout history. Old
+histories without the field default to `false`. Resume, replay, and fork
+reconstruct this marker so offload-aware compaction policy can be applied after
+a session has used local inference.
+
+The persisted marker is deliberately minimal. Hydex does not persist local flat
+tool names, local provider IDs, or local wire models into canonical history.
+
+Vanilla Codex compatibility:
+
+- vanilla Codex can load Hydex sessions because unknown JSON fields are ignored;
+- vanilla Codex ignores `[model_offload]` in normal config loading;
+- vanilla Codex rejects `[model_offload]` only when `--strict-config` is used.
+
+## Implementation Map
+
+Main patch points:
+
+- config parsing and schema:
+  - `codex-rs/config/src/config_toml.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/config.schema.json`
+- route-aware client setup and Responses routing:
+  - `codex-rs/core/src/client.rs`
+- local wire tool/history transforms:
+  - `codex-rs/core/src/local_offload.rs`
+- `web.run` planning under offload:
+  - `codex-rs/core/src/tools/spec_plan.rs`
+- persisted marker and replay:
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/core/src/session/rollout_reconstruction.rs`
+- compaction policy and local threshold selection:
+  - `codex-rs/core/src/compact.rs`
+  - `codex-rs/core/src/tasks/compact.rs`
+  - `codex-rs/core/src/session/turn.rs`
+
+Useful verification:
+
+```bash
+cargo test -p codex-core offload --lib
+cargo check -p codex-cli --bin codex
+```
+
+Live local smoke test, when a llama-server compatible endpoint is running on
+`localhost:8020`:
+
+```bash
+HYDEX_LLAMA_SERVER_SMOKE=1 cargo test -p codex-core live_local_offload_responses_turn_completes --test all -- --ignored --nocapture
+```

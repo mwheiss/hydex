@@ -360,6 +360,14 @@ pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
     }
 }
 
+#[doc(hidden)]
+pub fn hydex_debug_filter_remote_compacted_history(
+    mut compacted_history: Vec<ResponseItem>,
+) -> Vec<ResponseItem> {
+    compacted_history.retain(should_keep_compacted_history_item);
+    compacted_history
+}
+
 pub(crate) fn trim_function_call_history_to_fit_context_window(
     history: &mut ContextManager,
     turn_context: &TurnContext,

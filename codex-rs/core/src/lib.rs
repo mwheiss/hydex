@@ -188,6 +188,10 @@ pub use client_common::ResponseEvent;
 pub use client_common::ResponseStream;
 pub use codex_prompts::REVIEW_PROMPT;
 pub use compact::content_items_to_text;
+#[doc(hidden)]
+pub use compact_remote::hydex_debug_filter_remote_compacted_history;
+#[doc(hidden)]
+pub use compact_remote_v2::hydex_debug_build_v2_compacted_history;
 pub use event_mapping::parse_turn_item;
 pub use exec_policy::ExecPolicyError;
 pub use exec_policy::check_execpolicy_for_warnings;

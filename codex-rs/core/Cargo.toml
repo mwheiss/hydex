@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "codex-write-config-schema"
 path = "src/bin/config_schema.rs"
 
+[[bin]]
+name = "hydex_compaction_capture"
+path = "src/bin/hydex_compaction_capture.rs"
+
 [lints]
 workspace = true
 

@@ -444,6 +444,15 @@ fn build_v2_compacted_history(
     (retained, retained_image_count)
 }
 
+#[doc(hidden)]
+pub fn hydex_debug_build_v2_compacted_history(
+    prompt_input: &[ResponseItem],
+    compaction_output: ResponseItem,
+) -> Vec<ResponseItem> {
+    let (history, _) = build_v2_compacted_history(prompt_input, compaction_output);
+    history
+}
+
 fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
     let ResponseItem::Message { role, .. } = item else {
         return false;

@@ -569,6 +569,17 @@ pub(crate) fn build_compacted_history(
     )
 }
 
+#[doc(hidden)]
+pub fn hydex_debug_build_readable_replacement_history(
+    history_items: &[ResponseItem],
+    summary_suffix: &str,
+) -> (String, Vec<ResponseItem>) {
+    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let user_messages = collect_user_messages(history_items);
+    let replacement_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    (summary_text, replacement_history)
+}
+
 fn build_compacted_history_with_limit(
     mut history: Vec<ResponseItem>,
     user_messages: &[CompactedUserMessage],

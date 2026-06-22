@@ -792,8 +792,7 @@ fn local_offload_context_applies_to_auto_compaction(
         .context
         .context_window
         .is_some()
-        && (sess.services.model_client.offload_ever_used()
-            || sess.services.model_client.local_offload_enabled_for_turns())
+        && sess.services.model_client.local_offload_enabled_for_turns()
 }
 
 fn local_offload_auto_compact_thresholds(

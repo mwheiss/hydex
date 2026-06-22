@@ -125,6 +125,36 @@ fn offload_threshold_selector_preserves_no_offload_model_behavior() {
     assert_eq!(thresholds.effective_context_window, Some(121_600));
 }
 
+#[tokio::test]
+async fn offload_ever_used_alone_does_not_apply_local_auto_compact_thresholds() {
+    let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context
+        .context_window = Some(200_000);
+    session.services.model_client.seed_offload_ever_used(true);
+
+    assert!(session.services.model_client.offload_ever_used());
+    assert!(
+        !session
+            .services
+            .model_client
+            .local_offload_enabled_for_turns()
+    );
+    assert!(!local_offload_context_applies_to_auto_compaction(
+        &session,
+        &turn_context
+    ));
+    assert_eq!(
+        auto_compact_thresholds(&session, &turn_context),
+        select_auto_compact_thresholds(
+            &turn_context.model_info,
+            &turn_context.config.model_offload.context,
+            /*use_local_thresholds*/ false,
+        )
+    );
+}
+
 #[test]
 fn offload_threshold_selector_does_not_require_global_model_context_window() {
     let model_info = test_model_info_with_context_window(None);

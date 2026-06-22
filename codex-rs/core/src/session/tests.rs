@@ -1628,6 +1628,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: String::new(),
         replacement_history: Some(replacement_history.clone()),
+        remote_compaction_model: None,
         window_id: Some(42),
     })];
 
@@ -3057,6 +3058,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
         RolloutItem::Compacted(CompactedItem {
             message: "summary after compaction".to_string(),
             replacement_history: Some(compacted_history.clone()),
+            remote_compaction_model: None,
             window_id: Some(7),
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
@@ -8321,6 +8323,7 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
         },
     );
@@ -9813,6 +9816,7 @@ async fn sample_rollout(
     rollout_items.push(RolloutItem::Compacted(CompactedItem {
         message: summary1.to_string(),
         replacement_history: None,
+        remote_compaction_model: None,
         window_id: None,
     }));
 
@@ -9856,6 +9860,7 @@ async fn sample_rollout(
     rollout_items.push(RolloutItem::Compacted(CompactedItem {
         message: summary2.to_string(),
         replacement_history: None,
+        remote_compaction_model: None,
         window_id: None,
     }));
 

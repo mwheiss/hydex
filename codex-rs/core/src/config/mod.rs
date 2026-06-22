@@ -26,6 +26,7 @@ use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -200,6 +201,7 @@ pub struct ModelOffloadConfig {
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
     pub compaction_policy: ModelOffloadCompactionPolicy,
+    pub compaction_recovery: ModelOffloadCompactionRecoveryConfig,
     pub context: ModelOffloadContextConfig,
 }
 
@@ -224,7 +226,46 @@ impl Default for ModelOffloadConfig {
             provider: None,
             model: None,
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_recovery: ModelOffloadCompactionRecoveryConfig::default(),
             context: ModelOffloadContextConfig::default(),
+        }
+    }
+}
+
+/// Resolved recovery settings for converting primary remote compaction into
+/// local-readable history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOffloadCompactionRecoveryConfig {
+    pub model: ModelOffloadCompactionRecoveryModel,
+    pub projection: ModelOffloadCompactionRecoveryProjection,
+}
+
+impl Default for ModelOffloadCompactionRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            model: ModelOffloadCompactionRecoveryModel::Auto,
+            projection: ModelOffloadCompactionRecoveryProjection::AssistantState,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelOffloadCompactionRecoveryModel {
+    Auto,
+    Primary,
+    Explicit(String),
+}
+
+impl ModelOffloadCompactionRecoveryModel {
+    fn from_toml_value(value: &str) -> std::io::Result<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "primary" => Ok(Self::Primary),
+            explicit if explicit.trim().is_empty() => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "model_offload.compaction.recovery.model must not be empty",
+            )),
+            explicit => Ok(Self::Explicit(explicit.to_string())),
         }
     }
 }
@@ -2481,6 +2522,12 @@ fn resolve_model_offload_config(
         provider: provider.cloned(),
         model: offload.model.clone(),
         compaction_policy: offload.compaction.policy,
+        compaction_recovery: ModelOffloadCompactionRecoveryConfig {
+            model: ModelOffloadCompactionRecoveryModel::from_toml_value(
+                &offload.compaction.recovery.model,
+            )?,
+            projection: offload.compaction.recovery.projection,
+        },
         context: ModelOffloadContextConfig {
             context_window: offload.context.context_window,
             effective_context_window_percent: offload.context.effective_context_window_percent,

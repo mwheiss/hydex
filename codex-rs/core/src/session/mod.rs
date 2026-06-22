@@ -3186,6 +3186,7 @@ impl Session {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: Some(replacement_history),
+                remote_compaction_model: None,
                 window_id: Some(window_id),
             }),
             RolloutItem::TurnContext(turn_context_item),

@@ -1441,6 +1441,31 @@
         }
       ]
     },
+    "ModelOffloadCompactionRecoveryProjection": {
+      "enum": [
+        "assistant_state",
+        "user_handoff"
+      ],
+      "type": "string"
+    },
+    "ModelOffloadCompactionRecoveryToml": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "default": "auto",
+          "type": "string"
+        },
+        "projection": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionRecoveryProjection"
+            }
+          ],
+          "default": "assistant_state"
+        }
+      },
+      "type": "object"
+    },
     "ModelOffloadCompactionToml": {
       "additionalProperties": false,
       "properties": {
@@ -1451,6 +1476,17 @@
             }
           ],
           "default": "local"
+        },
+        "recovery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionRecoveryToml"
+            }
+          ],
+          "default": {
+            "model": "auto",
+            "projection": "assistant_state"
+          }
         }
       },
       "type": "object"
@@ -1487,7 +1523,11 @@
             }
           ],
           "default": {
-            "policy": "local"
+            "policy": "local",
+            "recovery": {
+              "model": "auto",
+              "projection": "assistant_state"
+            }
           },
           "description": "Policy used for compaction after offload has actually been used."
         },
@@ -5138,7 +5178,11 @@
       ],
       "default": {
         "compaction": {
-          "policy": "local"
+          "policy": "local",
+          "recovery": {
+            "model": "auto",
+            "projection": "assistant_state"
+          }
         },
         "context": {
           "auto_compact_token_limit": null,

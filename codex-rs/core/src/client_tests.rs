@@ -128,6 +128,7 @@ fn test_model_client_with_local_offload_config(
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
         },
     )
@@ -752,6 +753,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
         },
     );

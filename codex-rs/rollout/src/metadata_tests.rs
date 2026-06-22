@@ -153,6 +153,7 @@ fn builder_from_items_falls_back_to_filename() {
     let items = vec![RolloutItem::Compacted(CompactedItem {
         message: "noop".to_string(),
         replacement_history: None,
+        remote_compaction_model: None,
         window_id: None,
     })];
 

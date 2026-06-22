@@ -529,6 +529,8 @@ pub struct ModelOffloadToml {
 pub struct ModelOffloadCompactionToml {
     #[serde(default)]
     pub policy: ModelOffloadCompactionPolicy,
+    #[serde(default)]
+    pub recovery: ModelOffloadCompactionRecoveryToml,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
@@ -539,6 +541,36 @@ pub enum ModelOffloadCompactionPolicy {
     Local,
     /// Keep the primary provider's upstream compaction behavior.
     Primary,
+}
+
+fn default_model_offload_compaction_recovery_model() -> String {
+    "auto".to_string()
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadCompactionRecoveryToml {
+    #[serde(default = "default_model_offload_compaction_recovery_model")]
+    pub model: String,
+    #[serde(default)]
+    pub projection: ModelOffloadCompactionRecoveryProjection,
+}
+
+impl Default for ModelOffloadCompactionRecoveryToml {
+    fn default() -> Self {
+        Self {
+            model: default_model_offload_compaction_recovery_model(),
+            projection: ModelOffloadCompactionRecoveryProjection::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadCompactionRecoveryProjection {
+    #[default]
+    AssistantState,
+    UserHandoff,
 }
 
 fn default_model_offload_effective_context_window_percent() -> i64 {

@@ -2966,6 +2966,8 @@ pub struct CompactedItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_history: Option<Vec<ResponseItem>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_compaction_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_id: Option<u64>,
 }
 

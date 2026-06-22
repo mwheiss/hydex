@@ -14,6 +14,7 @@ use codex_config::config_toml::AutoReviewToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::ExperimentalRequestUserInput;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeArchitecture;
 use codex_config::config_toml::RealtimeConfig;
@@ -5268,6 +5269,14 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Local
     );
+    assert_eq!(
+        config.model_offload.compaction_recovery.model,
+        crate::config::ModelOffloadCompactionRecoveryModel::Auto
+    );
+    assert_eq!(
+        config.model_offload.compaction_recovery.projection,
+        ModelOffloadCompactionRecoveryProjection::AssistantState
+    );
     assert!(config.model_offload.runtime_override.is_none());
     assert!(!config.model_offload.effective_enabled());
 
@@ -5286,6 +5295,10 @@ model = "local-responses-model"
 
 [model_offload.compaction]
 policy = "primary"
+
+[model_offload.compaction.recovery]
+model = "gpt-5.4"
+projection = "user_handoff"
 
 [model_offload.context]
 context_window = 200000
@@ -5324,6 +5337,14 @@ wire_api = "responses"
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Primary
     );
+    assert_eq!(
+        config.model_offload.compaction_recovery.model,
+        crate::config::ModelOffloadCompactionRecoveryModel::Explicit("gpt-5.4".to_string())
+    );
+    assert_eq!(
+        config.model_offload.compaction_recovery.projection,
+        ModelOffloadCompactionRecoveryProjection::UserHandoff
+    );
     assert!(config.model_offload.effective_enabled());
     assert_eq!(config.model_offload.context.context_window, Some(200_000));
     assert_eq!(
@@ -5343,6 +5364,62 @@ wire_api = "responses"
     );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn load_config_parses_primary_model_offload_recovery_model() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload.compaction.recovery]
+model = "primary"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.model_offload.compaction_recovery.model,
+        crate::config::ModelOffloadCompactionRecoveryModel::Primary
+    );
+    assert_eq!(
+        config.model_offload.compaction_recovery.projection,
+        ModelOffloadCompactionRecoveryProjection::AssistantState
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_empty_model_offload_recovery_model() {
+    let codex_home = TempDir::new().expect("create tempdir");
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload.compaction.recovery]
+model = ""
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("empty recovery model should be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("model_offload.compaction.recovery.model must not be empty"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]

@@ -276,6 +276,7 @@ async fn run_remote_compact_task_inner_impl(
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history.clone()),
+        remote_compaction_model: Some(turn_context.model_info.slug.clone()),
         window_id: Some(new_window_id),
     };
     // Install is the semantic boundary where the compact endpoint's output becomes live

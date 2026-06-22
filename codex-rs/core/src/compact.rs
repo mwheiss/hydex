@@ -338,6 +338,7 @@ async fn run_compact_task_inner_impl(
     let compacted_item = CompactedItem {
         message: summary_text.clone(),
         replacement_history: Some(new_history.clone()),
+        remote_compaction_model: None,
         window_id: Some(window_id),
     };
     sess.replace_compacted_history(new_history, reference_context_item, compacted_item)

@@ -776,6 +776,7 @@ mod thread_processor_behavior_tests {
                 },
             },
             model_offload_override: None,
+            model_offload_compaction_override: None,
             session_source: SessionSource::Cli,
             forked_from_thread_id: None,
             parent_thread_id: None,

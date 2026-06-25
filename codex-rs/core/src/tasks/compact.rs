@@ -36,7 +36,10 @@ impl SessionTask for CompactTask {
                 .services
                 .model_client
                 .effective_model_offload_enabled(),
-            ctx.config.model_offload.compaction_policy,
+            session
+                .services
+                .model_client
+                .effective_model_offload_compaction_policy(),
         ) {
             if ctx
                 .config

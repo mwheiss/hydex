@@ -124,6 +124,7 @@ async fn thread_settings_update(
         summary,
         service_tier,
         model_offload_override,
+        model_offload_compaction_override,
         collaboration_mode,
         personality,
     } = thread_settings;
@@ -153,6 +154,7 @@ async fn thread_settings_update(
         reasoning_summary: summary,
         service_tier,
         model_offload_override,
+        model_offload_compaction_override,
         personality,
         ..Default::default()
     }
@@ -179,6 +181,7 @@ async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
             personality: snapshot.personality,
             collaboration_mode: snapshot.collaboration_mode,
             model_offload_override: snapshot.model_offload_override,
+            model_offload_compaction_override: snapshot.model_offload_compaction_override,
         },
     })
 }

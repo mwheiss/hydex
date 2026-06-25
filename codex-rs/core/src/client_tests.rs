@@ -36,6 +36,7 @@ use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -124,6 +125,7 @@ fn test_model_client_with_local_offload_config(
         ModelOffloadConfig {
             enabled: true,
             runtime_override: None,
+            compaction_runtime_override: None,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
@@ -749,6 +751,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         ModelOffloadConfig {
             enabled: true,
             runtime_override: None,
+            compaction_runtime_override: None,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
@@ -1208,5 +1211,52 @@ async fn offload_local_compaction_policy_uses_local_only_when_effectively_enable
         !client
             .route_for_responses_request(&responses_metadata)
             .is_local_offload()
+    );
+}
+
+#[tokio::test]
+async fn compaction_runtime_override_updates_effective_policy_with_offload_guard() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+    );
+
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Primary
+    );
+
+    client.seed_offload_ever_used(true);
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Local
+    );
+
+    client
+        .set_model_offload_compaction_runtime_override(Some(
+            ModelOffloadCompactionRuntimeOverride::Primary,
+        ))
+        .unwrap();
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Primary
+    );
+
+    client
+        .set_model_offload_compaction_runtime_override(Some(
+            ModelOffloadCompactionRuntimeOverride::Local,
+        ))
+        .unwrap();
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Local
+    );
+
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Primary
     );
 }

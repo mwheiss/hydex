@@ -14,6 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Offload,
+    Compaction,
     Ide,
     Permissions,
     Keymap,
@@ -116,6 +117,7 @@ impl SlashCommand {
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Offload => "toggle Hydex local model offload",
+            SlashCommand::Compaction => "toggle Hydex compaction routing",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -164,6 +166,7 @@ impl SlashCommand {
                 | SlashCommand::Mcp
                 | SlashCommand::Raw
                 | SlashCommand::Offload
+                | SlashCommand::Compaction
                 | SlashCommand::Usage
                 | SlashCommand::Pets
                 | SlashCommand::Side
@@ -199,6 +202,7 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Model
             | SlashCommand::Offload
+            | SlashCommand::Compaction
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap

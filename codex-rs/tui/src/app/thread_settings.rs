@@ -106,6 +106,7 @@ impl App {
             windows_sandbox_level: _,
             model,
             model_offload_override,
+            model_offload_compaction_override: _,
             effort,
             summary,
             service_tier,

@@ -1274,7 +1274,9 @@ async fn run_auto_compact_with_route(
             turn_context.provider.info(),
             sess.services.model_client.offload_ever_used(),
             sess.services.model_client.effective_model_offload_enabled(),
-            turn_context.config.model_offload.compaction_policy,
+            sess.services
+                .model_client
+                .effective_model_offload_compaction_policy(),
         ),
         AutoCompactRoute::ForcePrimaryRemote => {
             if !should_use_remote_compact_task(turn_context.provider.info()) {

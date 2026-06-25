@@ -593,6 +593,7 @@ impl Session {
     ) -> CodexResult<Arc<TurnContext>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let model_offload_override = updates.model_offload_override;
+        let model_offload_compaction_override = updates.model_offload_compaction_override;
         let update_result: CodexResult<_> = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
@@ -644,6 +645,11 @@ impl Session {
             self.services
                 .model_client
                 .set_model_offload_runtime_override(model_offload_override)?;
+        }
+        if let Some(model_offload_compaction_override) = model_offload_compaction_override {
+            self.services
+                .model_client
+                .set_model_offload_compaction_runtime_override(model_offload_compaction_override)?;
         }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
 

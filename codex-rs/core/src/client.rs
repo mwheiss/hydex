@@ -72,6 +72,7 @@ use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
@@ -186,6 +187,7 @@ struct ModelClientState {
     offload_runtime_override: AtomicU8,
     offload_model: Option<String>,
     offload_compaction_policy: ModelOffloadCompactionPolicy,
+    offload_compaction_runtime_override: AtomicU8,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -269,6 +271,9 @@ pub struct ModelClient {
 const OFFLOAD_OVERRIDE_UNSET: u8 = 0;
 const OFFLOAD_OVERRIDE_FORCE_ON: u8 = 1;
 const OFFLOAD_OVERRIDE_FORCE_OFF: u8 = 2;
+const COMPACTION_OVERRIDE_CONFIGURED: u8 = 0;
+const COMPACTION_OVERRIDE_LOCAL: u8 = 1;
+const COMPACTION_OVERRIDE_PRIMARY: u8 = 2;
 
 fn encode_offload_runtime_override(runtime_override: Option<ModelOffloadRuntimeOverride>) -> u8 {
     match runtime_override {
@@ -282,6 +287,24 @@ fn decode_offload_runtime_override(value: u8) -> Option<ModelOffloadRuntimeOverr
     match value {
         OFFLOAD_OVERRIDE_FORCE_ON => Some(ModelOffloadRuntimeOverride::ForceOn),
         OFFLOAD_OVERRIDE_FORCE_OFF => Some(ModelOffloadRuntimeOverride::ForceOff),
+        _ => None,
+    }
+}
+
+fn encode_compaction_runtime_override(
+    runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
+) -> u8 {
+    match runtime_override {
+        None => COMPACTION_OVERRIDE_CONFIGURED,
+        Some(ModelOffloadCompactionRuntimeOverride::Local) => COMPACTION_OVERRIDE_LOCAL,
+        Some(ModelOffloadCompactionRuntimeOverride::Primary) => COMPACTION_OVERRIDE_PRIMARY,
+    }
+}
+
+fn decode_compaction_runtime_override(value: u8) -> Option<ModelOffloadCompactionRuntimeOverride> {
+    match value {
+        COMPACTION_OVERRIDE_LOCAL => Some(ModelOffloadCompactionRuntimeOverride::Local),
+        COMPACTION_OVERRIDE_PRIMARY => Some(ModelOffloadCompactionRuntimeOverride::Primary),
         _ => None,
     }
 }
@@ -468,6 +491,7 @@ impl ModelClient {
                 )),
                 offload_model: model_offload.model,
                 offload_compaction_policy: model_offload.compaction_policy,
+                offload_compaction_runtime_override: AtomicU8::new(COMPACTION_OVERRIDE_CONFIGURED),
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -552,6 +576,61 @@ impl ModelClient {
         self.effective_model_offload_enabled()
             && self.state.offload_provider.is_some()
             && self.session_source_allows_local_offload()
+    }
+
+    pub(crate) fn model_offload_compaction_runtime_override(
+        &self,
+    ) -> Option<ModelOffloadCompactionRuntimeOverride> {
+        decode_compaction_runtime_override(
+            self.state
+                .offload_compaction_runtime_override
+                .load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn set_model_offload_compaction_runtime_override(
+        &self,
+        runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
+    ) -> CodexResult<()> {
+        if matches!(
+            runtime_override,
+            Some(ModelOffloadCompactionRuntimeOverride::Local)
+        ) && self.state.offload_provider.is_none()
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot enable local compaction: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            ));
+        }
+        self.state.offload_compaction_runtime_override.store(
+            encode_compaction_runtime_override(runtime_override),
+            Ordering::Relaxed,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn requested_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        match self.model_offload_compaction_runtime_override() {
+            Some(ModelOffloadCompactionRuntimeOverride::Local) => {
+                ModelOffloadCompactionPolicy::Local
+            }
+            Some(ModelOffloadCompactionRuntimeOverride::Primary) => {
+                ModelOffloadCompactionPolicy::Primary
+            }
+            None => self.state.offload_compaction_policy,
+        }
+    }
+
+    pub(crate) fn effective_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        if self.local_offload_enabled_for_turns() && self.offload_ever_used() {
+            self.requested_model_offload_compaction_policy()
+        } else {
+            ModelOffloadCompactionPolicy::Primary
+        }
+    }
+
+    pub(crate) fn local_compaction_effective(&self) -> bool {
+        self.effective_model_offload_compaction_policy() == ModelOffloadCompactionPolicy::Local
     }
 
     pub(crate) fn seed_offload_ever_used(&self, offload_ever_used: bool) {
@@ -1039,11 +1118,7 @@ impl ModelClient {
 
         match responses_metadata.request_kind {
             Some(CodexResponsesRequestKind::Turn) => ModelRequestRoute::LocalOffload,
-            Some(CodexResponsesRequestKind::Compaction(_))
-                if self.offload_ever_used()
-                    && self.state.offload_compaction_policy
-                        == ModelOffloadCompactionPolicy::Local =>
-            {
+            Some(CodexResponsesRequestKind::Compaction(_)) if self.local_compaction_effective() => {
                 ModelRequestRoute::LocalOffload
             }
             _ => ModelRequestRoute::Primary,

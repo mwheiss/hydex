@@ -57,6 +57,18 @@ impl ModelOffloadRuntimeOverride {
     }
 }
 
+/// Runtime override for Hydex compaction routing.
+///
+/// This is intentionally not a persisted TOML setting. `None` at the call site
+/// means "use `model_offload.compaction.policy` from config".
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ModelOffloadCompactionRuntimeOverride {
+    Local,
+    Primary,
+}
+
 /// A summary of the reasoning performed by the model. This can be useful for
 /// debugging and understanding the model's reasoning process.
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries

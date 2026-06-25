@@ -86,6 +86,7 @@ use codex_models_manager::ModelsManagerConfig;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -197,6 +198,7 @@ impl Default for GhostSnapshotConfig {
 pub struct ModelOffloadConfig {
     pub enabled: bool,
     pub runtime_override: Option<ModelOffloadRuntimeOverride>,
+    pub compaction_runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
     pub provider_id: Option<String>,
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
@@ -222,6 +224,7 @@ impl Default for ModelOffloadConfig {
         Self {
             enabled: false,
             runtime_override: None,
+            compaction_runtime_override: None,
             provider_id: None,
             provider: None,
             model: None,
@@ -2518,6 +2521,7 @@ fn resolve_model_offload_config(
     Ok(ModelOffloadConfig {
         enabled: offload.enabled,
         runtime_override,
+        compaction_runtime_override: None,
         provider_id: offload.provider.clone(),
         provider: provider.cloned(),
         model: offload.model.clone(),

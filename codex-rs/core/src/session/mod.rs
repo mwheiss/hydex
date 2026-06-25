@@ -1411,6 +1411,7 @@ impl Session {
     ) -> ConstraintResult<()> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let model_offload_override = updates.model_offload_override;
+        let model_offload_compaction_override = updates.model_offload_compaction_override;
         let (previous_config, new_config, permission_profile_changed) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1444,6 +1445,17 @@ impl Session {
                 .map_err(|err| ConstraintError::InvalidValue {
                     field_name: "model_offload.runtime_override",
                     candidate: "force_on".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+        }
+        if let Some(model_offload_compaction_override) = model_offload_compaction_override {
+            self.services
+                .model_client
+                .set_model_offload_compaction_runtime_override(model_offload_compaction_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.compaction.runtime_override",
+                    candidate: "local".to_string(),
                     allowed: err.to_string(),
                     requirement_source: codex_config::RequirementSource::Unknown,
                 })?;

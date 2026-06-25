@@ -228,6 +228,7 @@ pub(crate) fn thread_settings_from_core_snapshot(
         personality,
         collaboration_mode,
         model_offload_override,
+        model_offload_compaction_override: _,
     } = snapshot;
     let sandbox_policy = thread_response_sandbox_policy(&permission_profile, cwd.as_path());
     ThreadSettings {

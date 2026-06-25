@@ -8,6 +8,7 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -70,6 +71,7 @@ pub struct ThreadConfigSnapshot {
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
     pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
+    pub model_offload_compaction_override: Option<ModelOffloadCompactionRuntimeOverride>,
     pub session_source: SessionSource,
     pub forked_from_thread_id: Option<ThreadId>,
     pub parent_thread_id: Option<ThreadId>,
@@ -151,6 +153,7 @@ pub struct CodexThreadSettingsOverrides {
     pub service_tier: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
     pub model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+    pub model_offload_compaction_override: Option<Option<ModelOffloadCompactionRuntimeOverride>>,
     pub personality: Option<Personality>,
 }
 
@@ -365,6 +368,7 @@ impl CodexThread {
             service_tier,
             collaboration_mode,
             model_offload_override,
+            model_offload_compaction_override,
             personality,
         } = overrides;
         let collaboration_mode = if let Some(collaboration_mode) = collaboration_mode {
@@ -391,6 +395,7 @@ impl CodexThread {
             reasoning_summary: summary,
             service_tier,
             model_offload_override,
+            model_offload_compaction_override,
             personality,
             ..Default::default()
         }

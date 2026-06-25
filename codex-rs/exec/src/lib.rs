@@ -896,6 +896,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         permissions: None,
                         model: None,
                         model_offload_override: None,
+                        model_offload_compaction_override: None,
                         service_tier: None,
                         effort: default_effort,
                         summary: None,

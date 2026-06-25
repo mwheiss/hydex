@@ -40,6 +40,10 @@ model = "local-codex-model"
 [model_offload.compaction]
 policy = "local" # local | primary
 
+[model_offload.compaction.recovery]
+model = "auto" # auto | primary | <OpenAI model name>
+projection = "assistant_state" # assistant_state | user_handoff
+
 [model_offload.context]
 # context_window = 200000
 # effective_context_window_percent = 95
@@ -59,6 +63,18 @@ stream_idle_timeout_ms = 300000
 `model_offload.provider` must identify a non-OpenAI provider with
 `wire_api = "responses"` and a `base_url`. Hydex rejects OpenAI-backed providers
 and non-Responses wire APIs for local offload.
+
+Remote compaction recovery is used only when a local-routed branch needs to
+consume encrypted OpenAI remote compaction state. `model = "auto"` uses the
+OpenAI model that produced the remote compaction item when provenance is known;
+otherwise Hydex falls back to the current primary model with a debug warning.
+`model = "primary"` always uses the currently selected primary model at recovery
+time. Any other string is treated as an explicit OpenAI model name for the
+recovery request. `projection = "assistant_state"` is the default; it inserts
+recovered text as assistant-history state for the local model. `user_handoff`
+wraps the recovered text in a concise local-compaction-style user handoff for
+compatibility with local models that preserve user-provided context more
+reliably.
 
 ## Runtime Control
 
@@ -93,6 +109,30 @@ App-server clients can use `modelOffloadOverride` on both
 change, `null` clears the runtime override and follows config, and
 `"force_on"` / `"force_off"` force the runtime state for that turn and later
 turns. `"force_on"` has the same provider validation as `/offload on`.
+
+Compaction routing has a separate runtime control:
+
+```text
+/compaction
+/compaction status
+/compaction local
+/compaction primary
+/compaction auto
+```
+
+`/compaction auto` clears the runtime override and follows
+`model_offload.compaction.policy`. `/compaction local` requests local compaction
+when offload is enabled and the active branch state makes local compaction
+eligible. `/compaction primary` requests primary/OpenAI compaction for future
+compactions. This is intentionally independent from `/offload`, so
+`/offload on` plus `/compaction primary` is a valid mode: ordinary turns route
+local while compaction remains on the primary backend.
+
+App-server v2 clients can use `modelOffloadCompactionOverride` on both
+`thread/settings/update` and first `turn/start`. Omitted means no change, `null`
+clears the runtime override and follows config, and `"local"` / `"primary"`
+request the runtime compaction policy. The current `ThreadSettings` snapshot
+reports both `modelOffloadOverride` and `modelOffloadCompactionOverride`.
 
 Recommended workflow:
 
@@ -182,6 +222,29 @@ policy applies.
 
 Manual compaction and auto-compaction both use the offload-aware policy.
 
+If a local-routed branch contains an encrypted OpenAI remote compaction item,
+Hydex performs a primary-provider recovery preflight before constructing the
+local request. The recovery request keeps the encrypted compaction item, strips
+ordinary historical cleartext, adds a small diagnostic preface, and asks the
+primary model to render the compacted payload as directly as possible. Primary
+routing continues to send encrypted compaction items unchanged.
+
+Once recovery succeeds, Hydex promotes the recovered cleartext into the active
+local branch using the existing `CompactedItem.replacement_history` checkpoint
+mechanism. The recovery cache is only an optimization: branch replay is grounded
+in the promoted replacement history, not in a side cache. In
+`assistant_state` mode, recovered text is inserted as a structured assistant
+message before the next user turn. In `user_handoff` mode, recovered text is
+wrapped as a concise user handoff message.
+
+If recovery fails and a local route was explicitly forced, Hydex surfaces a
+clear error because the local model cannot consume the encrypted remote
+compaction item. In automatic/configured local mode, Hydex may degrade the
+current turn back to primary continuation and logs that fallback. A future
+retro-local rescue path may reconstruct pre-compaction cleartext history from
+rollout/provenance and compact locally, but that fallback is intentionally
+deferred.
+
 When switching a large primary/offload-off session back into local mode, Hydex
 checks local context thresholds before sending the first local sampling request.
 If the pending local request is above the local auto-compaction threshold but
@@ -198,8 +261,8 @@ selected primary model.
 auto-compaction pressure without changing the global `model_context_window`.
 
 If `context_window` is unset, Hydex keeps current Codex threshold behavior. If it
-is set and local offload applies to the active session, Hydex derives thresholds
-with the same ratios as upstream model metadata:
+is set and the current sampling route is local, Hydex derives thresholds with
+the same ratios as upstream model metadata:
 
 ```text
 effective_context_window = context_window * effective_context_window_percent / 100
@@ -230,9 +293,10 @@ histories without the field default to `false`. Resume, replay, and fork
 reconstruct this marker so offload-aware compaction policy can be applied after
 a session has used local inference.
 
-After a session has used local offload, Hydex may continue using configured
-local context thresholds for auto-compaction pressure so the thread remains safe
-to route back to local mode.
+Primary/offload-off turns use the primary/upstream auto-compaction thresholds
+even after earlier local offload. Local context thresholds apply to actual local
+turns and to the local sampling-boundary re-entry check before switching a
+branch back to local routing.
 
 The persisted marker is deliberately minimal. Hydex does not persist local flat
 tool names, local provider IDs, or local wire models into canonical history.
@@ -272,11 +336,22 @@ Main patch points:
   - `codex-rs/core/src/compact.rs`
   - `codex-rs/core/src/tasks/compact.rs`
   - `codex-rs/core/src/session/turn.rs`
+- remote encrypted compaction recovery and cache:
+  - `codex-rs/core/src/compaction_recovery.rs`
+  - `codex-rs/core/src/compaction_recovery_cache.rs`
+  - `codex-rs/core/src/session/rollout_reconstruction.rs`
+- app-server runtime override surface:
+  - `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+  - `codex-rs/app-server/src/request_processors/turn_processor.rs`
 
 Useful verification:
 
 ```bash
-cargo test -p codex-core offload --lib
+just test -p codex-core offload
+just test -p codex-tui compaction_
+just test -p codex-app-server-protocol model_offload_compaction
+just test -p codex-app-server model_offload_compaction
 cargo check -p codex-cli --bin codex
 ```
 

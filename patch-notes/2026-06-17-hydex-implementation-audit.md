@@ -7,7 +7,8 @@ documentation now lives in `docs/hydex.md`.
 ## Summary
 
 The requested Hydex v1 behavior is implemented at the core model-client, tool-shim,
-persistence/replay, and compaction-policy layers.
+persistence/replay, compaction-policy, remote-compaction recovery, and runtime
+control layers.
 
 The hard invariants are covered by implementation and targeted tests:
 
@@ -21,6 +22,9 @@ The hard invariants are covered by implementation and targeted tests:
 - Hosted OpenAI tool specs are not sent to local as-is.
 - `web.run` remains available under offload by exposing the namespace tool instead of hosted `web_search`.
 - `offload_ever_used` is persisted and reconstructed for resume/replay.
+- Encrypted OpenAI remote compaction items are recovered and promoted before a
+  local-routed branch is sent to a local model.
+- Runtime compaction routing can be requested from TUI and app-server clients.
 
 ## Implemented patch points
 
@@ -44,6 +48,15 @@ The hard invariants are covered by implementation and targeted tests:
   - `codex-rs/core/src/compact.rs`
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/tasks/compact.rs`
+- Remote compaction recovery and promotion:
+  - `codex-rs/core/src/compaction_recovery.rs`
+  - `codex-rs/core/src/compaction_recovery_cache.rs`
+  - `codex-rs/core/src/session/rollout_reconstruction.rs`
+- Runtime controls and app-server API:
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+  - `codex-rs/app-server/src/request_processors/turn_processor.rs`
 
 ## Plan changes and deviations
 
@@ -132,12 +145,74 @@ These are the specific implementation-plan changes from the design docs.
    - Primary remote re-entry compaction uses the currently selected primary
      model; the removed compaction model override was not reintroduced.
 
+11. Local threshold persistence was narrowed.
+   - Earlier Hydex code could continue using local context thresholds for later
+     primary/offload-off turns merely because `offload_ever_used` was true.
+   - Implemented behavior now uses primary/upstream thresholds for primary or
+     offload-off turns.
+   - Local thresholds apply to actual local routes and the local sampling-boundary
+     re-entry safety check.
+
+12. Remote encrypted compaction recovery was added for local routing.
+   - Config:
+     - `[model_offload.compaction.recovery] model = "auto" | "primary" | <OpenAI model>`
+     - `[model_offload.compaction.recovery] projection = "assistant_state" | "user_handoff"`
+   - `auto` uses the producing compaction model from provenance when available,
+     otherwise falls back to the current primary model with a debug warning.
+   - Recovery sends the encrypted compaction item to the primary provider, strips
+     duplicated cleartext history from the recovery request, and asks for a
+     verbatim-simple compacted payload rendering.
+   - Primary routes keep encrypted compaction items unchanged.
+
+13. Recovered local branch state is canonicalized with existing checkpoints.
+   - Default `assistant_state` projection inserts recovered text as structured
+     assistant history before the next user turn.
+   - `user_handoff` remains available as a compatibility projection.
+   - Once a local branch bridges encrypted remote compaction, the recovered
+     projection is installed through `CompactedItem.replacement_history`.
+   - The recovery cache is auxiliary; replay depends on replacement history.
+
+14. Recovery cache and failure behavior were implemented.
+   - The in-session cache key includes the encrypted compaction projection hash,
+     prompt version, recovery model, and algorithm version.
+   - Cache hits avoid a repeated recovery call, but missing cache entries fall
+     back to the normal recovery path.
+   - Forced local continuation errors clearly if encrypted remote compaction
+     cannot be recovered.
+   - Automatic/configured local mode may degrade the current turn to primary
+     continuation and logs that degraded fallback.
+
+15. Runtime compaction controls were added.
+   - TUI commands:
+     - `/compaction`
+     - `/compaction status`
+     - `/compaction local`
+     - `/compaction primary`
+     - `/compaction auto`
+   - The override is separate from `/offload`; `/offload on` with
+     `/compaction primary` is supported.
+   - Local compaction remains guarded by effective offload state and branch
+     history; stale or impossible local requests are forced back to primary.
+
+16. App-server compaction override was added.
+   - v2 `turn/start` and `thread/settings/update` accept
+     `modelOffloadCompactionOverride`.
+   - Omitted leaves the current override unchanged, `null` clears/follows config,
+     and `"local"` / `"primary"` request the runtime compaction policy.
+   - `ThreadSettings` reports `modelOffloadCompactionOverride`.
+
 ## Remaining gaps or follow-ups
 
 - Upstream-inherited caveat: pre-turn compaction still runs before incoming
   user/context items are recorded, so that initial check excludes new turn
   input. Hydex now adds a local re-entry sampling-boundary check, but the
   broader upstream pre-turn estimate gap remains.
+- Deferred retro-local fallback: if OpenAI recovery fails, a future rescue path
+  may reconstruct readable pre-compaction source history from rollout/provenance,
+  append later readable turns, and run local compaction/projection.
+- Deferred local assistant-state compaction: current local compaction still uses
+  the robust cleartext user-summary handoff. A future experimental knob could
+  allow local compaction to produce structured assistant-state handoff output.
 - No current documentation-only gap is known. The original outer Hydex planning
   skeleton has been consolidated into the actual Codex checkout as
   `docs/hydex.md`; stale planning-only module and test skeletons were not copied
@@ -174,3 +249,14 @@ The TUI `/status` card now preserves the primary logical model line and adds a
 `Model offload` line when Hydex offload is configured or runtime-forced, showing
 effective state, local wire model, local provider, sanitized local endpoint, and
 whether state is configured or forced.
+
+Recent recovery/control verification:
+
+- `just test -p codex-core compaction_recovery`
+- `just test -p codex-core turn_session_force_primary`
+- `just test -p codex-core compaction_runtime_override`
+- `just test -p codex-tui compaction_`
+- `just test -p codex-tui status_model_offload`
+- `just test -p codex-app-server-protocol model_offload_compaction`
+- `just test -p codex-app-server-protocol schema_fixtures`
+- `just test -p codex-app-server model_offload_compaction`

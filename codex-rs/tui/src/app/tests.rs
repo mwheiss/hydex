@@ -6043,6 +6043,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             effort: collaboration_mode.settings.reasoning_effort.clone(),
             summary: None,
             model_offload_override: None,
+            model_offload_compaction_override: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
         },

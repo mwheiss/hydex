@@ -23,6 +23,7 @@ fn thread_settings_for_test(
             effort: Some(ReasoningEffortConfig::High),
             summary: None,
             model_offload_override: None,
+            model_offload_compaction_override: None,
             collaboration_mode: CollaborationMode {
                 mode: ModeKind::Plan,
                 settings: codex_protocol::config_types::Settings {

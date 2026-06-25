@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
 use crate::context_manager::ContextManager;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
@@ -38,6 +40,8 @@ pub(crate) struct SessionState {
     pub(crate) startup_prewarm: Option<SessionStartupPrewarmHandle>,
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
+    pub(crate) remote_compaction_recovery_cache:
+        HashMap<RemoteCompactionRecoveryCacheKey, RemoteCompactionRecoveryCacheEntry>,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
 }
@@ -58,6 +62,7 @@ impl SessionState {
             startup_prewarm: None,
             active_connector_selection: HashSet::new(),
             pending_session_start_sources: VecDeque::new(),
+            remote_compaction_recovery_cache: HashMap::new(),
             granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,
         }

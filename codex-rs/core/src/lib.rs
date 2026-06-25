@@ -189,6 +189,7 @@ pub use client_common::ResponseStream;
 pub use codex_prompts::REVIEW_PROMPT;
 pub use compact::content_items_to_text;
 pub(crate) mod compaction_recovery;
+pub(crate) mod compaction_recovery_cache;
 pub use event_mapping::parse_turn_item;
 pub use exec_policy::ExecPolicyError;
 pub use exec_policy::check_execpolicy_for_warnings;

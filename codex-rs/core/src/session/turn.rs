@@ -19,6 +19,10 @@ use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_
 use crate::compaction_recovery::project_recovered_remote_compaction;
 use crate::compaction_recovery::recover_remote_compaction_payload;
 use crate::compaction_recovery::remote_compaction_recovery_needed;
+use crate::compaction_recovery::resolve_remote_compaction_recovery_model;
+use crate::compaction_recovery_cache::remote_compaction_item_count;
+use crate::compaction_recovery_cache::remote_compaction_recovery_cache_entry;
+use crate::compaction_recovery_cache::remote_compaction_recovery_cache_key;
 use crate::config::ModelOffloadContextConfig;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
@@ -942,14 +946,38 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
         return Ok(false);
     }
 
-    let recovered_text = recover_remote_compaction_payload(
-        sess,
-        turn_context,
-        client_session,
-        &active_history,
+    let recovery_model = resolve_remote_compaction_recovery_model(
+        &turn_context.config.model_offload.compaction_recovery.model,
+        &turn_context.model_info.slug,
         /*producing_model*/ None,
-    )
-    .await?;
+    );
+    let cache_key = remote_compaction_recovery_cache_key(&active_history, &recovery_model)?;
+    let recovered_text =
+        if let Some(entry) = sess.remote_compaction_recovery_cache_get(&cache_key).await {
+            trace!(
+                recovery_model = recovery_model.as_str(),
+                recovered_text_hash = entry.recovered_text_hash.as_str(),
+                compaction_item_count = entry.compaction_item_count,
+                "using cached remote compaction recovery"
+            );
+            entry.recovered_text
+        } else {
+            let recovered_text = recover_remote_compaction_payload(
+                sess,
+                turn_context,
+                client_session,
+                &active_history,
+                /*producing_model*/ None,
+            )
+            .await?;
+            let cache_entry = remote_compaction_recovery_cache_entry(
+                recovered_text.clone(),
+                remote_compaction_item_count(&active_history),
+            );
+            sess.remote_compaction_recovery_cache_insert(cache_key, cache_entry)
+                .await;
+            recovered_text
+        };
     let promoted_history = project_recovered_remote_compaction(
         &active_history,
         recovered_text,

@@ -298,6 +298,8 @@ use crate::SkillLoadOutcome;
 use crate::SkillMetadata;
 use crate::SkillsManager;
 use crate::agents_md::load_project_instructions;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpManager;
@@ -2814,6 +2816,23 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+    }
+
+    pub(crate) async fn remote_compaction_recovery_cache_get(
+        &self,
+        key: &RemoteCompactionRecoveryCacheKey,
+    ) -> Option<RemoteCompactionRecoveryCacheEntry> {
+        let state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.get(key).cloned()
+    }
+
+    pub(crate) async fn remote_compaction_recovery_cache_insert(
+        &self,
+        key: RemoteCompactionRecoveryCacheKey,
+        entry: RemoteCompactionRecoveryCacheEntry,
+    ) {
+        let mut state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.insert(key, entry);
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {

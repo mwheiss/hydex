@@ -270,7 +270,7 @@ async fn run_remote_compact_task_inner_impl(
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage => {
-            Some(sess.turn_context_item(&turn_context))
+            Some(sess.turn_context_item(turn_context))
         }
     };
     let compacted_item = CompactedItem {

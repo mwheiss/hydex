@@ -16,6 +16,9 @@ use crate::compact::should_use_remote_compact_task;
 use crate::compact::should_use_remote_compact_task_with_offload_policy;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
+use crate::compaction_recovery::project_recovered_remote_compaction;
+use crate::compaction_recovery::recover_remote_compaction_payload;
+use crate::compaction_recovery::remote_compaction_recovery_needed;
 use crate::config::ModelOffloadContextConfig;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
@@ -98,6 +101,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PlanDeltaEvent;
@@ -222,8 +226,22 @@ pub(crate) async fn run_turn(
         }
 
         // Construct the input that we will send to the model. If this turn is
-        // about to re-enter local offload with a history that is too large for
-        // the local context window, compact before building the local request.
+        // about to route local with encrypted remote compaction in active
+        // history, promote it to local-readable state before sizing or
+        // sampling. Then, if that history is too large for the local context
+        // window, compact before building the local request.
+        if let Err(err) = maybe_recover_remote_compaction_before_local_sampling(
+            &sess,
+            &turn_context,
+            &mut client_session,
+        )
+        .await
+        {
+            let error = err.to_codex_protocol_error();
+            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                .await;
+            return None;
+        }
         if let Err(err) =
             maybe_compact_before_local_sampling(&sess, &turn_context, &mut client_session).await
         {
@@ -908,6 +926,50 @@ async fn run_pre_sampling_compact(
         }
     }
     Ok(())
+}
+
+#[instrument(level = "trace", skip_all)]
+async fn maybe_recover_remote_compaction_before_local_sampling(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    client_session: &mut ModelClientSession,
+) -> CodexResult<bool> {
+    let active_history = sess.clone_history().await.into_raw_items();
+    if !remote_compaction_recovery_needed(
+        sess.services.model_client.local_offload_enabled_for_turns(),
+        &active_history,
+    ) {
+        return Ok(false);
+    }
+
+    let recovered_text = recover_remote_compaction_payload(
+        sess,
+        turn_context,
+        client_session,
+        &active_history,
+        /*producing_model*/ None,
+    )
+    .await?;
+    let promoted_history = project_recovered_remote_compaction(
+        &active_history,
+        recovered_text,
+        turn_context
+            .config
+            .model_offload
+            .compaction_recovery
+            .projection,
+    )?;
+    let new_window_id = sess.advance_auto_compact_window_id().await;
+    let compacted_item = CompactedItem {
+        message: String::new(),
+        replacement_history: Some(promoted_history.clone()),
+        remote_compaction_model: None,
+        window_id: Some(new_window_id),
+    };
+    sess.replace_compacted_history(promoted_history, None, compacted_item)
+        .await;
+    sess.recompute_token_usage(turn_context).await;
+    Ok(true)
 }
 
 #[instrument(level = "trace", skip_all)]

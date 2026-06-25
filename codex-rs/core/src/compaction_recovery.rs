@@ -7,6 +7,7 @@ use crate::config::ModelOffloadCompactionRecoveryModel;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
@@ -42,6 +43,57 @@ pub(crate) fn build_remote_compaction_recovery_prompt(
         input,
         ..Prompt::default()
     })
+}
+
+pub(crate) fn active_history_has_remote_compaction(active_history: &[ResponseItem]) -> bool {
+    active_history.iter().any(is_remote_compaction_item)
+}
+
+pub(crate) fn remote_compaction_recovery_needed(
+    local_route_enabled: bool,
+    active_history: &[ResponseItem],
+) -> bool {
+    local_route_enabled && active_history_has_remote_compaction(active_history)
+}
+
+pub(crate) fn project_recovered_remote_compaction(
+    active_history: &[ResponseItem],
+    recovered_text: String,
+    projection: ModelOffloadCompactionRecoveryProjection,
+) -> CodexResult<Vec<ResponseItem>> {
+    let compaction_indices = active_history
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| is_remote_compaction_item(item).then_some(index))
+        .collect::<Vec<_>>();
+    let Some(last_compaction_index) = compaction_indices.last().copied() else {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot promote recovered remote compaction: no encrypted compaction item is active."
+                .to_string(),
+        ));
+    };
+    if compaction_indices.len() > 1 {
+        tracing::warn!(
+            compaction_item_count = compaction_indices.len(),
+            "remote compaction recovery found multiple active encrypted compaction items; promoting the newest one"
+        );
+    }
+
+    let removed_before_insert = compaction_indices
+        .iter()
+        .filter(|index| **index < last_compaction_index)
+        .count();
+    let insert_index = last_compaction_index.saturating_sub(removed_before_insert);
+    let mut promoted = active_history
+        .iter()
+        .filter(|item| !is_remote_compaction_item(item))
+        .cloned()
+        .collect::<Vec<_>>();
+    promoted.insert(
+        insert_index,
+        projected_recovery_message(recovered_text, projection),
+    );
+    Ok(promoted)
 }
 
 pub(crate) fn resolve_remote_compaction_recovery_model(
@@ -123,6 +175,29 @@ fn is_remote_compaction_item(item: &ResponseItem) -> bool {
                 ..
             }
     )
+}
+
+fn projected_recovery_message(
+    recovered_text: String,
+    projection: ModelOffloadCompactionRecoveryProjection,
+) -> ResponseItem {
+    match projection {
+        ModelOffloadCompactionRecoveryProjection::AssistantState => ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: recovered_text,
+            }],
+            phase: None,
+            metadata: None,
+        },
+        ModelOffloadCompactionRecoveryProjection::UserHandoff => {
+            let text = format!(
+                "Hydex recovered remote compaction state for local continuation:\n\n{recovered_text}"
+            );
+            user_message(&text)
+        }
+    }
 }
 
 fn user_message(text: &str) -> ResponseItem {

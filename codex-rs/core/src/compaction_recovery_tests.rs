@@ -1,4 +1,5 @@
 use super::*;
+use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use pretty_assertions::assert_eq;
 
 fn user_text(text: &str) -> ResponseItem {
@@ -117,4 +118,112 @@ fn recovery_model_explicit_uses_configured_model() {
         ),
         "gpt-explicit"
     );
+}
+
+#[test]
+fn assistant_state_projection_replaces_encrypted_compaction_with_assistant_message() {
+    let history = vec![
+        user_text("retained user"),
+        ResponseItem::Compaction {
+            encrypted_content: "encrypted".to_string(),
+            metadata: None,
+        },
+        user_text("next user"),
+    ];
+
+    let projected = project_recovered_remote_compaction(
+        &history,
+        "recovered state".to_string(),
+        ModelOffloadCompactionRecoveryProjection::AssistantState,
+    )
+    .expect("projected history");
+
+    assert_eq!(
+        projected,
+        vec![
+            user_text("retained user"),
+            assistant_text("recovered state"),
+            user_text("next user"),
+        ]
+    );
+}
+
+#[test]
+fn user_handoff_projection_replaces_encrypted_compaction_with_user_message() {
+    let history = vec![ResponseItem::ContextCompaction {
+        encrypted_content: Some("encrypted".to_string()),
+        metadata: None,
+    }];
+
+    let projected = project_recovered_remote_compaction(
+        &history,
+        "recovered state".to_string(),
+        ModelOffloadCompactionRecoveryProjection::UserHandoff,
+    )
+    .expect("projected history");
+
+    assert_eq!(
+        projected,
+        vec![user_text(
+            "Hydex recovered remote compaction state for local continuation:\n\nrecovered state"
+        )]
+    );
+}
+
+#[test]
+fn projection_drops_older_malformed_duplicate_encrypted_compactions() {
+    let history = vec![
+        ResponseItem::Compaction {
+            encrypted_content: "old".to_string(),
+            metadata: None,
+        },
+        user_text("retained user"),
+        ResponseItem::Compaction {
+            encrypted_content: "new".to_string(),
+            metadata: None,
+        },
+    ];
+
+    let projected = project_recovered_remote_compaction(
+        &history,
+        "recovered state".to_string(),
+        ModelOffloadCompactionRecoveryProjection::AssistantState,
+    )
+    .expect("projected history");
+
+    assert_eq!(
+        projected,
+        vec![
+            user_text("retained user"),
+            assistant_text("recovered state"),
+        ]
+    );
+    assert!(!active_history_has_remote_compaction(&projected));
+}
+
+#[test]
+fn primary_route_does_not_need_remote_compaction_recovery() {
+    let history = vec![ResponseItem::Compaction {
+        encrypted_content: "encrypted".to_string(),
+        metadata: None,
+    }];
+
+    assert!(!remote_compaction_recovery_needed(false, &history));
+}
+
+#[test]
+fn local_route_with_encrypted_compaction_needs_remote_compaction_recovery() {
+    let history = vec![ResponseItem::ContextCompaction {
+        encrypted_content: Some("encrypted".to_string()),
+        metadata: None,
+    }];
+
+    assert!(remote_compaction_recovery_needed(true, &history));
+}
+
+#[test]
+fn local_route_without_encrypted_compaction_does_not_need_remote_compaction_recovery() {
+    let history = vec![user_text("ordinary history")];
+
+    assert!(!remote_compaction_recovery_needed(true, &history));
 }

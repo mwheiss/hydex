@@ -530,6 +530,8 @@ pub struct ModelOffloadCompactionToml {
     #[serde(default)]
     pub policy: ModelOffloadCompactionPolicy,
     #[serde(default)]
+    pub local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+    #[serde(default)]
     pub recovery: ModelOffloadCompactionRecoveryToml,
 }
 
@@ -541,6 +543,16 @@ pub enum ModelOffloadCompactionPolicy {
     Local,
     /// Keep the primary provider's upstream compaction behavior.
     Primary,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadCompactionLocalHandoffRole {
+    /// Preserve current local compaction behavior: recovered summary is supplied as user context.
+    #[default]
+    UserSummary,
+    /// Supply local compaction output as assistant-history state before the next user turn.
+    AssistantState,
 }
 
 fn default_model_offload_compaction_recovery_model() -> String {

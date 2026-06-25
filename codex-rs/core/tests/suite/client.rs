@@ -998,6 +998,8 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         provider: Some(local_provider.clone()),
         model: Some("local-responses-model".to_string()),
         compaction_policy: ModelOffloadCompactionPolicy::Local,
+        compaction_local_handoff_role:
+            codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
         compaction_recovery: codex_core::config::ModelOffloadCompactionRecoveryConfig::default(),
         context: Default::default(),
     };

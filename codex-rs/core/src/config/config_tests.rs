@@ -13,6 +13,7 @@ use codex_config::config_toml::AgentsToml;
 use codex_config::config_toml::AutoReviewToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::ExperimentalRequestUserInput;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use codex_config::config_toml::ProjectConfig;
@@ -5270,6 +5271,10 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
         ModelOffloadCompactionPolicy::Local
     );
     assert_eq!(
+        config.model_offload.compaction_local_handoff_role,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary
+    );
+    assert_eq!(
         config.model_offload.compaction_recovery.model,
         crate::config::ModelOffloadCompactionRecoveryModel::Auto
     );
@@ -5295,6 +5300,7 @@ model = "local-responses-model"
 
 [model_offload.compaction]
 policy = "primary"
+local_handoff_role = "assistant_state"
 
 [model_offload.compaction.recovery]
 model = "gpt-5.4"
@@ -5336,6 +5342,10 @@ wire_api = "responses"
     assert_eq!(
         config.model_offload.compaction_policy,
         ModelOffloadCompactionPolicy::Primary
+    );
+    assert_eq!(
+        config.model_offload.compaction_local_handoff_role,
+        ModelOffloadCompactionLocalHandoffRole::AssistantState
     );
     assert_eq!(
         config.model_offload.compaction_recovery.model,

@@ -1,4 +1,5 @@
 use super::*;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
@@ -178,6 +179,7 @@ fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
         std::slice::from_ref(&user_message),
         "SUMMARY",
         max_tokens,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
     );
     assert_eq!(history.len(), 2);
 
@@ -229,6 +231,45 @@ fn build_token_limited_compacted_history_appends_summary_message() {
         other => panic!("expected summary message, found {other:?}"),
     };
     assert_eq!(summary, summary_text);
+}
+
+#[test]
+fn build_compacted_history_assistant_state_appends_assistant_summary() {
+    let history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        "summary text",
+        ModelOffloadCompactionLocalHandoffRole::AssistantState,
+    );
+
+    let expected = vec![
+        user_message("first user message"),
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "summary text".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        },
+    ];
+    assert_eq!(history, expected);
+}
+
+#[test]
+fn build_compacted_history_user_summary_appends_user_summary_by_default() {
+    let history = build_compacted_history(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        "summary text",
+    );
+
+    let expected = vec![
+        user_message("first user message"),
+        user_message("summary text"),
+    ];
+    assert_eq!(history, expected);
 }
 
 #[test]

@@ -8324,6 +8324,8 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role:
+                codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
             compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
         },

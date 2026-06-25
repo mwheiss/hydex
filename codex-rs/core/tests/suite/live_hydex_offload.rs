@@ -122,6 +122,8 @@ async fn live_local_offload_responses_turn_completes() {
         provider: Some(local_provider.clone()),
         model: Some(local_model.clone()),
         compaction_policy: ModelOffloadCompactionPolicy::Local,
+        compaction_local_handoff_role:
+            codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
         compaction_recovery: codex_core::config::ModelOffloadCompactionRecoveryConfig::default(),
         context: Default::default(),
     };

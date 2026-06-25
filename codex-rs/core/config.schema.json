@@ -1423,6 +1423,24 @@
       },
       "type": "object"
     },
+    "ModelOffloadCompactionLocalHandoffRole": {
+      "oneOf": [
+        {
+          "description": "Preserve current local compaction behavior: recovered summary is supplied as user context.",
+          "enum": [
+            "user_summary"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Supply local compaction output as assistant-history state before the next user turn.",
+          "enum": [
+            "assistant_state"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ModelOffloadCompactionPolicy": {
       "oneOf": [
         {
@@ -1469,6 +1487,14 @@
     "ModelOffloadCompactionToml": {
       "additionalProperties": false,
       "properties": {
+        "local_handoff_role": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionLocalHandoffRole"
+            }
+          ],
+          "default": "user_summary"
+        },
         "policy": {
           "allOf": [
             {
@@ -1523,6 +1549,7 @@
             }
           ],
           "default": {
+            "local_handoff_role": "user_summary",
             "policy": "local",
             "recovery": {
               "model": "auto",
@@ -5178,6 +5205,7 @@
       ],
       "default": {
         "compaction": {
+          "local_handoff_role": "user_summary",
           "policy": "local",
           "recovery": {
             "model": "auto",

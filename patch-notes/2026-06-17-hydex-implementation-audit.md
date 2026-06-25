@@ -82,6 +82,7 @@ These are the specific implementation-plan changes from the design docs.
      - `[model_offload.context] effective_context_window_percent`
      - `[model_offload.context] auto_compact_token_limit`
      - `[model_offload.compaction] policy = "local" | "primary"`
+     - `[model_offload.compaction] local_handoff_role = "user_summary" | "assistant_state"`
      - process/session runtime override via `--offload`, `--no-offload`,
        and `/offload on|off|auto|status`
    - Not implemented as separate v1 knobs:
@@ -201,6 +202,13 @@ These are the specific implementation-plan changes from the design docs.
      and `"local"` / `"primary"` request the runtime compaction policy.
    - `ThreadSettings` reports `modelOffloadCompactionOverride`.
 
+17. Local assistant-state compaction was added as an opt-in mode.
+   - `[model_offload.compaction] local_handoff_role = "user_summary"` preserves
+     the default local compaction handoff as a user summary.
+   - `local_handoff_role = "assistant_state"` keeps the same local compaction
+     model call and summary prompt, but stores the resulting summary as
+     structured assistant history in replacement history.
+
 ## Remaining gaps or follow-ups
 
 - Upstream-inherited caveat: pre-turn compaction still runs before incoming
@@ -210,9 +218,6 @@ These are the specific implementation-plan changes from the design docs.
 - Deferred retro-local fallback: if OpenAI recovery fails, a future rescue path
   may reconstruct readable pre-compaction source history from rollout/provenance,
   append later readable turns, and run local compaction/projection.
-- Deferred local assistant-state compaction: current local compaction still uses
-  the robust cleartext user-summary handoff. A future experimental knob could
-  allow local compaction to produce structured assistant-state handoff output.
 - No current documentation-only gap is known. The original outer Hydex planning
   skeleton has been consolidated into the actual Codex checkout as
   `docs/hydex.md`; stale planning-only module and test skeletons were not copied

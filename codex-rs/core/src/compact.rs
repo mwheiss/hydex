@@ -45,6 +45,7 @@ use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
 use tracing::error;
 
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 
@@ -318,7 +319,15 @@ async fn run_compact_task_inner_impl(
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     let user_messages = collect_user_messages(history_items);
 
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    let mut new_history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &user_messages,
+        &summary_text,
+        turn_context
+            .config
+            .model_offload
+            .compaction_local_handoff_role,
+    );
     let window_id = sess.advance_auto_compact_window_id().await;
 
     if matches!(
@@ -562,11 +571,26 @@ pub(crate) fn build_compacted_history(
     user_messages: &[CompactedUserMessage],
     summary_text: &str,
 ) -> Vec<ResponseItem> {
+    build_compacted_history_with_handoff_role(
+        initial_context,
+        user_messages,
+        summary_text,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
+    )
+}
+
+pub(crate) fn build_compacted_history_with_handoff_role(
+    initial_context: Vec<ResponseItem>,
+    user_messages: &[CompactedUserMessage],
+    summary_text: &str,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+) -> Vec<ResponseItem> {
     build_compacted_history_with_limit(
         initial_context,
         user_messages,
         summary_text,
         COMPACT_USER_MESSAGE_MAX_TOKENS,
+        local_handoff_role,
     )
 }
 
@@ -575,6 +599,7 @@ fn build_compacted_history_with_limit(
     user_messages: &[CompactedUserMessage],
     summary_text: &str,
     max_tokens: usize,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
 ) -> Vec<ResponseItem> {
     let mut selected_messages: Vec<CompactedUserMessage> = Vec::new();
     if max_tokens > 0 {
@@ -618,10 +643,20 @@ fn build_compacted_history_with_limit(
         summary_text.to_string()
     };
 
+    let (role, content) = match local_handoff_role {
+        ModelOffloadCompactionLocalHandoffRole::UserSummary => (
+            "user".to_string(),
+            vec![ContentItem::InputText { text: summary_text }],
+        ),
+        ModelOffloadCompactionLocalHandoffRole::AssistantState => (
+            "assistant".to_string(),
+            vec![ContentItem::OutputText { text: summary_text }],
+        ),
+    };
     history.push(ResponseItem::Message {
         id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: summary_text }],
+        role,
+        content,
         phase: None,
         metadata: None,
     });

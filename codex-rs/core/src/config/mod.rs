@@ -25,6 +25,7 @@ use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use codex_config::config_toml::ProjectConfig;
@@ -203,6 +204,7 @@ pub struct ModelOffloadConfig {
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
     pub compaction_policy: ModelOffloadCompactionPolicy,
+    pub compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
     pub compaction_recovery: ModelOffloadCompactionRecoveryConfig,
     pub context: ModelOffloadContextConfig,
 }
@@ -229,6 +231,7 @@ impl Default for ModelOffloadConfig {
             provider: None,
             model: None,
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::UserSummary,
             compaction_recovery: ModelOffloadCompactionRecoveryConfig::default(),
             context: ModelOffloadContextConfig::default(),
         }
@@ -2526,6 +2529,7 @@ fn resolve_model_offload_config(
         provider: provider.cloned(),
         model: offload.model.clone(),
         compaction_policy: offload.compaction.policy,
+        compaction_local_handoff_role: offload.compaction.local_handoff_role,
         compaction_recovery: ModelOffloadCompactionRecoveryConfig {
             model: ModelOffloadCompactionRecoveryModel::from_toml_value(
                 &offload.compaction.recovery.model,

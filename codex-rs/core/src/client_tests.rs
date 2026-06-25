@@ -26,6 +26,7 @@ use codex_api::ApiError;
 use codex_api::Compression;
 use codex_api::ResponseEvent;
 use codex_app_server_protocol::AuthMode;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -131,6 +132,7 @@ fn test_model_client_with_local_offload_config(
             model: Some("local-responses-model".to_string()),
             compaction_policy,
             compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::UserSummary,
             context: Default::default(),
         },
     )
@@ -756,6 +758,8 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
             compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role:
+                codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
             compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
         },

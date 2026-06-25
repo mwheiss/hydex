@@ -39,6 +39,7 @@ model = "local-codex-model"
 
 [model_offload.compaction]
 policy = "local" # local | primary
+local_handoff_role = "user_summary" # user_summary | assistant_state
 
 [model_offload.compaction.recovery]
 model = "auto" # auto | primary | <OpenAI model name>
@@ -219,6 +220,15 @@ primary Codex model. Hydex no longer has a separate compaction model override.
 If `policy = "local"`, compaction uses the local offload model when offload is
 effectively enabled, offload has already been used in the session, and the local
 policy applies.
+
+`local_handoff_role` controls how local compaction inserts its recovered summary
+into the replacement history. `user_summary` is the default and preserves the
+original Codex/Hydex local compaction behavior: retained recent user messages
+are followed by a synthesized user summary. `assistant_state` keeps the same
+summary prompt and model call, but stores the summary as structured assistant
+history before the next user turn. This is useful for testing local models that
+handle assistant continuation state well, while keeping `user_summary` as the
+robust default.
 
 Manual compaction and auto-compaction both use the offload-aware policy.
 

@@ -1009,6 +1009,28 @@ async fn runtime_force_off_routes_eligible_turn_primary() {
 }
 
 #[tokio::test]
+async fn compaction_recovery_stays_primary_with_offload_configured() {
+    let client = test_model_client_with_local_offload(SessionSource::Exec);
+    client.seed_offload_ever_used(true);
+    let mut responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    responses_metadata.request_kind = Some(CodexResponsesRequestKind::CompactionRecovery);
+
+    let route = client.route_for_responses_request(&responses_metadata);
+
+    assert!(!route.is_local_offload());
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "gpt-test"
+    );
+}
+
+#[tokio::test]
 async fn runtime_force_off_does_not_clear_offload_ever_used() {
     let client = test_model_client_with_local_offload(SessionSource::Exec);
     client.seed_offload_ever_used(true);

@@ -97,6 +97,7 @@ pub(crate) enum CodexResponsesRequestKind {
     Turn,
     Prewarm,
     Compaction(CompactionTurnMetadata),
+    CompactionRecovery,
     Memory,
 }
 
@@ -106,6 +107,7 @@ impl CodexResponsesRequestKind {
             CodexResponsesRequestKind::Turn => ("turn", None),
             CodexResponsesRequestKind::Prewarm => ("prewarm", None),
             CodexResponsesRequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
+            CodexResponsesRequestKind::CompactionRecovery => ("compaction_recovery", None),
             CodexResponsesRequestKind::Memory => ("memory", None),
         }
     }

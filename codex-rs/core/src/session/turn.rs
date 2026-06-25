@@ -943,10 +943,11 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
         return Ok(false);
     }
 
+    let producing_model = sess.active_remote_compaction_model().await;
     let recovery_model = resolve_remote_compaction_recovery_model(
         &turn_context.config.model_offload.compaction_recovery.model,
         &turn_context.model_info.slug,
-        /*producing_model*/ None,
+        producing_model.as_deref(),
     );
     let cache_key = remote_compaction_recovery_cache_key(&active_history, &recovery_model)?;
     let recovered_text = if let Some(entry) =
@@ -965,7 +966,7 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
             turn_context,
             client_session,
             &active_history,
-            /*producing_model*/ None,
+            producing_model.as_deref(),
         )
         .await
         {

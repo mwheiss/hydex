@@ -11,6 +11,7 @@ pub(super) struct RolloutReconstruction {
     pub(super) reference_context_item: Option<TurnContextItem>,
     pub(super) offload_ever_used: bool,
     pub(super) window_id: u64,
+    pub(super) active_remote_compaction_model: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -36,6 +37,7 @@ struct ActiveReplaySegment<'a> {
     previous_turn_settings: Option<PreviousTurnSettings>,
     reference_context_item: TurnReferenceContextItem,
     base_replacement_history: Option<&'a [ResponseItem]>,
+    base_remote_compaction_model: Option<&'a str>,
     window_id: Option<u64>,
 }
 
@@ -56,6 +58,7 @@ fn finalize_active_segment<'a>(
     previous_turn_settings: &mut Option<PreviousTurnSettings>,
     reference_context_item: &mut TurnReferenceContextItem,
     window_id: &mut Option<u64>,
+    active_remote_compaction_model: &mut Option<String>,
     pending_rollback_turns: &mut usize,
 ) {
     // Thread rollback drops the newest surviving real user-message boundaries. In replay, that
@@ -74,6 +77,9 @@ fn finalize_active_segment<'a>(
         && let Some(segment_base_replacement_history) = active_segment.base_replacement_history
     {
         *base_replacement_history = Some(segment_base_replacement_history);
+        *active_remote_compaction_model = active_segment
+            .base_remote_compaction_model
+            .map(str::to_string);
     }
 
     if window_id.is_none() {
@@ -245,6 +251,7 @@ impl Session {
         let mut reference_context_item = TurnReferenceContextItem::NeverSet;
         let mut offload_ever_used = false;
         let mut window_id = None;
+        let mut active_remote_compaction_model = None;
         // Rollback is "drop the newest N user turns". While scanning in reverse, that becomes
         // "skip the next N user-turn segments we finalize".
         let mut pending_rollback_turns = 0usize;
@@ -275,6 +282,8 @@ impl Session {
                         && let Some(replacement_history) = &compacted.replacement_history
                     {
                         active_segment.base_replacement_history = Some(replacement_history);
+                        active_segment.base_remote_compaction_model =
+                            compacted.remote_compaction_model.as_deref();
                         rollout_suffix = &rollout_items[index + 1..];
                     }
                 }
@@ -352,6 +361,7 @@ impl Session {
                             &mut previous_turn_settings,
                             &mut reference_context_item,
                             &mut window_id,
+                            &mut active_remote_compaction_model,
                             &mut pending_rollback_turns,
                         );
                     }
@@ -387,6 +397,7 @@ impl Session {
                 &mut previous_turn_settings,
                 &mut reference_context_item,
                 &mut window_id,
+                &mut active_remote_compaction_model,
                 &mut pending_rollback_turns,
             );
         }
@@ -428,6 +439,7 @@ impl Session {
             reference_context_item,
             offload_ever_used,
             window_id: window_id.unwrap_or(fallback_window_id),
+            active_remote_compaction_model,
         }
     }
 }

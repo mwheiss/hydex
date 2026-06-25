@@ -42,6 +42,7 @@ pub(crate) struct SessionState {
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
     pub(crate) remote_compaction_recovery_cache:
         HashMap<RemoteCompactionRecoveryCacheKey, RemoteCompactionRecoveryCacheEntry>,
+    active_remote_compaction_model: Option<String>,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
 }
@@ -63,6 +64,7 @@ impl SessionState {
             active_connector_selection: HashSet::new(),
             pending_session_start_sources: VecDeque::new(),
             remote_compaction_recovery_cache: HashMap::new(),
+            active_remote_compaction_model: None,
             granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,
         }
@@ -110,6 +112,15 @@ impl SessionState {
         self.history
             .set_reference_context_item(reference_context_item);
         self.auto_compact_window.clear_prefill();
+        self.active_remote_compaction_model = None;
+    }
+
+    pub(crate) fn set_active_remote_compaction_model(&mut self, model: Option<String>) {
+        self.active_remote_compaction_model = model;
+    }
+
+    pub(crate) fn active_remote_compaction_model(&self) -> Option<String> {
+        self.active_remote_compaction_model.clone()
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {

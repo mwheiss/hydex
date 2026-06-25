@@ -982,6 +982,10 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_item() {
     let mut expected = remote_history;
     expected.push(user_message("primary continuation"));
     assert_eq!(reconstructed.history, expected);
+    assert_eq!(
+        reconstructed.active_remote_compaction_model,
+        Some("gpt-5.4".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1021,6 +1025,7 @@ async fn reconstruct_history_promoted_local_branch_uses_latest_replacement_histo
     let mut expected = promoted_history;
     expected.push(user_message("local continuation"));
     assert_eq!(reconstructed.history, expected);
+    assert_eq!(reconstructed.active_remote_compaction_model, None);
     assert!(reconstructed.history.iter().all(|item| {
         !matches!(item, ResponseItem::Compaction { .. })
             && !matches!(
@@ -1031,6 +1036,33 @@ async fn reconstruct_history_promoted_local_branch_uses_latest_replacement_histo
                 }
             )
     }));
+}
+
+#[tokio::test]
+async fn record_initial_history_resumed_seeds_active_remote_compaction_model() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: String::new(),
+        replacement_history: Some(vec![ResponseItem::Compaction {
+            encrypted_content: "encrypted remote state".to_string(),
+            metadata: None,
+        }]),
+        remote_compaction_model: Some("gpt-producing".to_string()),
+        window_id: Some(1),
+    })];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: rollout_items,
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await;
+
+    assert_eq!(
+        session.active_remote_compaction_model().await,
+        Some("gpt-producing".to_string())
+    );
 }
 
 #[tokio::test]

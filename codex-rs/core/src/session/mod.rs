@@ -1329,6 +1329,7 @@ impl Session {
             reference_context_item,
             offload_ever_used,
             window_id,
+            active_remote_compaction_model,
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
@@ -1349,6 +1350,7 @@ impl Session {
         {
             let mut state = self.state.lock().await;
             state.replace_history(history, reference_context_item);
+            state.set_active_remote_compaction_model(active_remote_compaction_model);
             state.set_auto_compact_window_id(window_id);
             state.set_previous_turn_settings(previous_turn_settings.clone());
         }
@@ -2813,9 +2815,11 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
         compacted_item: CompactedItem,
     ) {
+        let remote_compaction_model = compacted_item.remote_compaction_model.clone();
         {
             let mut state = self.state.lock().await;
             state.replace_history(items, reference_context_item.clone());
+            state.set_active_remote_compaction_model(remote_compaction_model);
         }
 
         self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
@@ -2845,6 +2849,11 @@ impl Session {
     ) {
         let mut state = self.state.lock().await;
         state.remote_compaction_recovery_cache.insert(key, entry);
+    }
+
+    pub(crate) async fn active_remote_compaction_model(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.active_remote_compaction_model()
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {

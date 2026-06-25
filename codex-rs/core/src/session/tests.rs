@@ -8338,12 +8338,8 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
         window_id,
         CodexResponsesRequestKind::Turn,
     );
-    assert!(
-        session
-            .services
-            .model_client
-            .mark_offload_used_for_responses_request(&responses_metadata)
-    );
+    let client_session = session.services.model_client.new_session();
+    assert!(client_session.mark_offload_used_for_responses_request(&responses_metadata));
     session
         .persist_turn_context_item_and_set_reference_context_item(&turn_context)
         .await;

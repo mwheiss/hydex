@@ -90,6 +90,7 @@ use codex_features::Feature;
 use codex_git_utils::get_git_repo_root_with_fs;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -268,11 +269,7 @@ pub(crate) async fn run_turn(
             window_id,
             CodexResponsesRequestKind::Turn,
         );
-        if sess
-            .services
-            .model_client
-            .mark_offload_used_for_responses_request(&responses_metadata)
-        {
+        if client_session.mark_offload_used_for_responses_request(&responses_metadata) {
             sess.persist_turn_context_item_and_set_reference_context_item(turn_context.as_ref())
                 .await;
         }
@@ -940,7 +937,7 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
 ) -> CodexResult<bool> {
     let active_history = sess.clone_history().await.into_raw_items();
     if !remote_compaction_recovery_needed(
-        sess.services.model_client.local_offload_enabled_for_turns(),
+        client_session.local_offload_enabled_for_turns(),
         &active_history,
     ) {
         return Ok(false);
@@ -952,32 +949,54 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
         /*producing_model*/ None,
     );
     let cache_key = remote_compaction_recovery_cache_key(&active_history, &recovery_model)?;
-    let recovered_text =
-        if let Some(entry) = sess.remote_compaction_recovery_cache_get(&cache_key).await {
-            trace!(
-                recovery_model = recovery_model.as_str(),
-                recovered_text_hash = entry.recovered_text_hash.as_str(),
-                compaction_item_count = entry.compaction_item_count,
-                "using cached remote compaction recovery"
-            );
-            entry.recovered_text
-        } else {
-            let recovered_text = recover_remote_compaction_payload(
-                sess,
-                turn_context,
-                client_session,
-                &active_history,
-                /*producing_model*/ None,
-            )
-            .await?;
-            let cache_entry = remote_compaction_recovery_cache_entry(
-                recovered_text.clone(),
-                remote_compaction_item_count(&active_history),
-            );
-            sess.remote_compaction_recovery_cache_insert(cache_key, cache_entry)
-                .await;
-            recovered_text
+    let recovered_text = if let Some(entry) =
+        sess.remote_compaction_recovery_cache_get(&cache_key).await
+    {
+        trace!(
+            recovery_model = recovery_model.as_str(),
+            recovered_text_hash = entry.recovered_text_hash.as_str(),
+            compaction_item_count = entry.compaction_item_count,
+            "using cached remote compaction recovery"
+        );
+        entry.recovered_text
+    } else {
+        let recovered_text = match recover_remote_compaction_payload(
+            sess,
+            turn_context,
+            client_session,
+            &active_history,
+            /*producing_model*/ None,
+        )
+        .await
+        {
+            Ok(recovered_text) => recovered_text,
+            Err(err)
+                if matches!(
+                    sess.services.model_client.model_offload_runtime_override(),
+                    Some(ModelOffloadRuntimeOverride::ForceOn)
+                ) =>
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "Encrypted remote compaction could not be recovered for local continuation: {err}"
+                )));
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "remote compaction recovery failed; falling back to primary continuation for this turn"
+                );
+                client_session.force_primary_for_responses_requests();
+                return Ok(false);
+            }
         };
+        let cache_entry = remote_compaction_recovery_cache_entry(
+            recovered_text.clone(),
+            remote_compaction_item_count(&active_history),
+        );
+        sess.remote_compaction_recovery_cache_insert(cache_key, cache_entry)
+            .await;
+        recovered_text
+    };
     let promoted_history = project_recovered_remote_compaction(
         &active_history,
         recovered_text,
@@ -1006,7 +1025,7 @@ async fn maybe_compact_before_local_sampling(
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
 ) -> CodexResult<bool> {
-    if !sess.services.model_client.local_offload_enabled_for_turns()
+    if !client_session.local_offload_enabled_for_turns()
         || turn_context
             .config
             .model_offload

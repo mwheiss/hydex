@@ -899,7 +899,11 @@ fn no_offload_config_preserves_primary_turn_routing() {
             .route_for_responses_request(&responses_metadata)
             .is_local_offload()
     );
-    assert!(!client.mark_offload_used_for_responses_request(&responses_metadata));
+    assert!(
+        !client
+            .new_session()
+            .mark_offload_used_for_responses_request(&responses_metadata)
+    );
     assert!(!client.offload_ever_used());
 }
 
@@ -925,7 +929,11 @@ fn internal_and_subagent_sources_stay_primary_with_offload_configured() {
                 .is_local_offload(),
             "expected {session_source:?} to stay on the primary route",
         );
-        assert!(!client.mark_offload_used_for_responses_request(&responses_metadata));
+        assert!(
+            !client
+                .new_session()
+                .mark_offload_used_for_responses_request(&responses_metadata)
+        );
         assert!(!client.offload_ever_used());
     }
 }
@@ -1115,6 +1123,60 @@ async fn local_turn_uses_offload_model() {
         request_model_for_metadata(&client, &responses_metadata).await,
         "local-responses-model"
     );
+}
+
+#[test]
+fn turn_session_force_primary_disables_local_offload_for_turn_only() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    let client_session = client.new_session();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(client_session.local_offload_enabled_for_turns());
+    assert!(
+        client_session
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+
+    client_session.force_primary_for_responses_requests();
+
+    assert!(!client_session.local_offload_enabled_for_turns());
+    assert!(
+        !client_session
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert!(client.local_offload_enabled_for_turns());
+}
+
+#[test]
+fn turn_session_force_primary_does_not_mark_offload_used() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    let client_session = client.new_session();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    client_session.force_primary_for_responses_requests();
+
+    assert!(!client_session.mark_offload_used_for_responses_request(&responses_metadata));
+    assert!(!client.offload_ever_used());
 }
 
 #[tokio::test]

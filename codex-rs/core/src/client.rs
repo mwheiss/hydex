@@ -302,6 +302,7 @@ fn decode_offload_runtime_override(value: u8) -> Option<ModelOffloadRuntimeOverr
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    force_primary_for_responses_requests: Arc<AtomicBool>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -505,6 +506,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            force_primary_for_responses_requests: Arc::new(AtomicBool::new(false)),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -556,14 +558,6 @@ impl ModelClient {
         if offload_ever_used {
             self.state.offload_ever_used.store(true, Ordering::Relaxed);
         }
-    }
-
-    pub(crate) fn mark_offload_used_for_responses_request(
-        &self,
-        responses_metadata: &CodexResponsesMetadata,
-    ) -> bool {
-        let route = self.route_for_responses_request(responses_metadata);
-        route.is_local_offload() && !self.state.offload_ever_used.swap(true, Ordering::Relaxed)
     }
 
     fn take_cached_websocket_session(&self) -> WebsocketSession {
@@ -1208,11 +1202,49 @@ impl ModelClientSession {
         Arc::clone(&self.turn_state)
     }
 
+    pub(crate) fn force_primary_for_responses_requests(&self) {
+        self.force_primary_for_responses_requests
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
+        !self
+            .force_primary_for_responses_requests
+            .load(Ordering::Relaxed)
+            && self.client.local_offload_enabled_for_turns()
+    }
+
+    pub(crate) fn mark_offload_used_for_responses_request(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        let route = self.route_for_responses_request(responses_metadata);
+        route.is_local_offload()
+            && !self
+                .client
+                .state
+                .offload_ever_used
+                .swap(true, Ordering::Relaxed)
+    }
+
+    fn route_for_responses_request(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> ModelRequestRoute {
+        if self
+            .force_primary_for_responses_requests
+            .load(Ordering::Relaxed)
+        {
+            return ModelRequestRoute::Primary;
+        }
+        self.client.route_for_responses_request(responses_metadata)
+    }
+
     pub(crate) fn stream_max_retries_for(
         &self,
         responses_metadata: &CodexResponsesMetadata,
     ) -> u64 {
-        match self.client.route_for_responses_request(responses_metadata) {
+        match self.route_for_responses_request(responses_metadata) {
             ModelRequestRoute::Primary => self.client.state.provider.info().stream_max_retries(),
             ModelRequestRoute::LocalOffload => {
                 self.client.state.offload_provider.as_ref().map_or_else(
@@ -1507,7 +1539,7 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let route = self.client.route_for_responses_request(responses_metadata);
+        let route = self.route_for_responses_request(responses_metadata);
         self.client.mark_offload_used_if_local_route(route);
         let auth_manager = if route.is_local_offload() {
             None
@@ -1901,7 +1933,7 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let route = self.client.route_for_responses_request(responses_metadata);
+        let route = self.route_for_responses_request(responses_metadata);
         let provider = if route.is_local_offload() {
             self.client
                 .state

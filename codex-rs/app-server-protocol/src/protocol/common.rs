@@ -3468,6 +3468,7 @@ mod tests {
                     effort: None,
                     summary: None,
                     model_offload_override: None,
+                    model_offload_compaction_override: None,
                     collaboration_mode: codex_protocol::config_types::CollaborationMode {
                         mode: codex_protocol::config_types::ModeKind::Default,
                         settings: codex_protocol::config_types::Settings {

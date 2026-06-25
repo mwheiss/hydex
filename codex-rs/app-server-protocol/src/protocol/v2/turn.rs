@@ -4,6 +4,7 @@ use super::SandboxPolicy;
 use super::Turn;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -130,6 +131,17 @@ pub struct TurnStartParams {
     )]
     #[ts(optional = nullable)]
     pub model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+    /// Runtime override for Hydex compaction routing for this turn and
+    /// subsequent turns. Omission leaves the current setting unchanged; null
+    /// clears the override and follows config.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub model_offload_compaction_override: Option<Option<ModelOffloadCompactionRuntimeOverride>>,
     /// Override the service tier for this turn and subsequent turns.
     #[serde(
         default,

@@ -14,6 +14,7 @@ use codex_experimental_api_macros::ExperimentalApi;
 pub use codex_protocol::capabilities::CapabilityRootLocation;
 pub use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -218,6 +219,16 @@ pub struct ThreadSettingsUpdateParams {
     )]
     #[ts(optional = nullable)]
     pub model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+    /// Runtime override for Hydex compaction routing. Omission leaves the
+    /// current setting unchanged; null clears the override and follows config.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub model_offload_compaction_override: Option<Option<ModelOffloadCompactionRuntimeOverride>>,
     /// Override the service tier for subsequent turns. `null` clears the
     /// current service tier; omission leaves it unchanged.
     #[serde(
@@ -266,6 +277,7 @@ pub struct ThreadSettings {
     pub effort: Option<ReasoningEffort>,
     pub summary: Option<ReasoningSummary>,
     pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
+    pub model_offload_compaction_override: Option<ModelOffloadCompactionRuntimeOverride>,
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,
 }

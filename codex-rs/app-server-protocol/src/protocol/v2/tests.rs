@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -3640,6 +3641,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         permissions: None,
         model: None,
         model_offload_override: None,
+        model_offload_compaction_override: None,
         service_tier: None,
         effort: None,
         summary: None,
@@ -3690,6 +3692,46 @@ fn turn_start_params_preserve_model_offload_override_states() {
     }))
     .expect("params should deserialize");
     assert_eq!(omitted.model_offload_override, None);
+}
+
+#[test]
+fn turn_start_params_preserve_model_offload_compaction_override_states() {
+    let local: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "modelOffloadCompactionOverride": "local"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        local.model_offload_compaction_override,
+        Some(Some(ModelOffloadCompactionRuntimeOverride::Local))
+    );
+
+    let primary: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "modelOffloadCompactionOverride": "primary"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        primary.model_offload_compaction_override,
+        Some(Some(ModelOffloadCompactionRuntimeOverride::Primary))
+    );
+
+    let clear: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "modelOffloadCompactionOverride": null
+    }))
+    .expect("params should deserialize");
+    assert_eq!(clear.model_offload_compaction_override, Some(None));
+
+    let omitted: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": []
+    }))
+    .expect("params should deserialize");
+    assert_eq!(omitted.model_offload_compaction_override, None);
 }
 
 #[test]
@@ -3749,12 +3791,55 @@ fn thread_settings_update_params_preserve_model_offload_override_states() {
     let omitted = ThreadSettingsUpdateParams {
         thread_id: "thread_123".to_string(),
         model_offload_override: None,
+        model_offload_compaction_override: None,
         ..Default::default()
     };
     let serialized_without_override =
         serde_json::to_value(&omitted).expect("params should serialize");
     assert_eq!(
         serialized_without_override.get("modelOffloadOverride"),
+        None
+    );
+}
+
+#[test]
+fn thread_settings_update_params_preserve_model_offload_compaction_override_states() {
+    let local: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "modelOffloadCompactionOverride": "local"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        local.model_offload_compaction_override,
+        Some(Some(ModelOffloadCompactionRuntimeOverride::Local))
+    );
+
+    let primary: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "modelOffloadCompactionOverride": "primary"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        primary.model_offload_compaction_override,
+        Some(Some(ModelOffloadCompactionRuntimeOverride::Primary))
+    );
+
+    let clear: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "modelOffloadCompactionOverride": null
+    }))
+    .expect("params should deserialize");
+    assert_eq!(clear.model_offload_compaction_override, Some(None));
+
+    let omitted = ThreadSettingsUpdateParams {
+        thread_id: "thread_123".to_string(),
+        model_offload_compaction_override: None,
+        ..Default::default()
+    };
+    let serialized_without_override =
+        serde_json::to_value(&omitted).expect("params should serialize");
+    assert_eq!(
+        serialized_without_override.get("modelOffloadCompactionOverride"),
         None
     );
 }

@@ -58,6 +58,8 @@ struct ThreadSettingsBuildParams {
     model: Option<String>,
     model_offload_override:
         Option<Option<codex_protocol::config_types::ModelOffloadRuntimeOverride>>,
+    model_offload_compaction_override:
+        Option<Option<codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride>>,
     service_tier: Option<Option<String>>,
     effort: Option<ReasoningEffort>,
     summary: Option<ReasoningSummary>,
@@ -442,6 +444,7 @@ impl TurnRequestProcessor {
                     permissions: params.permissions,
                     model: params.model,
                     model_offload_override: params.model_offload_override,
+                    model_offload_compaction_override: params.model_offload_compaction_override,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,
@@ -549,6 +552,7 @@ impl TurnRequestProcessor {
             permissions,
             model,
             model_offload_override,
+            model_offload_compaction_override,
             service_tier,
             effort,
             summary,
@@ -583,6 +587,7 @@ impl TurnRequestProcessor {
             || permissions.is_some()
             || model.is_some()
             || model_offload_override.is_some()
+            || model_offload_compaction_override.is_some()
             || service_tier.is_some()
             || effort.is_some()
             || summary.is_some()
@@ -660,7 +665,7 @@ impl TurnRequestProcessor {
                     windows_sandbox_level: None,
                     model: model.clone(),
                     model_offload_override,
-                    model_offload_compaction_override: None,
+                    model_offload_compaction_override,
                     effort: effort.clone(),
                     summary,
                     service_tier: service_tier.clone(),
@@ -685,7 +690,7 @@ impl TurnRequestProcessor {
             windows_sandbox_level: None,
             model,
             model_offload_override,
-            model_offload_compaction_override: None,
+            model_offload_compaction_override,
             effort,
             summary,
             service_tier,
@@ -717,6 +722,7 @@ impl TurnRequestProcessor {
                     permissions: params.permissions,
                     model: params.model,
                     model_offload_override: params.model_offload_override,
+                    model_offload_compaction_override: params.model_offload_compaction_override,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,

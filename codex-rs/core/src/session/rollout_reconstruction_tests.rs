@@ -956,6 +956,84 @@ async fn record_initial_history_resumed_does_not_seed_reference_context_item_aft
 }
 
 #[tokio::test]
+async fn reconstruct_history_primary_branch_keeps_remote_compaction_item() {
+    let (session, turn_context) = make_session_and_context().await;
+    let remote_history = vec![
+        user_message("retained user"),
+        ResponseItem::Compaction {
+            encrypted_content: "encrypted remote state".to_string(),
+            metadata: None,
+        },
+    ];
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(remote_history.clone()),
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::ResponseItem(user_message("primary continuation")),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    let mut expected = remote_history;
+    expected.push(user_message("primary continuation"));
+    assert_eq!(reconstructed.history, expected);
+}
+
+#[tokio::test]
+async fn reconstruct_history_promoted_local_branch_uses_latest_replacement_history() {
+    let (session, turn_context) = make_session_and_context().await;
+    let remote_history = vec![
+        user_message("retained user"),
+        ResponseItem::Compaction {
+            encrypted_content: "encrypted remote state".to_string(),
+            metadata: None,
+        },
+    ];
+    let promoted_history = vec![
+        user_message("retained user"),
+        assistant_message("recovered compacted state"),
+    ];
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(remote_history),
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(promoted_history.clone()),
+            remote_compaction_model: None,
+            window_id: Some(2),
+        }),
+        RolloutItem::ResponseItem(user_message("local continuation")),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    let mut expected = promoted_history;
+    expected.push(user_message("local continuation"));
+    assert_eq!(reconstructed.history, expected);
+    assert!(reconstructed.history.iter().all(|item| {
+        !matches!(item, ResponseItem::Compaction { .. })
+            && !matches!(
+                item,
+                ResponseItem::ContextCompaction {
+                    encrypted_content: Some(_),
+                    ..
+                }
+            )
+    }));
+}
+
+#[tokio::test]
 async fn reconstruct_history_legacy_compaction_without_replacement_history_does_not_inject_current_initial_context()
  {
     let (session, turn_context) = make_session_and_context().await;

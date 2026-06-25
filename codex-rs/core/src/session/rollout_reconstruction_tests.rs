@@ -1034,6 +1034,151 @@ async fn reconstruct_history_promoted_local_branch_uses_latest_replacement_histo
 }
 
 #[tokio::test]
+async fn retro_local_reconstruction_rebuilds_readable_prefix_and_suffix() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let remote_history = vec![
+        user_message("retained user"),
+        ResponseItem::Compaction {
+            encrypted_content: "encrypted remote state".to_string(),
+            metadata: None,
+        },
+    ];
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(user_message("source user")),
+        RolloutItem::ResponseItem(assistant_message("source assistant")),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(remote_history),
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::ResponseItem(user_message("suffix user")),
+    ];
+
+    let reconstructed = rollout_reconstruction::reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+    )
+    .expect("retro-local reconstruction");
+
+    assert_eq!(
+        reconstructed,
+        vec![
+            user_message("source user"),
+            assistant_message("source assistant"),
+            user_message("suffix user"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_replays_suffix_rollback() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(user_message("source user")),
+        RolloutItem::ResponseItem(assistant_message("source assistant")),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(remote_history),
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::ResponseItem(user_message("suffix user 1")),
+        RolloutItem::ResponseItem(assistant_message("suffix assistant 1")),
+        RolloutItem::ResponseItem(user_message("suffix user 2")),
+        RolloutItem::ResponseItem(assistant_message("suffix assistant 2")),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = rollout_reconstruction::reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+    )
+    .expect("retro-local reconstruction");
+
+    assert_eq!(
+        reconstructed,
+        vec![
+            user_message("source user"),
+            assistant_message("source assistant"),
+            user_message("suffix user 1"),
+            assistant_message("suffix assistant 1"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_fails_when_prefix_still_contains_encrypted_compaction() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let old_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "old encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let new_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "new encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(old_remote_history),
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(new_remote_history),
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: Some(2),
+        }),
+    ];
+
+    let err = rollout_reconstruction::reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+    )
+    .expect_err("older encrypted prefix should fail closed");
+
+    assert!(
+        err.to_string()
+            .contains("source history still contains encrypted remote compaction"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_requires_remote_checkpoint_replacement_history() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(user_message("source user")),
+        RolloutItem::Compacted(CompactedItem {
+            message: "legacy summary".to_string(),
+            replacement_history: None,
+            remote_compaction_model: None,
+            window_id: Some(1),
+        }),
+    ];
+
+    let err = rollout_reconstruction::reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+    )
+    .expect_err("missing remote checkpoint should fail");
+
+    assert!(
+        err.to_string()
+            .contains("no remote compaction checkpoint with replacement history"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn reconstruct_history_legacy_compaction_without_replacement_history_does_not_inject_current_initial_context()
  {
     let (session, turn_context) = make_session_and_context().await;

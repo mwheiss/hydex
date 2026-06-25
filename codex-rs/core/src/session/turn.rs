@@ -976,17 +976,36 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
                     Some(ModelOffloadRuntimeOverride::ForceOn)
                 ) =>
             {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "Encrypted remote compaction could not be recovered for local continuation: {err}"
-                )));
-            }
-            Err(err) => {
+                if let Err(retro_err) =
+                    promote_retro_local_history_before_local_sampling(sess, turn_context).await
+                {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "Encrypted remote compaction could not be recovered for local continuation: {err}; retro-local fallback also failed: {retro_err}"
+                    )));
+                }
                 warn!(
                     error = %err,
-                    "remote compaction recovery failed; falling back to primary continuation for this turn"
+                    "remote compaction recovery failed; promoted retro-local fallback history for forced local continuation"
                 );
-                client_session.force_primary_for_responses_requests();
-                return Ok(false);
+                return Ok(true);
+            }
+            Err(err) => {
+                if let Err(retro_err) =
+                    promote_retro_local_history_before_local_sampling(sess, turn_context).await
+                {
+                    warn!(
+                        recovery_error = %err,
+                        retro_local_error = %retro_err,
+                        "remote compaction recovery and retro-local fallback failed; falling back to primary continuation for this turn"
+                    );
+                    client_session.force_primary_for_responses_requests();
+                    return Ok(false);
+                }
+                warn!(
+                    error = %err,
+                    "remote compaction recovery failed; promoted retro-local fallback history"
+                );
+                return Ok(true);
             }
         };
         let cache_entry = remote_compaction_recovery_cache_entry(
@@ -1017,6 +1036,29 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
         .await;
     sess.recompute_token_usage(turn_context).await;
     Ok(true)
+}
+
+async fn promote_retro_local_history_before_local_sampling(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+) -> CodexResult<()> {
+    // Install only the reconstructed readable branch state here. The caller immediately runs the
+    // local context-window preflight, which performs local compaction if the readable state is too
+    // large for the configured local model.
+    let retro_local_history = sess
+        .reconstruct_retro_local_history_from_persisted_rollout(turn_context)
+        .await?;
+    let new_window_id = sess.advance_auto_compact_window_id().await;
+    let compacted_item = CompactedItem {
+        message: String::new(),
+        replacement_history: Some(retro_local_history.clone()),
+        remote_compaction_model: None,
+        window_id: Some(new_window_id),
+    };
+    sess.replace_compacted_history(retro_local_history, None, compacted_item)
+        .await;
+    sess.recompute_token_usage(turn_context).await;
+    Ok(())
 }
 
 #[instrument(level = "trace", skip_all)]

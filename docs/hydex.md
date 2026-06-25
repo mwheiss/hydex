@@ -247,13 +247,17 @@ in the promoted replacement history, not in a side cache. In
 message before the next user turn. In `user_handoff` mode, recovered text is
 wrapped as a concise user handoff message.
 
-If recovery fails and a local route was explicitly forced, Hydex surfaces a
-clear error because the local model cannot consume the encrypted remote
-compaction item. In automatic/configured local mode, Hydex may degrade the
-current turn back to primary continuation and logs that fallback. A future
-retro-local rescue path may reconstruct pre-compaction cleartext history from
-rollout/provenance and compact locally, but that fallback is intentionally
-deferred.
+If primary-provider recovery fails, Hydex attempts a retro-local fallback before
+giving up on local continuation. The fallback reloads persisted rollout history,
+finds the newest active replacement-history checkpoint that contains encrypted
+remote compaction, reconstructs the readable source history before that
+checkpoint, appends later readable suffix items, and promotes the result as a
+new local-readable `replacement_history` checkpoint. If an older encrypted
+remote compaction remains in the reconstructed prefix or suffix, Hydex fails
+closed rather than guessing. Explicitly forced local continuation surfaces a
+clear error when both primary-provider recovery and retro-local reconstruction
+fail. In automatic/configured local mode, Hydex may still degrade the current
+turn back to primary continuation and logs that degraded fallback.
 
 When switching a large primary/offload-off session back into local mode, Hydex
 checks local context thresholds before sending the first local sampling request.

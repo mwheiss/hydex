@@ -1,4 +1,5 @@
 use super::*;
+use crate::compaction_recovery::active_history_has_remote_compaction;
 use crate::context_manager::is_user_turn_boundary;
 
 // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
@@ -36,6 +37,12 @@ struct ActiveReplaySegment<'a> {
     reference_context_item: TurnReferenceContextItem,
     base_replacement_history: Option<&'a [ResponseItem]>,
     window_id: Option<u64>,
+}
+
+#[derive(Debug)]
+struct MaterializedRolloutHistory {
+    history: Vec<ResponseItem>,
+    saw_legacy_compaction_without_replacement_history: bool,
 }
 
 fn turn_ids_are_compatible(active_turn_id: Option<&str>, item_turn_id: Option<&str>) -> bool {
@@ -91,7 +98,138 @@ fn finalize_active_segment<'a>(
     }
 }
 
+fn materialize_rollout_items(
+    turn_context: &TurnContext,
+    initial_history: Vec<ResponseItem>,
+    rollout_items: &[RolloutItem],
+) -> MaterializedRolloutHistory {
+    let mut history = ContextManager::new();
+    history.replace(initial_history);
+    let mut saw_legacy_compaction_without_replacement_history = false;
+
+    for item in rollout_items {
+        match item {
+            RolloutItem::ResponseItem(response_item) => {
+                history.record_items(
+                    std::iter::once(response_item),
+                    turn_context.model_info.truncation_policy.into(),
+                );
+            }
+            RolloutItem::InterAgentCommunication(communication) => {
+                let response_item = communication.to_model_input_item();
+                history.record_items(
+                    std::iter::once(&response_item),
+                    turn_context.model_info.truncation_policy.into(),
+                );
+            }
+            RolloutItem::Compacted(compacted) => {
+                if let Some(replacement_history) = &compacted.replacement_history {
+                    history.replace(replacement_history.clone());
+                } else {
+                    saw_legacy_compaction_without_replacement_history = true;
+                    let user_messages = compact::collect_user_messages(history.raw_items());
+                    let rebuilt = compact::build_compacted_history(
+                        Vec::new(),
+                        &user_messages,
+                        &compacted.message,
+                    );
+                    history.replace(rebuilt);
+                }
+            }
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+                history.drop_last_n_user_turns(rollback.num_turns);
+            }
+            RolloutItem::EventMsg(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::SessionMeta(_) => {}
+        }
+    }
+
+    MaterializedRolloutHistory {
+        history: history.raw_items().to_vec(),
+        saw_legacy_compaction_without_replacement_history,
+    }
+}
+
+pub(super) fn reconstruct_retro_local_history_from_rollout(
+    turn_context: &TurnContext,
+    rollout_items: &[RolloutItem],
+) -> CodexResult<Vec<ResponseItem>> {
+    let Some(remote_checkpoint_index) =
+        rollout_items
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, item)| match item {
+                RolloutItem::Compacted(compacted)
+                    if compacted
+                        .replacement_history
+                        .as_deref()
+                        .is_some_and(active_history_has_remote_compaction) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+    else {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: no remote compaction checkpoint with replacement history is available."
+                .to_string(),
+        ));
+    };
+
+    let prefix = materialize_rollout_items(
+        turn_context,
+        Vec::new(),
+        &rollout_items[..remote_checkpoint_index],
+    );
+    if active_history_has_remote_compaction(&prefix.history) {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: readable source history still contains encrypted remote compaction before the selected checkpoint."
+                .to_string(),
+        ));
+    }
+
+    let reconstructed = materialize_rollout_items(
+        turn_context,
+        prefix.history,
+        &rollout_items[remote_checkpoint_index + 1..],
+    )
+    .history;
+    if active_history_has_remote_compaction(&reconstructed) {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: reconstructed suffix still contains encrypted remote compaction."
+                .to_string(),
+        ));
+    }
+
+    Ok(reconstructed)
+}
+
 impl Session {
+    pub(crate) async fn reconstruct_retro_local_history_from_persisted_rollout(
+        &self,
+        turn_context: &TurnContext,
+    ) -> CodexResult<Vec<ResponseItem>> {
+        let Some(live_thread) = self.live_thread() else {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot run retro-local fallback: persisted thread history is unavailable."
+                    .to_string(),
+            ));
+        };
+        live_thread.flush().await.map_err(|err| {
+            CodexErr::InvalidRequest(format!(
+                "Cannot run retro-local fallback: failed to flush persisted thread history: {err}"
+            ))
+        })?;
+        let history = live_thread.load_history(/*include_archived*/ true).await.map_err(|err| {
+            CodexErr::InvalidRequest(format!(
+                "Cannot run retro-local fallback: failed to load persisted thread history: {err}"
+            ))
+        })?;
+        reconstruct_retro_local_history_from_rollout(turn_context, &history.items)
+    }
+
     pub(super) async fn reconstruct_history_from_rollout(
         &self,
         turn_context: &TurnContext,
@@ -261,61 +399,12 @@ impl Session {
         )
         .unwrap_or(u64::MAX);
 
-        let mut history = ContextManager::new();
-        let mut saw_legacy_compaction_without_replacement_history = false;
-        if let Some(base_replacement_history) = base_replacement_history {
-            history.replace(base_replacement_history.to_vec());
-        }
-        // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
-        // design should keep this same replay shape, but drive it from a resumable reverse source
-        // instead of an eagerly loaded `&[RolloutItem]`.
-        for item in rollout_suffix {
-            match item {
-                RolloutItem::ResponseItem(response_item) => {
-                    history.record_items(
-                        std::iter::once(response_item),
-                        turn_context.model_info.truncation_policy.into(),
-                    );
-                }
-                RolloutItem::InterAgentCommunication(communication) => {
-                    let response_item = communication.to_model_input_item();
-                    history.record_items(
-                        std::iter::once(&response_item),
-                        turn_context.model_info.truncation_policy.into(),
-                    );
-                }
-                RolloutItem::Compacted(compacted) => {
-                    if let Some(replacement_history) = &compacted.replacement_history {
-                        // This should actually never happen, because the reverse loop above (to build rollout_suffix)
-                        // should stop before any compaction that has Some replacement_history
-                        history.replace(replacement_history.clone());
-                    } else {
-                        saw_legacy_compaction_without_replacement_history = true;
-                        // Legacy rollouts without `replacement_history` should rebuild the
-                        // historical TurnContext at the correct insertion point from persisted
-                        // `TurnContextItem`s. These are rare enough that we currently just clear
-                        // `reference_context_item`, reinject canonical context at the end of the
-                        // resumed conversation, and accept the temporary out-of-distribution
-                        // prompt shape.
-                        // TODO(ccunningham): if we drop support for None replacement_history compaction items,
-                        // we can get rid of this second loop entirely and just build `history` directly in the first loop.
-                        let user_messages = compact::collect_user_messages(history.raw_items());
-                        let rebuilt = compact::build_compacted_history(
-                            Vec::new(),
-                            &user_messages,
-                            &compacted.message,
-                        );
-                        history.replace(rebuilt);
-                    }
-                }
-                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
-                    history.drop_last_n_user_turns(rollback.num_turns);
-                }
-                RolloutItem::EventMsg(_)
-                | RolloutItem::TurnContext(_)
-                | RolloutItem::SessionMeta(_) => {}
-            }
-        }
+        let initial_history = base_replacement_history
+            .map(<[ResponseItem]>::to_vec)
+            .unwrap_or_default();
+        let materialized = materialize_rollout_items(turn_context, initial_history, rollout_suffix);
+        let saw_legacy_compaction_without_replacement_history =
+            materialized.saw_legacy_compaction_without_replacement_history;
 
         let reference_context_item = match reference_context_item {
             TurnReferenceContextItem::NeverSet | TurnReferenceContextItem::Cleared => None,
@@ -334,7 +423,7 @@ impl Session {
                 .is_some_and(|context_item| context_item.offload_ever_used);
 
         RolloutReconstruction {
-            history: history.raw_items().to_vec(),
+            history: materialized.history,
             previous_turn_settings,
             reference_context_item,
             offload_ever_used,

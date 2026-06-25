@@ -209,15 +209,29 @@ These are the specific implementation-plan changes from the design docs.
      model call and summary prompt, but stores the resulting summary as
      structured assistant history in replacement history.
 
+18. Retro-local fallback was implemented for recovery failure.
+   - If primary-provider encrypted compaction recovery fails, Hydex reloads the
+     persisted rollout, reconstructs readable source history before the newest
+     active encrypted remote-compaction checkpoint, replays later readable suffix
+     items, and promotes that readable branch through
+     `CompactedItem.replacement_history`.
+   - The fallback fails closed if an older encrypted remote compaction remains
+     active in the reconstructed prefix or suffix.
+   - Forced local mode errors clearly only after both primary-provider recovery
+     and retro-local fallback fail.
+   - Automatic/configured local mode still degrades to primary continuation if
+     neither recovery path can produce local-readable history.
+
 ## Remaining gaps or follow-ups
 
 - Upstream-inherited caveat: pre-turn compaction still runs before incoming
   user/context items are recorded, so that initial check excludes new turn
   input. Hydex now adds a local re-entry sampling-boundary check, but the
   broader upstream pre-turn estimate gap remains.
-- Deferred retro-local fallback: if OpenAI recovery fails, a future rescue path
-  may reconstruct readable pre-compaction source history from rollout/provenance,
-  append later readable turns, and run local compaction/projection.
+- Retro-local fallback currently reconstructs and promotes readable branch state;
+  follow-on local compaction is still handled by the existing local sampling
+  boundary/context-window preflight instead of a separate always-compact rescue
+  request.
 - No current documentation-only gap is known. The original outer Hydex planning
   skeleton has been consolidated into the actual Codex checkout as
   `docs/hydex.md`; stale planning-only module and test skeletons were not copied

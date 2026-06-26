@@ -989,6 +989,75 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_item() {
 }
 
 #[tokio::test]
+async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
+    let (session, turn_context) = make_session_and_context().await;
+    let old_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "old encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let new_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "new encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let rolled_back_turn_id = "rolled-back-turn".to_string();
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(old_remote_history.clone()),
+            remote_compaction_model: Some("gpt-old".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: rolled_back_turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "new turn".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(new_remote_history),
+            remote_compaction_model: Some("gpt-new".to_string()),
+            window_id: Some(2),
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id: rolled_back_turn_id,
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, old_remote_history);
+    assert_eq!(
+        reconstructed.active_remote_compaction_model,
+        Some("gpt-old".to_string())
+    );
+}
+
+#[tokio::test]
 async fn reconstruct_history_promoted_local_branch_uses_latest_replacement_history() {
     let (session, turn_context) = make_session_and_context().await;
     let remote_history = vec![
@@ -1141,6 +1210,81 @@ async fn retro_local_reconstruction_replays_suffix_rollback() {
             assistant_message("source assistant"),
             user_message("suffix user 1"),
             assistant_message("suffix assistant 1"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollback() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let old_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "old encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let new_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "new encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let rolled_back_turn_id = "rolled-back-turn".to_string();
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(user_message("source user")),
+        RolloutItem::ResponseItem(assistant_message("source assistant")),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(old_remote_history),
+            remote_compaction_model: Some("gpt-old".to_string()),
+            window_id: Some(1),
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: rolled_back_turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "new turn".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(new_remote_history),
+            remote_compaction_model: Some("gpt-new".to_string()),
+            window_id: Some(2),
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id: rolled_back_turn_id,
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = rollout_reconstruction::reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+    )
+    .expect("retro-local reconstruction should select surviving checkpoint");
+
+    assert_eq!(
+        reconstructed,
+        vec![
+            user_message("source user"),
+            assistant_message("source assistant")
         ]
     );
 }

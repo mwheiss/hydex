@@ -247,13 +247,52 @@ pub(crate) async fn run_turn(
                 .await;
             return None;
         }
-        if let Err(err) =
-            maybe_compact_before_local_sampling(&sess, &turn_context, &mut client_session).await
-        {
-            let error = err.to_codex_protocol_error();
-            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                .await;
-            return None;
+        let compacted_before_local_sampling =
+            match maybe_compact_before_local_sampling(&sess, &turn_context, &mut client_session)
+                .await
+            {
+                Ok(compacted) => compacted,
+                Err(err) => {
+                    let error = err.to_codex_protocol_error();
+                    sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                        .await;
+                    return None;
+                }
+            };
+        if compacted_before_local_sampling {
+            let recovered_after_compaction =
+                match maybe_recover_remote_compaction_before_local_sampling(
+                    &sess,
+                    &turn_context,
+                    &mut client_session,
+                )
+                .await
+                {
+                    Ok(recovered) => recovered,
+                    Err(err) => {
+                        let error = err.to_codex_protocol_error();
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                            .await;
+                        return None;
+                    }
+                };
+            if recovered_after_compaction
+                && let Err(err) =
+                    ensure_local_effective_context_after_remote_reentry(&sess, &turn_context).await
+            {
+                let error = err.to_codex_protocol_error();
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                    .await;
+                return None;
+            }
+            if let Err(err) =
+                ensure_no_remote_compaction_for_local_sampling(&sess, &client_session).await
+            {
+                let error = err.to_codex_protocol_error();
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                    .await;
+                return None;
+            }
         }
         let sampling_request_input: Vec<ResponseItem> = async {
             sess.clone_history()
@@ -1037,6 +1076,23 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
         .await;
     sess.recompute_token_usage(turn_context).await;
     Ok(true)
+}
+
+async fn ensure_no_remote_compaction_for_local_sampling(
+    sess: &Arc<Session>,
+    client_session: &ModelClientSession,
+) -> CodexResult<()> {
+    let active_history = sess.clone_history().await.into_raw_items();
+    if remote_compaction_recovery_needed(
+        client_session.local_offload_enabled_for_turns(),
+        &active_history,
+    ) {
+        return Err(CodexErr::InvalidRequest(
+            "Encrypted remote compaction remains active after local recovery preflight; refusing to send unreadable state to local model."
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn promote_retro_local_history_before_local_sampling(

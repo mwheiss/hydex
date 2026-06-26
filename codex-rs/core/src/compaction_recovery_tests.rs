@@ -1,4 +1,5 @@
 use super::*;
+use codex_api::ResponsesApiRequest;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use pretty_assertions::assert_eq;
 
@@ -226,4 +227,89 @@ fn local_route_without_encrypted_compaction_does_not_need_remote_compaction_reco
     let history = vec![user_text("ordinary history")];
 
     assert!(!remote_compaction_recovery_needed(true, &history));
+}
+
+#[test]
+fn local_route_recovers_new_remote_compaction_after_reentry_compaction() {
+    let initial_remote_history = vec![ResponseItem::Compaction {
+        encrypted_content: "old encrypted remote state".to_string(),
+        metadata: None,
+    }];
+    let promoted_history = project_recovered_remote_compaction(
+        &initial_remote_history,
+        "old recovered state".to_string(),
+        ModelOffloadCompactionRecoveryProjection::AssistantState,
+    )
+    .expect("initial projection");
+    let reentry_remote_history = vec![
+        promoted_history[0].clone(),
+        ResponseItem::Compaction {
+            encrypted_content: "new encrypted remote state".to_string(),
+            metadata: None,
+        },
+    ];
+
+    assert!(remote_compaction_recovery_needed(
+        true,
+        &reentry_remote_history
+    ));
+
+    let final_history = project_recovered_remote_compaction(
+        &reentry_remote_history,
+        "new recovered state".to_string(),
+        ModelOffloadCompactionRecoveryProjection::AssistantState,
+    )
+    .expect("second projection");
+
+    assert_eq!(
+        final_history,
+        vec![
+            assistant_text("old recovered state"),
+            assistant_text("new recovered state"),
+        ]
+    );
+    assert!(!remote_compaction_recovery_needed(true, &final_history));
+}
+
+#[test]
+fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
+    let projected = project_recovered_remote_compaction(
+        &[
+            ResponseItem::Compaction {
+                encrypted_content: "encrypted".to_string(),
+                metadata: None,
+            },
+            user_text("next user"),
+        ],
+        "recovered compacted state".to_string(),
+        ModelOffloadCompactionRecoveryProjection::AssistantState,
+    )
+    .expect("projected history");
+    let mut request = ResponsesApiRequest {
+        model: "local-model".to_string(),
+        instructions: String::new(),
+        input: projected,
+        tools: Vec::new(),
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: Vec::new(),
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    crate::local_offload::transform_request_for_local_offload(&mut request, &[])
+        .expect("local request transform");
+
+    assert_eq!(
+        request.input,
+        vec![
+            assistant_text("recovered compacted state"),
+            user_text("next user"),
+        ]
+    );
 }

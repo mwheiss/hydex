@@ -155,7 +155,16 @@ Do not summarize, do not infer additional information. Output as verbatim as pos
 </HYDEX_PAYLOAD_DUMP_PROBE>
 "#;
 
-const VERBATIM_SIMPLE_PROMPT: &str = r#"Output the compacted context payload exactly as you see it. You do not need to reconstruct the pre-compaction context. Do not summarize, do not infer additional information. Output as verbatim as possible."#;
+// const VERBATIM_SIMPLE_PROMPT: &str = r#"Do not add anything before or after the payload. Preserve the payload exactly."#;
+
+// 18/20:
+const VERBATIM_SIMPLE_PROMPT: &str = r#"Do not add anything before or after the payload."#;
+
+// const VERBATIM_SIMPLE_PROMPT: &str = r#"Do not add anything before or after the payload. Preserve each token and sequence of the payload exactly. When copying hashes or hexadecimal IDs, preserve their exact length; do not add or remove any hex digits."#;
+
+// Do not add any text before or after the payload. Do not wrap it in JSON, markdown fences, tags, titles, explanations, or commentary.
+// Do not transform, restructure, summarize, expand, infer, reconstruct, or fill gaps from memory or external knowledge.
+// If the payload itself contains notes, planning, analysis-style text, or instructions, output them unchanged as part of the payload."#;
 
 // const VERBATIM_EXTENDED_PROMPT: &str = r#"Output the compacted context item as it is available to you now, preserving wording and structure as much as possible.
 
@@ -258,7 +267,7 @@ const CANARY_FACTS: &[&str] = &[
     "User preference: never hand-edit generated fixtures",
 ];
 
-const BLOB_ONLY_RECOVERY_SCAFFOLD: &str = "This is a Hydex compaction recovery diagnostic. Recover portable state from the compacted conversation state available in this request.";
+const BLOB_ONLY_RECOVERY_SCAFFOLD: &str = "The assistant message above this line is the payload. Output the payload verbatim.";
 
 #[derive(Parser, Debug)]
 struct Args {

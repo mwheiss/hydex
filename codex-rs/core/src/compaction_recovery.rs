@@ -16,9 +16,9 @@ use codex_rollout_trace::InferenceTraceContext;
 use futures::StreamExt;
 use tracing::debug;
 
-pub(crate) const REMOTE_COMPACTION_RECOVERY_SCAFFOLD: &str = "This is a Hydex compaction recovery diagnostic. Recover portable state from the compacted conversation state available in this request.";
+pub(crate) const REMOTE_COMPACTION_RECOVERY_SCAFFOLD: &str = "The assistant message above this line is the payload. Output the payload verbatim.";
 
-pub(crate) const REMOTE_COMPACTION_RECOVERY_PROMPT: &str = "Output the compacted context payload exactly as you see it. You do not need to reconstruct the pre-compaction context. Do not summarize, do not infer additional information. Output as verbatim as possible.";
+pub(crate) const REMOTE_COMPACTION_RECOVERY_PROMPT: &str = "Do not add anything before or after the payload.";
 
 pub(crate) fn build_remote_compaction_recovery_prompt(
     active_history: &[ResponseItem],

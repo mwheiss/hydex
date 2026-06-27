@@ -4,7 +4,7 @@ use codex_utils_cache::sha1_digest;
 use serde::Serialize;
 
 pub(crate) const REMOTE_COMPACTION_RECOVERY_PROMPT_VERSION: &str =
-    "hydex-remote-compaction-verbatim-simple-v1";
+    "hydex-remote-compaction-verbatim-simple-v2";
 pub(crate) const REMOTE_COMPACTION_RECOVERY_ALGORITHM_VERSION: &str =
     "hydex-remote-compaction-recovery-v1";
 

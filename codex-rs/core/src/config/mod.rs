@@ -243,13 +243,15 @@ impl Default for ModelOffloadConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelOffloadCompactionRecoveryConfig {
     pub model: ModelOffloadCompactionRecoveryModel,
+    pub reasoning_effort: ReasoningEffort,
     pub projection: ModelOffloadCompactionRecoveryProjection,
 }
 
 impl Default for ModelOffloadCompactionRecoveryConfig {
     fn default() -> Self {
         Self {
-            model: ModelOffloadCompactionRecoveryModel::Auto,
+            model: ModelOffloadCompactionRecoveryModel::Explicit("gpt-5.4".to_string()),
+            reasoning_effort: ReasoningEffort::None,
             projection: ModelOffloadCompactionRecoveryProjection::AssistantState,
         }
     }
@@ -2534,6 +2536,7 @@ fn resolve_model_offload_config(
             model: ModelOffloadCompactionRecoveryModel::from_toml_value(
                 &offload.compaction.recovery.model,
             )?,
+            reasoning_effort: offload.compaction.recovery.reasoning_effort.clone(),
             projection: offload.compaction.recovery.projection,
         },
         context: ModelOffloadContextConfig {

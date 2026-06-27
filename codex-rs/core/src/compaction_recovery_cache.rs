@@ -13,6 +13,7 @@ pub(crate) struct RemoteCompactionRecoveryCacheKey {
     pub(crate) compacted_state_hash: String,
     pub(crate) prompt_version: String,
     pub(crate) recovery_model: String,
+    pub(crate) recovery_reasoning_effort: String,
     pub(crate) algorithm_version: String,
 }
 
@@ -26,10 +27,12 @@ pub(crate) struct RemoteCompactionRecoveryCacheEntry {
 pub(crate) fn remote_compaction_recovery_cache_key(
     active_history: &[ResponseItem],
     recovery_model: &str,
+    recovery_reasoning_effort: &str,
 ) -> CodexResult<RemoteCompactionRecoveryCacheKey> {
     remote_compaction_recovery_cache_key_with_versions(
         active_history,
         recovery_model,
+        recovery_reasoning_effort,
         REMOTE_COMPACTION_RECOVERY_PROMPT_VERSION,
         REMOTE_COMPACTION_RECOVERY_ALGORITHM_VERSION,
     )
@@ -56,6 +59,7 @@ pub(crate) fn remote_compaction_item_count(active_history: &[ResponseItem]) -> u
 fn remote_compaction_recovery_cache_key_with_versions(
     active_history: &[ResponseItem],
     recovery_model: &str,
+    recovery_reasoning_effort: &str,
     prompt_version: &str,
     algorithm_version: &str,
 ) -> CodexResult<RemoteCompactionRecoveryCacheKey> {
@@ -68,6 +72,7 @@ fn remote_compaction_recovery_cache_key_with_versions(
         compacted_state_hash,
         prompt_version: prompt_version.to_string(),
         recovery_model: recovery_model.to_string(),
+        recovery_reasoning_effort: recovery_reasoning_effort.to_string(),
         algorithm_version: algorithm_version.to_string(),
     })
 }

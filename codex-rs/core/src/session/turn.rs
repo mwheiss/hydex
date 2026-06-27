@@ -988,7 +988,17 @@ async fn maybe_recover_remote_compaction_before_local_sampling(
         &turn_context.model_info.slug,
         producing_model.as_deref(),
     );
-    let cache_key = remote_compaction_recovery_cache_key(&active_history, &recovery_model)?;
+    let recovery_reasoning_effort = turn_context
+        .config
+        .model_offload
+        .compaction_recovery
+        .reasoning_effort
+        .as_str();
+    let cache_key = remote_compaction_recovery_cache_key(
+        &active_history,
+        &recovery_model,
+        recovery_reasoning_effort,
+    )?;
     let recovered_text = if let Some(entry) =
         sess.remote_compaction_recovery_cache_get(&cache_key).await
     {

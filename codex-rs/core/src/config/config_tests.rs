@@ -5276,7 +5276,11 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
     );
     assert_eq!(
         config.model_offload.compaction_recovery.model,
-        crate::config::ModelOffloadCompactionRecoveryModel::Auto
+        crate::config::ModelOffloadCompactionRecoveryModel::Explicit("gpt-5.4".to_string())
+    );
+    assert_eq!(
+        config.model_offload.compaction_recovery.reasoning_effort,
+        ReasoningEffort::None
     );
     assert_eq!(
         config.model_offload.compaction_recovery.projection,
@@ -5304,6 +5308,7 @@ local_handoff_role = "assistant_state"
 
 [model_offload.compaction.recovery]
 model = "gpt-5.4"
+reasoning_effort = "low"
 projection = "user_handoff"
 
 [model_offload.context]
@@ -5352,6 +5357,10 @@ wire_api = "responses"
         crate::config::ModelOffloadCompactionRecoveryModel::Explicit("gpt-5.4".to_string())
     );
     assert_eq!(
+        config.model_offload.compaction_recovery.reasoning_effort,
+        ReasoningEffort::Low
+    );
+    assert_eq!(
         config.model_offload.compaction_recovery.projection,
         ModelOffloadCompactionRecoveryProjection::UserHandoff
     );
@@ -5397,6 +5406,10 @@ model = "primary"
     assert_eq!(
         config.model_offload.compaction_recovery.model,
         crate::config::ModelOffloadCompactionRecoveryModel::Primary
+    );
+    assert_eq!(
+        config.model_offload.compaction_recovery.reasoning_effort,
+        ReasoningEffort::None
     );
     assert_eq!(
         config.model_offload.compaction_recovery.projection,

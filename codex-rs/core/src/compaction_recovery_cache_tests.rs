@@ -14,8 +14,8 @@ fn cache_key_is_stable_for_same_compacted_state_and_model() {
     let history = vec![remote_compaction_item("encrypted")];
 
     assert_eq!(
-        remote_compaction_recovery_cache_key(&history, "gpt-5.4").expect("first key"),
-        remote_compaction_recovery_cache_key(&history, "gpt-5.4").expect("second key")
+        remote_compaction_recovery_cache_key(&history, "gpt-5.4", "none").expect("first key"),
+        remote_compaction_recovery_cache_key(&history, "gpt-5.4", "none").expect("second key")
     );
 }
 
@@ -24,8 +24,18 @@ fn cache_key_misses_when_recovery_model_changes() {
     let history = vec![remote_compaction_item("encrypted")];
 
     assert_ne!(
-        remote_compaction_recovery_cache_key(&history, "gpt-5.4").expect("first key"),
-        remote_compaction_recovery_cache_key(&history, "gpt-5.4-mini").expect("second key")
+        remote_compaction_recovery_cache_key(&history, "gpt-5.4", "none").expect("first key"),
+        remote_compaction_recovery_cache_key(&history, "gpt-5.4-mini", "none").expect("second key")
+    );
+}
+
+#[test]
+fn cache_key_misses_when_recovery_reasoning_effort_changes() {
+    let history = vec![remote_compaction_item("encrypted")];
+
+    assert_ne!(
+        remote_compaction_recovery_cache_key(&history, "gpt-5.4", "none").expect("first key"),
+        remote_compaction_recovery_cache_key(&history, "gpt-5.4", "medium").expect("second key")
     );
 }
 
@@ -37,6 +47,7 @@ fn cache_key_misses_when_prompt_version_changes() {
         remote_compaction_recovery_cache_key_with_versions(
             &history,
             "gpt-5.4",
+            "none",
             "prompt-v1",
             REMOTE_COMPACTION_RECOVERY_ALGORITHM_VERSION,
         )
@@ -44,6 +55,7 @@ fn cache_key_misses_when_prompt_version_changes() {
         remote_compaction_recovery_cache_key_with_versions(
             &history,
             "gpt-5.4",
+            "none",
             "prompt-v2",
             REMOTE_COMPACTION_RECOVERY_ALGORITHM_VERSION,
         )

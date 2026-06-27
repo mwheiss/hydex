@@ -42,7 +42,8 @@ policy = "local" # local | primary
 local_handoff_role = "user_summary" # user_summary | assistant_state
 
 [model_offload.compaction.recovery]
-model = "auto" # auto | primary | <OpenAI model name>
+model = "gpt-5.4" # auto | primary | <OpenAI model name>
+reasoning_effort = "none"
 projection = "assistant_state" # assistant_state | user_handoff
 
 [model_offload.context]
@@ -66,8 +67,9 @@ stream_idle_timeout_ms = 300000
 and non-Responses wire APIs for local offload.
 
 Remote compaction recovery is used only when a local-routed branch needs to
-consume encrypted OpenAI remote compaction state. `model = "auto"` uses the
-OpenAI model that produced the remote compaction item when provenance is known;
+consume encrypted OpenAI remote compaction state. The default recovery model is
+`gpt-5.4` with `reasoning_effort = "none"`. `model = "auto"` uses the OpenAI
+model that produced the remote compaction item when provenance is known;
 otherwise Hydex falls back to the current primary model with a debug warning.
 `model = "primary"` always uses the currently selected primary model at recovery
 time. Any other string is treated as an explicit OpenAI model name for the
@@ -249,7 +251,7 @@ wrapped as a concise user handoff message.
 
 If primary-provider recovery fails, Hydex attempts a retro-local fallback before
 giving up on local continuation. The fallback reloads persisted rollout history,
-finds the newest active replacement-history checkpoint that contains encrypted
+finds the active replacement-history checkpoint that contains encrypted
 remote compaction, reconstructs the readable source history before that
 checkpoint, appends later readable suffix items, and promotes the result as a
 new local-readable `replacement_history` checkpoint. If an older encrypted

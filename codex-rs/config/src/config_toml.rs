@@ -556,7 +556,11 @@ pub enum ModelOffloadCompactionLocalHandoffRole {
 }
 
 fn default_model_offload_compaction_recovery_model() -> String {
-    "auto".to_string()
+    "gpt-5.4".to_string()
+}
+
+fn default_model_offload_compaction_recovery_reasoning_effort() -> ReasoningEffort {
+    ReasoningEffort::None
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -564,6 +568,8 @@ fn default_model_offload_compaction_recovery_model() -> String {
 pub struct ModelOffloadCompactionRecoveryToml {
     #[serde(default = "default_model_offload_compaction_recovery_model")]
     pub model: String,
+    #[serde(default = "default_model_offload_compaction_recovery_reasoning_effort")]
+    pub reasoning_effort: ReasoningEffort,
     #[serde(default)]
     pub projection: ModelOffloadCompactionRecoveryProjection,
 }
@@ -572,6 +578,7 @@ impl Default for ModelOffloadCompactionRecoveryToml {
     fn default() -> Self {
         Self {
             model: default_model_offload_compaction_recovery_model(),
+            reasoning_effort: default_model_offload_compaction_recovery_reasoning_effort(),
             projection: ModelOffloadCompactionRecoveryProjection::default(),
         }
     }

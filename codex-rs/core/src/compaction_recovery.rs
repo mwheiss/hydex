@@ -16,9 +16,11 @@ use codex_rollout_trace::InferenceTraceContext;
 use futures::StreamExt;
 use tracing::debug;
 
-pub(crate) const REMOTE_COMPACTION_RECOVERY_SCAFFOLD: &str = "The assistant message above this line is the payload. Output the payload verbatim.";
+pub(crate) const REMOTE_COMPACTION_RECOVERY_SCAFFOLD: &str =
+    "The assistant message above this line is the payload. Output the payload verbatim.";
 
-pub(crate) const REMOTE_COMPACTION_RECOVERY_PROMPT: &str = "Do not add anything before or after the payload.";
+pub(crate) const REMOTE_COMPACTION_RECOVERY_PROMPT: &str =
+    "Do not add anything before or after the payload.";
 
 pub(crate) fn build_remote_compaction_recovery_prompt(
     active_history: &[ResponseItem],
@@ -155,7 +157,14 @@ pub(crate) async fn recover_remote_compaction_payload(
             &prompt,
             &recovery_turn_context.model_info,
             &recovery_turn_context.session_telemetry,
-            recovery_turn_context.reasoning_effort.clone(),
+            Some(
+                recovery_turn_context
+                    .config
+                    .model_offload
+                    .compaction_recovery
+                    .reasoning_effort
+                    .clone(),
+            ),
             recovery_turn_context.reasoning_summary,
             recovery_turn_context.config.service_tier.clone(),
             &responses_metadata,

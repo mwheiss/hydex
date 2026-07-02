@@ -223,7 +223,7 @@ If `policy = "local"`, compaction uses the local offload model when offload is
 effectively enabled, offload has already been used in the session, and the local
 policy applies.
 
-`local_handoff_role` controls how local compaction inserts its recovered summary
+`local_handoff_role` controls how local compaction inserts its compacted payload
 into the replacement history. `assistant_state` is the default: local compaction
 uses Hydex's assistant-continuation prompt and stores the raw compacted payload
 as structured assistant history before the next user turn. `user_summary` is the

@@ -10,18 +10,46 @@ Hydex supports a split-path architecture:
 - hosted tools and remote compaction still available when needed
 - persisted `offload_ever_used`
 - remote encrypted compaction recovery
-- local compaction experiments with Hydex-shaped request generation
 - assistant-state projection for recovered hosted v2 compaction
-- local prompt candidates for user-summary and assistant-state compaction
+- assistant-state local compaction as the Hydex default
+- legacy user-summary local compaction as an explicit compatibility mode
 
 Empirical state so far:
 
 - Hosted Codex v2 recovered cleartext behaves more like assistant continuation state than a normal handoff summary.
-- Current open/local Codex-style compaction is robust, but handoff/user-summary framed and longer.
+- The legacy open/local Codex-style user-summary handoff is robust, but handoff-framed and longer.
 - Qwen-local compact assistant-state prompts can be much shorter, but may drop source-detail recall unless the prompt explicitly preserves salient source/code facts and trajectory state.
 - Empty/almost-empty local outputs appear to be a local model/server/extraction failure mode that can occur across prompts, not exclusively a prompt-specific failure. It should be measured separately from semantic prompt quality.
 
-## Candidate Status
+## Implemented Local Assistant-State Default
+
+Production Hydex now defaults:
+
+```toml
+[model_offload.compaction]
+local_handoff_role = "assistant_state"
+```
+
+The bundled prompt lives in `codex-rs/prompts/src/compact.rs` as
+`ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT`. Both manual local compaction and auto
+local compaction use it when `compact_prompt` is not explicitly configured.
+
+Local assistant-state compaction stores the compacted payload as a structured
+assistant-history message before the next user message. It does not prepend the
+legacy `SUMMARY_PREFIX` and does not frame the payload as a handoff to another
+model.
+
+Explicit compatibility mode remains available:
+
+```toml
+[model_offload.compaction]
+local_handoff_role = "user_summary"
+```
+
+That mode keeps the old `SUMMARIZATION_PROMPT` plus `SUMMARY_PREFIX` user
+handoff behavior.
+
+## Historical Candidate Status
 
 ### Keep as safety baseline: `baseline_handoff`
 
@@ -116,7 +144,7 @@ It asks for:
 
 This is intended to capture the useful part of hosted-v2-like continuation guidance without copying stale final-response prose.
 
-### New trajectory candidate: `assistant_state_continuation_trace`
+### Selected trajectory basis: `assistant_state_continuation_trace`
 
 This candidate is designed to preserve the active trajectory of a multi-call turn.
 
@@ -138,7 +166,9 @@ This candidate asks for:
 
 It explicitly avoids hidden chain-of-thought. It should preserve only concise, actionable rationale and next-action state.
 
-This is the next candidate to test against:
+This became the basis for the shipped assistant-state local compaction prompt,
+with the final production wording broadened to preserve exact literal anchors
+and source-state contracts. Historical comparisons remain useful against:
 
 - `baseline_handoff`
 - `v2_observed_style_assistant_state`
@@ -270,11 +300,13 @@ prompt quality conditional on the model actually responding
 
 Production Hydex should probably retry empty/tiny/placeholder local responses once, but the harness should not silently hide them during prompt comparison.
 
-## Validation and Fallback
+## Validation and Fallback Hardening
 
-Assistant-state compaction should not be blindly stored. Add validation before committing a compacted payload.
+Assistant-state compaction is now the Hydex local default. Additional
+validation/retry/fallback remains useful hardening rather than a blocker for
+enabling the mode.
 
-Reject at least:
+Future validation should reject at least:
 
 - empty or tiny payloads
 - placeholder-only payloads such as `---`, `OK`, `Done`
@@ -283,7 +315,7 @@ Reject at least:
 - missing mandatory explicit invariants or key fact groups when those existed in the source
 - payloads that claim tool/test actions not present in source history
 
-Suggested production behavior:
+Suggested future production behavior:
 
 ```text
 primary deterministic compaction
@@ -297,7 +329,10 @@ if still invalid:
   fall back to baseline_handoff / user_summary
 ```
 
-The harness may continue testing invalid payloads to measure downstream damage, but production Hydex should never store invalid assistant-state payloads as the active compaction checkpoint.
+The harness may continue testing invalid payloads to measure downstream damage.
+Production Hydex should eventually avoid storing invalid assistant-state payloads
+as active compaction checkpoints when a validated retry or legacy user-summary
+fallback can produce a safer local-readable state.
 
 ## Evaluation Status and Next Tests
 
@@ -573,7 +608,8 @@ This may be valuable later, but should only happen after existing MCP memory opt
 
 ## Open Decisions
 
-- Should `assistant_state_continuation_trace` replace `assistant_state_operating_notes`, or should both remain candidates?
+- Should future prompt variants replace the shipped assistant-state default or
+  remain evaluation-only candidates?
 - How much active trajectory should be preserved before it becomes stale-plan risk?
 - Should empty/almost-empty responses be excluded from semantic prompt-quality scores while retained in operational scores?
 - Which MCP memory backend should be tested first: EchoVault or codex-agent-mem?
@@ -584,12 +620,13 @@ This may be valuable later, but should only happen after existing MCP memory opt
 
 ## Near-Term Action Items
 
-1. Run the latest compact-only/no-prefix/cache-optimal harness including `assistant_state_continuation_trace`.
+1. Run the latest compact-only/no-prefix/cache-optimal harness against the
+   shipped assistant-state local compaction prompt.
 2. Report both operational and non-empty semantic scores.
 3. Compare payload contents against local GPT-5.5 readable and recovered hosted v2.
 4. Add or refine multi-call-turn trajectory probes.
 5. Install and test EchoVault with Hydex/Codex MCP config.
 6. Install and test `codex-agent-mem`.
 7. Test whether compact state can store memory handles rather than detailed facts.
-8. Decide whether to implement an experimental local prompt style after detailed recall and trajectory probes.
-9. Add production validation/retry/fallback before enabling assistant-state local compaction.
+8. Decide whether to add production validation/retry/fallback around the shipped
+   assistant-state mode.

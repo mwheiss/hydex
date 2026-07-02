@@ -548,11 +548,11 @@ pub enum ModelOffloadCompactionPolicy {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelOffloadCompactionLocalHandoffRole {
-    /// Preserve current local compaction behavior: recovered summary is supplied as user context.
-    #[default]
-    UserSummary,
     /// Supply local compaction output as assistant-history state before the next user turn.
+    #[default]
     AssistantState,
+    /// Preserve legacy local compaction behavior: recovered summary is supplied as user context.
+    UserSummary,
 }
 
 fn default_model_offload_compaction_recovery_model() -> String {

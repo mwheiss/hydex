@@ -272,6 +272,93 @@ fn build_compacted_history_user_summary_appends_user_summary_by_default() {
     assert_eq!(history, expected);
 }
 
+#[tokio::test]
+async fn local_compaction_prompt_assistant_state_uses_assistant_state_prompt_by_default() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+
+    assert_eq!(
+        local_compaction_prompt(&turn_context),
+        ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT
+    );
+}
+
+#[tokio::test]
+async fn local_compaction_prompt_user_summary_uses_summarization_prompt_without_override() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    std::sync::Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .compaction_local_handoff_role = ModelOffloadCompactionLocalHandoffRole::UserSummary;
+
+    assert_eq!(local_compaction_prompt(&turn_context), SUMMARIZATION_PROMPT);
+}
+
+#[tokio::test]
+async fn local_compaction_prompt_explicit_config_overrides_handoff_role_prompt() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    let config = std::sync::Arc::make_mut(&mut turn_context.config);
+    config.model_offload.compaction_local_handoff_role =
+        ModelOffloadCompactionLocalHandoffRole::AssistantState;
+    config.compact_prompt = Some("custom compact prompt".to_string());
+
+    assert_eq!(
+        local_compaction_prompt(&turn_context),
+        "custom compact prompt"
+    );
+}
+
+#[test]
+fn assistant_state_local_compaction_payload_is_raw_assistant_state() {
+    let summary_text = local_compaction_summary_text(
+        "summary text",
+        ModelOffloadCompactionLocalHandoffRole::AssistantState,
+    );
+    let history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        &summary_text,
+        ModelOffloadCompactionLocalHandoffRole::AssistantState,
+    );
+
+    assert_eq!(
+        history,
+        vec![
+            user_message("first user message"),
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "summary text".to_string(),
+                }],
+                phase: None,
+                metadata: None,
+            },
+        ]
+    );
+    assert!(!summary_text.contains(SUMMARY_PREFIX));
+}
+
+#[test]
+fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
+    let summary_text = local_compaction_summary_text(
+        "summary text",
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
+    );
+    let history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        &summary_text,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
+    );
+
+    assert_eq!(
+        history,
+        vec![
+            user_message("first user message"),
+            user_message(&format!("{SUMMARY_PREFIX}\nsummary text")),
+        ]
+    );
+}
+
 #[test]
 fn build_compacted_history_preserves_user_message_metadata() {
     let history = build_compacted_history(

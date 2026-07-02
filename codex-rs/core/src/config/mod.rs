@@ -231,7 +231,7 @@ impl Default for ModelOffloadConfig {
             provider: None,
             model: None,
             compaction_policy: ModelOffloadCompactionPolicy::Local,
-            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::UserSummary,
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::AssistantState,
             compaction_recovery: ModelOffloadCompactionRecoveryConfig::default(),
             context: ModelOffloadContextConfig::default(),
         }

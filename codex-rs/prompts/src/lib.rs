@@ -9,6 +9,7 @@ mod review_request;
 
 pub use agents::HIERARCHICAL_AGENTS_MESSAGE;
 pub use apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
+pub use compact::ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT;
 pub use compact::SUMMARIZATION_PROMPT;
 pub use compact::SUMMARY_PREFIX;
 pub use goals::budget_limit_prompt;

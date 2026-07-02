@@ -5272,7 +5272,7 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
     );
     assert_eq!(
         config.model_offload.compaction_local_handoff_role,
-        ModelOffloadCompactionLocalHandoffRole::UserSummary
+        ModelOffloadCompactionLocalHandoffRole::AssistantState
     );
     assert_eq!(
         config.model_offload.compaction_recovery.model,
@@ -5380,6 +5380,32 @@ wire_api = "responses"
     assert_eq!(
         config.model_offload.context.auto_compact_token_limit(),
         Some(180_000)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_parses_user_summary_model_offload_local_handoff_role() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload.compaction]
+local_handoff_role = "user_summary"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.model_offload.compaction_local_handoff_role,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary
     );
 
     Ok(())

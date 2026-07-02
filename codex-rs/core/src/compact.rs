@@ -49,6 +49,7 @@ use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 
+pub use codex_prompts::ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
@@ -95,12 +96,7 @@ pub(crate) async fn run_inline_auto_compact_task(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    let prompt = turn_context
-        .config
-        .compact_prompt
-        .as_deref()
-        .unwrap_or(SUMMARIZATION_PROMPT)
-        .to_string();
+    let prompt = local_compaction_prompt(&turn_context).to_string();
     let input = vec![UserInput::Text {
         text: prompt,
         // Compaction prompt is synthesized; no UI element ranges to preserve.
@@ -144,6 +140,33 @@ pub(crate) async fn run_compact_task(
     )
     .await?;
     Ok(())
+}
+
+pub(crate) fn local_compaction_prompt(turn_context: &TurnContext) -> &str {
+    turn_context.config.compact_prompt.as_deref().unwrap_or(
+        match turn_context
+            .config
+            .model_offload
+            .compaction_local_handoff_role
+        {
+            ModelOffloadCompactionLocalHandoffRole::UserSummary => SUMMARIZATION_PROMPT,
+            ModelOffloadCompactionLocalHandoffRole::AssistantState => {
+                ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT
+            }
+        },
+    )
+}
+
+fn local_compaction_summary_text(
+    summary_suffix: &str,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+) -> String {
+    match local_handoff_role {
+        ModelOffloadCompactionLocalHandoffRole::UserSummary => {
+            format!("{SUMMARY_PREFIX}\n{summary_suffix}")
+        }
+        ModelOffloadCompactionLocalHandoffRole::AssistantState => summary_suffix.to_string(),
+    }
 }
 
 async fn run_compact_task_inner(
@@ -316,17 +339,18 @@ async fn run_compact_task_inner_impl(
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let local_handoff_role = turn_context
+        .config
+        .model_offload
+        .compaction_local_handoff_role;
+    let summary_text = local_compaction_summary_text(&summary_suffix, local_handoff_role);
     let user_messages = collect_user_messages(history_items);
 
     let mut new_history = build_compacted_history_with_handoff_role(
         Vec::new(),
         &user_messages,
         &summary_text,
-        turn_context
-            .config
-            .model_offload
-            .compaction_local_handoff_role,
+        local_handoff_role,
     );
     let window_id = sess.advance_auto_compact_window_id().await;
 

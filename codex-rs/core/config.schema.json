@@ -1426,16 +1426,16 @@
     "ModelOffloadCompactionLocalHandoffRole": {
       "oneOf": [
         {
-          "description": "Preserve current local compaction behavior: recovered summary is supplied as user context.",
+          "description": "Supply local compaction output as assistant-history state before the next user turn.",
           "enum": [
-            "user_summary"
+            "assistant_state"
           ],
           "type": "string"
         },
         {
-          "description": "Supply local compaction output as assistant-history state before the next user turn.",
+          "description": "Preserve legacy local compaction behavior: recovered summary is supplied as user context.",
           "enum": [
-            "assistant_state"
+            "user_summary"
           ],
           "type": "string"
         }
@@ -1501,7 +1501,7 @@
               "$ref": "#/definitions/ModelOffloadCompactionLocalHandoffRole"
             }
           ],
-          "default": "user_summary"
+          "default": "assistant_state"
         },
         "policy": {
           "allOf": [
@@ -1558,7 +1558,7 @@
             }
           ],
           "default": {
-            "local_handoff_role": "user_summary",
+            "local_handoff_role": "assistant_state",
             "policy": "local",
             "recovery": {
               "model": "gpt-5.4",
@@ -5215,7 +5215,7 @@
       ],
       "default": {
         "compaction": {
-          "local_handoff_role": "user_summary",
+          "local_handoff_role": "assistant_state",
           "policy": "local",
           "recovery": {
             "model": "gpt-5.4",

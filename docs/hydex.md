@@ -36,6 +36,7 @@ model = "gpt-5.1-codex"
 enabled = true
 provider = "local_responses"
 model = "local-codex-model"
+memory_mode = "local" # off | primary | local
 
 [model_offload.compaction]
 policy = "local" # local | primary
@@ -50,6 +51,17 @@ projection = "assistant_state" # assistant_state | user_handoff
 # context_window = 200000
 # effective_context_window_percent = 95
 # auto_compact_token_limit = 180000
+
+[model_offload.validation]
+enabled = true
+validator_attempts = 3
+generation_retries = 1
+retry_temperature = 0.01
+final_text = true
+tool_calls = true
+structured_outputs = true
+memory = true
+compaction = true
 
 [model_providers.local_responses]
 name = "Local Responses Offload"
@@ -166,10 +178,41 @@ local WebSocket/prewarm behavior, and use `[model_offload].model` when set.
 
 Local provider failures do not trigger OpenAI auth recovery.
 
+Memory generation is separately controlled by `[model_offload].memory_mode`.
+`off` disables memory generation without deleting existing memories or changing
+memory reads. `primary` keeps memory generation on the primary provider. `local`
+routes memory generation through the configured local offload provider. When
+unset, Hydex defaults to `local` only when local offload is effectively enabled
+and a valid provider is resolved; otherwise it preserves upstream primary memory
+behavior.
+
 Hydex strips OpenAI auth/control-plane headers and Codex metadata from local
 model requests. Local endpoints should still tolerate Codex Responses-style
 request body fields. A stricter local request scrubber may be added later if
 needed.
+
+## Local Output Validation
+
+`[model_offload.validation]` enables a shallow sanity gate for completed
+local/offloaded outputs. This is not a quality, factuality, helpfulness, or
+style judge. It rejects only clearly broken local-model outputs such as empty or
+placeholder payloads, visible reasoning leakage, obvious repetition loops,
+malformed protocol-like JSON, or tool-call stubs where plain text is expected.
+
+The deterministic gate currently runs before accepting durable local compaction
+payloads, before committing local memory payloads, and before dispatching or
+recording completed local sampling items. Tool-call validation happens before
+tool execution, so a rejected local tool-call item is not executed first.
+
+For local memory and local compaction, rejected payloads are hard-gated and are
+not committed as memory or replacement history. For ordinary local final text,
+a rejected completed item surfaces a controlled local-output failure. Streaming
+text deltas may already have been shown to the UI before the completed item is
+validated, but the item is not accepted into canonical history after rejection.
+
+`validator_attempts`, `generation_retries`, and `retry_temperature` are reserved
+for the model-based validator/retry path. The current production gate is the
+bounded deterministic sanity check described above.
 
 ## Tools
 
@@ -351,6 +394,9 @@ Main patch points:
   - `codex-rs/core/src/compact.rs`
   - `codex-rs/core/src/tasks/compact.rs`
   - `codex-rs/core/src/session/turn.rs`
+- local output validation:
+  - `codex-rs/core/src/local_output_validation.rs`
+  - `codex-rs/memories/write/src/phase1.rs`
 - remote encrypted compaction recovery and cache:
   - `codex-rs/core/src/compaction_recovery.rs`
   - `codex-rs/core/src/compaction_recovery_cache.rs`

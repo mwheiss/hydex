@@ -302,37 +302,42 @@ Production Hydex should probably retry empty/tiny/placeholder local responses on
 
 ## Validation and Fallback Hardening
 
-Assistant-state compaction is now the Hydex local default. Additional
-validation/retry/fallback remains useful hardening rather than a blocker for
-enabling the mode.
+Assistant-state compaction is now the Hydex local default. Hydex also has a
+bounded deterministic sanity gate for completed local/offloaded outputs. The
+gate is intentionally shallow: it rejects clearly broken local outputs before
+accepting local compaction replacement history, committing local memory payloads,
+or executing/recording completed local sampling items. It is not a quality or
+correctness judge.
 
-Future validation should reject at least:
+Implemented cheap validation rejects at least:
 
 - empty or tiny payloads
-- placeholder-only payloads such as `---`, `OK`, `Done`
+- placeholder-only payloads such as `TODO`, `TBD`, `null`
 - visible reasoning/thinking leaks
-- markdown fences for assistant-state modes
-- missing mandatory explicit invariants or key fact groups when those existed in the source
-- payloads that claim tool/test actions not present in source history
+- obvious repetition loops
+- malformed JSON-like protocol payloads
+- tool-call stubs where text or memory/compaction payloads are expected
 
-Suggested future production behavior:
+Still-useful future model-based validation/retry behavior:
 
 ```text
-primary deterministic compaction
-  -> validate
+local deterministic compaction or memory generation
+  -> cheap validation
+  -> model-based sanity validator if cheap validation passes and the output type is enabled
 
 if invalid:
-  retry once at low temperature, e.g. 0.1
+  retry once at very low temperature, e.g. 0.01
   -> validate
 
 if still invalid:
-  fall back to baseline_handoff / user_summary
+  fall back to primary/baseline behavior where safe
 ```
 
 The harness may continue testing invalid payloads to measure downstream damage.
-Production Hydex should eventually avoid storing invalid assistant-state payloads
-as active compaction checkpoints when a validated retry or legacy user-summary
-fallback can produce a safer local-readable state.
+Production Hydex now avoids storing invalid assistant-state payloads that fail
+the deterministic gate. Model-based validation remains a hardening follow-up for
+subtler malformed outputs that cheap checks cannot detect without becoming a
+quality judge.
 
 ## Evaluation Status and Next Tests
 

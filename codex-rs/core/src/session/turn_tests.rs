@@ -142,11 +142,46 @@ async fn offload_ever_used_alone_does_not_apply_local_auto_compact_thresholds() 
             .local_offload_enabled_for_turns()
     );
     assert!(!local_offload_context_applies_to_auto_compaction(
-        &session,
-        &turn_context
+        &turn_context,
+        session
+            .services
+            .model_client
+            .local_offload_enabled_for_turns(),
     ));
     assert_eq!(
-        auto_compact_thresholds(&session, &turn_context),
+        auto_compact_thresholds(
+            &turn_context,
+            session
+                .services
+                .model_client
+                .local_offload_enabled_for_turns(),
+        ),
+        select_auto_compact_thresholds(
+            &turn_context.model_info,
+            &turn_context.config.model_offload.context,
+            /*use_local_thresholds*/ false,
+        )
+    );
+}
+
+#[tokio::test]
+async fn turn_forced_primary_uses_primary_auto_compact_thresholds() {
+    let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context
+        .context_window = Some(200_000);
+    session.services.model_client.seed_offload_ever_used(true);
+
+    let client_session = session.services.model_client.new_session();
+    client_session.force_primary_for_responses_requests();
+
+    assert!(!client_session.local_offload_enabled_for_turns());
+    assert_eq!(
+        auto_compact_thresholds(
+            &turn_context,
+            client_session.local_offload_enabled_for_turns()
+        ),
         select_auto_compact_thresholds(
             &turn_context.model_info,
             &turn_context.config.model_offload.context,

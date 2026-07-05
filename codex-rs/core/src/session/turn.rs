@@ -235,7 +235,7 @@ pub(crate) async fn run_turn(
         // history, promote it to local-readable state before sizing or
         // sampling. Then, if that history is too large for the local context
         // window, compact before building the local request.
-        if let Err(err) = maybe_recover_remote_compaction_before_local_sampling(
+        if let Err(err) = maybe_recover_remote_compaction_for_local_route(
             &sess,
             &turn_context,
             &mut client_session,
@@ -260,25 +260,28 @@ pub(crate) async fn run_turn(
                 }
             };
         if compacted_before_local_sampling {
-            let recovered_after_compaction =
-                match maybe_recover_remote_compaction_before_local_sampling(
+            let recovered_after_compaction = match maybe_recover_remote_compaction_for_local_route(
+                &sess,
+                &turn_context,
+                &mut client_session,
+            )
+            .await
+            {
+                Ok(recovered) => recovered,
+                Err(err) => {
+                    let error = err.to_codex_protocol_error();
+                    sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                        .await;
+                    return None;
+                }
+            };
+            if recovered_after_compaction
+                && let Err(err) = ensure_local_effective_context_after_remote_reentry(
                     &sess,
                     &turn_context,
-                    &mut client_session,
+                    &client_session,
                 )
                 .await
-                {
-                    Ok(recovered) => recovered,
-                    Err(err) => {
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                            .await;
-                        return None;
-                    }
-                };
-            if recovered_after_compaction
-                && let Err(err) =
-                    ensure_local_effective_context_after_remote_reentry(&sess, &turn_context).await
             {
                 let error = err.to_codex_protocol_error();
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
@@ -334,8 +337,12 @@ pub(crate) async fn run_turn(
                 let (has_pending_input, token_status, estimated_token_count) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
-                    let token_status =
-                        auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+                    let token_status = auto_compact_token_status(
+                        sess.as_ref(),
+                        turn_context.as_ref(),
+                        client_session.local_offload_enabled_for_turns(),
+                    )
+                    .await;
                     let estimated_token_count =
                         sess.get_estimated_token_count(turn_context.as_ref()).await;
                     (has_pending_input, token_status, estimated_token_count)
@@ -841,8 +848,8 @@ fn model_auto_compact_thresholds(model_info: &ModelInfo) -> AutoCompactThreshold
 }
 
 fn local_offload_context_applies_to_auto_compaction(
-    sess: &Session,
     turn_context: &TurnContext,
+    local_offload_enabled_for_turns: bool,
 ) -> bool {
     turn_context
         .config
@@ -850,7 +857,7 @@ fn local_offload_context_applies_to_auto_compaction(
         .context
         .context_window
         .is_some()
-        && sess.services.model_client.local_offload_enabled_for_turns()
+        && local_offload_enabled_for_turns
 }
 
 fn local_offload_auto_compact_thresholds(
@@ -874,22 +881,32 @@ fn select_auto_compact_thresholds(
     }
 }
 
-fn auto_compact_thresholds(sess: &Session, turn_context: &TurnContext) -> AutoCompactThresholds {
+fn auto_compact_thresholds(
+    turn_context: &TurnContext,
+    local_offload_enabled_for_turns: bool,
+) -> AutoCompactThresholds {
     select_auto_compact_thresholds(
         &turn_context.model_info,
         &turn_context.config.model_offload.context,
-        local_offload_context_applies_to_auto_compaction(sess, turn_context),
+        local_offload_context_applies_to_auto_compaction(
+            turn_context,
+            local_offload_enabled_for_turns,
+        ),
     )
 }
 
 async fn auto_compact_token_status(
     sess: &Session,
     turn_context: &TurnContext,
+    local_offload_enabled_for_turns: bool,
 ) -> AutoCompactTokenStatus {
     let active_context_tokens = sess.get_total_token_usage().await;
     let mut auto_compact_window_prefill_tokens = None;
-    let use_local_thresholds = local_offload_context_applies_to_auto_compaction(sess, turn_context);
-    let thresholds = auto_compact_thresholds(sess, turn_context);
+    let use_local_thresholds = local_offload_context_applies_to_auto_compaction(
+        turn_context,
+        local_offload_enabled_for_turns,
+    );
+    let thresholds = auto_compact_thresholds(turn_context, local_offload_enabled_for_turns);
     let (auto_compact_scope_tokens, auto_compact_scope_limit, full_context_window_limit) =
         match turn_context.config.model_auto_compact_token_limit_scope {
             AutoCompactTokenLimitScope::Total => (
@@ -941,10 +958,15 @@ async fn run_pre_sampling_compact(
     client_session: &mut ModelClientSession,
 ) -> CodexResult<()> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session).await?;
-    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    let token_status = auto_compact_token_status(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        client_session.local_offload_enabled_for_turns(),
+    )
+    .await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
     if token_status.token_limit_reached {
-        let route = if sess.services.model_client.local_offload_enabled_for_turns()
+        let route = if client_session.local_offload_enabled_for_turns()
             && token_status.full_context_window_limit_reached
         {
             AutoCompactRoute::ForcePrimaryRemote
@@ -962,14 +984,15 @@ async fn run_pre_sampling_compact(
         )
         .await?;
         if route == AutoCompactRoute::ForcePrimaryRemote {
-            ensure_local_effective_context_after_remote_reentry(sess, turn_context).await?;
+            ensure_local_effective_context_after_remote_reentry(sess, turn_context, client_session)
+                .await?;
         }
     }
     Ok(())
 }
 
 #[instrument(level = "trace", skip_all)]
-async fn maybe_recover_remote_compaction_before_local_sampling(
+pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
@@ -1145,7 +1168,12 @@ async fn maybe_compact_before_local_sampling(
         return Ok(false);
     }
 
-    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    let token_status = auto_compact_token_status(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        client_session.local_offload_enabled_for_turns(),
+    )
+    .await;
     let Some(route) = local_reentry_compaction_route(&token_status) else {
         return Ok(false);
     };
@@ -1160,7 +1188,8 @@ async fn maybe_compact_before_local_sampling(
             AutoCompactRoute::ForcePrimaryRemote,
         )
         .await?;
-        ensure_local_effective_context_after_remote_reentry(sess, turn_context).await?;
+        ensure_local_effective_context_after_remote_reentry(sess, turn_context, client_session)
+            .await?;
         return Ok(true);
     }
 
@@ -1174,7 +1203,12 @@ async fn maybe_compact_before_local_sampling(
     )
     .await?;
 
-    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    let token_status = auto_compact_token_status(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        client_session.local_offload_enabled_for_turns(),
+    )
+    .await;
     if token_status.full_context_window_limit_reached {
         run_auto_compact_with_route(
             sess,
@@ -1186,7 +1220,8 @@ async fn maybe_compact_before_local_sampling(
             AutoCompactRoute::ForcePrimaryRemote,
         )
         .await?;
-        ensure_local_effective_context_after_remote_reentry(sess, turn_context).await?;
+        ensure_local_effective_context_after_remote_reentry(sess, turn_context, client_session)
+            .await?;
     }
     Ok(true)
 }
@@ -1248,8 +1283,14 @@ mod offload_reentry_tests {
 async fn ensure_local_effective_context_after_remote_reentry(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    client_session: &ModelClientSession,
 ) -> CodexResult<()> {
-    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    let token_status = auto_compact_token_status(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        client_session.local_offload_enabled_for_turns(),
+    )
+    .await;
     if token_status.full_context_window_limit_reached {
         return Err(CodexErr::ContextWindowExceeded);
     }
@@ -1299,8 +1340,12 @@ async fn maybe_run_previous_model_inline_compact(
         return Ok(());
     }
 
-    let old_thresholds = auto_compact_thresholds(sess, &previous_model_turn_context);
-    let new_thresholds = auto_compact_thresholds(sess, turn_context);
+    let local_offload_enabled_for_turns = client_session.local_offload_enabled_for_turns();
+    let old_thresholds = auto_compact_thresholds(
+        &previous_model_turn_context,
+        local_offload_enabled_for_turns,
+    );
+    let new_thresholds = auto_compact_thresholds(turn_context, local_offload_enabled_for_turns);
     let Some(old_context_window) = old_thresholds.effective_context_window else {
         return Ok(());
     };
@@ -1382,10 +1427,8 @@ async fn run_auto_compact_with_route(
         AutoCompactRoute::Policy => should_use_remote_compact_task_with_offload_policy(
             turn_context.provider.info(),
             sess.services.model_client.offload_ever_used(),
-            sess.services.model_client.effective_model_offload_enabled(),
-            sess.services
-                .model_client
-                .effective_model_offload_compaction_policy(),
+            client_session.local_offload_enabled_for_turns(),
+            client_session.effective_model_offload_compaction_policy(),
         ),
         AutoCompactRoute::ForcePrimaryRemote => {
             if !should_use_remote_compact_task(turn_context.provider.info()) {
@@ -1435,6 +1478,46 @@ async fn run_auto_compact_with_route(
         )
         .await?;
     } else {
+        maybe_recover_remote_compaction_for_local_route(sess, turn_context, client_session).await?;
+        if !client_session.local_compaction_effective() {
+            if !should_use_remote_compact_task(turn_context.provider.info()) {
+                return Err(CodexErr::InvalidRequest(
+                    "Cannot run local compaction for this thread because encrypted remote compaction state could not be recovered and primary remote compaction is unavailable."
+                        .to_string(),
+                ));
+            }
+            emit_compact_metric(
+                &sess.services.session_telemetry,
+                "remote",
+                /*manual*/ false,
+            );
+            if turn_context
+                .config
+                .features
+                .enabled(Feature::RemoteCompactionV2)
+            {
+                run_inline_remote_auto_compact_task_v2(
+                    Arc::clone(sess),
+                    Arc::clone(turn_context),
+                    client_session,
+                    initial_context_injection,
+                    reason,
+                    phase,
+                )
+                .await?;
+            } else {
+                run_inline_remote_auto_compact_task(
+                    Arc::clone(sess),
+                    Arc::clone(turn_context),
+                    client_session.turn_state(),
+                    initial_context_injection,
+                    reason,
+                    phase,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
         emit_compact_metric(
             &sess.services.session_telemetry,
             "local",

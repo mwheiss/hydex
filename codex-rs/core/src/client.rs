@@ -1311,6 +1311,18 @@ impl ModelClientSession {
             && self.client.local_offload_enabled_for_turns()
     }
 
+    pub(crate) fn effective_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        if self.local_offload_enabled_for_turns() && self.client.offload_ever_used() {
+            self.client.requested_model_offload_compaction_policy()
+        } else {
+            ModelOffloadCompactionPolicy::Primary
+        }
+    }
+
+    pub(crate) fn local_compaction_effective(&self) -> bool {
+        self.effective_model_offload_compaction_policy() == ModelOffloadCompactionPolicy::Local
+    }
+
     pub(crate) fn mark_offload_used_for_responses_request(
         &self,
         responses_metadata: &CodexResponsesMetadata,

@@ -29,18 +29,31 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        let _ = if crate::compact::should_use_remote_compact_task_with_offload_policy(
+        let mut client_session = session.services.model_client.new_session();
+        let mut use_remote = crate::compact::should_use_remote_compact_task_with_offload_policy(
             ctx.provider.info(),
             session.services.model_client.offload_ever_used(),
-            session
-                .services
-                .model_client
-                .effective_model_offload_enabled(),
-            session
-                .services
-                .model_client
-                .effective_model_offload_compaction_policy(),
-        ) {
+            client_session.local_offload_enabled_for_turns(),
+            client_session.effective_model_offload_compaction_policy(),
+        );
+        if !use_remote {
+            if let Err(err) = crate::session::turn::maybe_recover_remote_compaction_for_local_route(
+                &session,
+                &ctx,
+                &mut client_session,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    "manual local compaction recovery failed; falling back to primary compaction"
+                );
+                use_remote = true;
+            } else if !client_session.local_compaction_effective() {
+                use_remote = true;
+            }
+        }
+        let _ = if use_remote {
             if ctx
                 .config
                 .features

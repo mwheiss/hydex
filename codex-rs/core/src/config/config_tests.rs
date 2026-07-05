@@ -16,6 +16,7 @@ use codex_config::config_toml::ExperimentalRequestUserInput;
 use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeArchitecture;
 use codex_config::config_toml::RealtimeConfig;
@@ -5271,6 +5272,10 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
         ModelOffloadCompactionPolicy::Local
     );
     assert_eq!(
+        config.model_offload.memory_mode,
+        ModelOffloadMemoryMode::Primary
+    );
+    assert_eq!(
         config.model_offload.compaction_local_handoff_role,
         ModelOffloadCompactionLocalHandoffRole::AssistantState
     );
@@ -5349,6 +5354,10 @@ wire_api = "responses"
         ModelOffloadCompactionPolicy::Primary
     );
     assert_eq!(
+        config.model_offload.memory_mode,
+        ModelOffloadMemoryMode::Local
+    );
+    assert_eq!(
         config.model_offload.compaction_local_handoff_role,
         ModelOffloadCompactionLocalHandoffRole::AssistantState
     );
@@ -5380,6 +5389,69 @@ wire_api = "responses"
     assert_eq!(
         config.model_offload.context.auto_compact_token_limit(),
         Some(180_000)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_parses_model_offload_memory_modes() -> std::io::Result<()> {
+    for (memory_mode, expected) in [
+        ("off", ModelOffloadMemoryMode::Off),
+        ("primary", ModelOffloadMemoryMode::Primary),
+        ("local", ModelOffloadMemoryMode::Local),
+    ] {
+        let codex_home = TempDir::new()?;
+        let cfg: ConfigToml = toml::from_str(&format!(
+            r#"
+[model_offload]
+memory_mode = "{memory_mode}"
+provider = "local"
+
+[model_providers.local]
+name = "Local Responses"
+base_url = "http://127.0.0.1:11434/v1"
+wire_api = "responses"
+"#
+        ))
+        .expect("model offload TOML should deserialize");
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+
+        assert_eq!(config.model_offload.memory_mode, expected);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_local_memory_mode_without_provider() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[model_offload]
+memory_mode = "local"
+"#,
+    )
+    .expect("model offload TOML should deserialize");
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("local memory mode should require a provider");
+
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::InvalidInput,
+        "unexpected error: {err}"
     );
 
     Ok(())

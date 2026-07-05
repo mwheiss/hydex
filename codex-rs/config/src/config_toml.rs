@@ -516,12 +516,27 @@ pub struct ModelOffloadToml {
     /// Optional model id to send to the offload provider. When unset, Codex sends
     /// the currently selected model id.
     pub model: Option<String>,
+    /// Route used for memory generation. When unset, Hydex uses local memory
+    /// generation only when model offload is effectively enabled.
+    pub memory_mode: Option<ModelOffloadMemoryMode>,
     /// Policy used for compaction after offload has actually been used.
     #[serde(default)]
     pub compaction: ModelOffloadCompactionToml,
     /// Local offload context-window settings used for auto-compaction pressure.
     #[serde(default)]
     pub context: ModelOffloadContextToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadMemoryMode {
+    /// Disable memory generation. Existing memories and memory reads are unchanged.
+    Off,
+    /// Run memory generation on the primary provider.
+    #[default]
+    Primary,
+    /// Run memory generation on the configured local offload provider.
+    Local,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]

@@ -156,6 +156,7 @@ pub fn construct_model_info_offline(model: &str, config: &Config) -> ModelInfo {
 pub enum TestCodexResponsesRequestKind {
     Turn,
     Prewarm,
+    Memory,
     WebsocketConnection,
 }
 
@@ -173,6 +174,7 @@ pub fn responses_metadata(
     let request_kind = match request_kind {
         TestCodexResponsesRequestKind::Turn => Some(CodexResponsesRequestKind::Turn),
         TestCodexResponsesRequestKind::Prewarm => Some(CodexResponsesRequestKind::Prewarm),
+        TestCodexResponsesRequestKind::Memory => Some(CodexResponsesRequestKind::Memory),
         TestCodexResponsesRequestKind::WebsocketConnection => None,
     };
     CodexResponsesMetadata {

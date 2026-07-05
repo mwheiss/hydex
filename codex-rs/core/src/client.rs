@@ -124,6 +124,7 @@ use crate::responses_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::map_api_error;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth_env_telemetry::AuthEnvTelemetry;
@@ -188,6 +189,7 @@ struct ModelClientState {
     offload_model: Option<String>,
     offload_compaction_policy: ModelOffloadCompactionPolicy,
     offload_compaction_runtime_override: AtomicU8,
+    offload_memory_mode: ModelOffloadMemoryMode,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -492,6 +494,7 @@ impl ModelClient {
                 offload_model: model_offload.model,
                 offload_compaction_policy: model_offload.compaction_policy,
                 offload_compaction_runtime_override: AtomicU8::new(COMPACTION_OVERRIDE_CONFIGURED),
+                offload_memory_mode: model_offload.memory_mode,
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -1112,6 +1115,10 @@ impl ModelClient {
         &self,
         responses_metadata: &CodexResponsesMetadata,
     ) -> ModelRequestRoute {
+        if self.memory_request_should_route_local(responses_metadata) {
+            return ModelRequestRoute::LocalOffload;
+        }
+
         if !self.local_offload_enabled_for_turns() {
             return ModelRequestRoute::Primary;
         }
@@ -1123,6 +1130,21 @@ impl ModelClient {
             }
             _ => ModelRequestRoute::Primary,
         }
+    }
+
+    fn memory_request_should_route_local(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.state.offload_memory_mode == ModelOffloadMemoryMode::Local
+            && self.state.offload_provider.is_some()
+            && (matches!(
+                responses_metadata.request_kind,
+                Some(CodexResponsesRequestKind::Memory)
+            ) || matches!(
+                self.state.session_source,
+                SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
+            ))
     }
 
     fn session_source_allows_local_offload(&self) -> bool {

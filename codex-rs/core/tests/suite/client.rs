@@ -994,6 +994,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         enabled: true,
         runtime_override: None,
         compaction_runtime_override: None,
+        memory_mode: codex_config::config_toml::ModelOffloadMemoryMode::Local,
         provider_id: Some(local_provider.name.clone()),
         provider: Some(local_provider.clone()),
         model: Some("local-responses-model".to_string()),

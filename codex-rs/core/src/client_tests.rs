@@ -28,6 +28,7 @@ use codex_api::ResponseEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
@@ -107,6 +108,18 @@ fn test_model_client_with_local_offload_config(
     session_source: SessionSource,
     compaction_policy: ModelOffloadCompactionPolicy,
 ) -> ModelClient {
+    test_model_client_with_local_offload_config_and_memory_mode(
+        session_source,
+        compaction_policy,
+        ModelOffloadMemoryMode::Local,
+    )
+}
+
+fn test_model_client_with_local_offload_config_and_memory_mode(
+    session_source: SessionSource,
+    compaction_policy: ModelOffloadCompactionPolicy,
+    memory_mode: ModelOffloadMemoryMode,
+) -> ModelClient {
     let primary_provider =
         ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
     let local_provider =
@@ -127,6 +140,7 @@ fn test_model_client_with_local_offload_config(
             enabled: true,
             runtime_override: None,
             compaction_runtime_override: None,
+            memory_mode,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
@@ -754,6 +768,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             enabled: true,
             runtime_override: None,
             compaction_runtime_override: None,
+            memory_mode: ModelOffloadMemoryMode::Local,
             provider_id: Some("local".to_string()),
             provider: Some(local_provider),
             model: Some("local-responses-model".to_string()),
@@ -917,7 +932,6 @@ fn no_offload_config_preserves_primary_turn_routing() {
 #[test]
 fn internal_and_subagent_sources_stay_primary_with_offload_configured() {
     for session_source in [
-        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
         SessionSource::SubAgent(SubAgentSource::Review),
         SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
     ] {
@@ -943,6 +957,67 @@ fn internal_and_subagent_sources_stay_primary_with_offload_configured() {
         );
         assert!(!client.offload_ever_used());
     }
+}
+
+#[test]
+fn memory_mode_primary_keeps_memory_consolidation_primary() {
+    let client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Primary,
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+}
+
+#[test]
+fn memory_mode_local_routes_memory_requests_and_consolidation_local() {
+    let memory_client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let memory_metadata = test_responses_metadata_for_client(
+        &memory_client,
+        None,
+        format!("{}:0", memory_client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Memory,
+    );
+    assert!(
+        memory_client
+            .route_for_responses_request(&memory_metadata)
+            .is_local_offload()
+    );
+
+    let consolidation_client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let turn_metadata = test_responses_metadata_for_client(
+        &consolidation_client,
+        Some("turn-1"),
+        format!("{}:0", consolidation_client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    assert!(
+        consolidation_client
+            .route_for_responses_request(&turn_metadata)
+            .is_local_offload()
+    );
 }
 
 async fn request_model_for_metadata(

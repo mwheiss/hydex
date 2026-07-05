@@ -28,6 +28,7 @@ use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -200,6 +201,7 @@ pub struct ModelOffloadConfig {
     pub enabled: bool,
     pub runtime_override: Option<ModelOffloadRuntimeOverride>,
     pub compaction_runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
+    pub memory_mode: ModelOffloadMemoryMode,
     pub provider_id: Option<String>,
     pub provider: Option<ModelProviderInfo>,
     pub model: Option<String>,
@@ -227,6 +229,7 @@ impl Default for ModelOffloadConfig {
             enabled: false,
             runtime_override: None,
             compaction_runtime_override: None,
+            memory_mode: ModelOffloadMemoryMode::Primary,
             provider_id: None,
             provider: None,
             model: None,
@@ -2507,7 +2510,10 @@ fn resolve_model_offload_config(
     let effective_enabled = runtime_override
         .map(ModelOffloadRuntimeOverride::effective_enabled)
         .unwrap_or(offload.enabled);
-    let must_validate_provider = offload.enabled || effective_enabled;
+    let explicit_memory_mode = offload.memory_mode;
+    let must_validate_provider = offload.enabled
+        || effective_enabled
+        || matches!(explicit_memory_mode, Some(ModelOffloadMemoryMode::Local));
     let provider = match offload.provider.as_ref() {
         Some(provider_id) => match validate_model_offload_provider(provider_id, model_providers) {
             Ok(provider) => Some(provider),
@@ -2522,11 +2528,19 @@ fn resolve_model_offload_config(
         }
         None => None,
     };
+    let memory_mode = explicit_memory_mode.unwrap_or_else(|| {
+        if effective_enabled && provider.is_some() {
+            ModelOffloadMemoryMode::Local
+        } else {
+            ModelOffloadMemoryMode::Primary
+        }
+    });
 
     Ok(ModelOffloadConfig {
         enabled: offload.enabled,
         runtime_override,
         compaction_runtime_override: None,
+        memory_mode,
         provider_id: offload.provider.clone(),
         provider: provider.cloned(),
         model: offload.model.clone(),

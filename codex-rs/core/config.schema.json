@@ -1548,6 +1548,31 @@
       },
       "type": "object"
     },
+    "ModelOffloadMemoryMode": {
+      "oneOf": [
+        {
+          "description": "Disable memory generation. Existing memories and memory reads are unchanged.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Run memory generation on the primary provider.",
+          "enum": [
+            "primary"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Run memory generation on the configured local offload provider.",
+          "enum": [
+            "local"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ModelOffloadToml": {
       "additionalProperties": false,
       "properties": {
@@ -1585,6 +1610,14 @@
           "default": false,
           "description": "Enables route-specific offload of eligible model inference requests.",
           "type": "boolean"
+        },
+        "memory_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadMemoryMode"
+            }
+          ],
+          "description": "Route used for memory generation. When unset, Hydex uses local memory generation only when model offload is effectively enabled."
         },
         "model": {
           "description": "Optional model id to send to the offload provider. When unset, Codex sends the currently selected model id.",
@@ -5229,6 +5262,7 @@
           "effective_context_window_percent": 95
         },
         "enabled": false,
+        "memory_mode": null,
         "model": null,
         "provider": null
       },

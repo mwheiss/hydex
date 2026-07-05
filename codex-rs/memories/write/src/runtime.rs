@@ -1,3 +1,4 @@
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_core::CodexThread;
 use codex_core::ModelClient;
 use codex_core::NewThread;
@@ -227,6 +228,12 @@ impl MemoryStartupContext {
         let session_source = config_snapshot.session_source;
         let session_id = SessionId::from(self.thread_id);
         let session_id_string = session_id.to_string();
+        let model_offload = match config.model_offload.memory_mode {
+            ModelOffloadMemoryMode::Local => config.model_offload.clone(),
+            ModelOffloadMemoryMode::Off | ModelOffloadMemoryMode::Primary => {
+                ModelOffloadConfig::default()
+            }
+        };
         let model_client = ModelClient::new(
             Some(Arc::clone(&self.auth_manager)),
             self.thread_id,
@@ -237,7 +244,7 @@ impl MemoryStartupContext {
             config.features.enabled(Feature::RuntimeMetrics),
             /*beta_features_header*/ None,
             /*attestation_provider*/ None,
-            ModelOffloadConfig::default(),
+            model_offload,
         );
 
         let mut client_session = model_client.new_session();

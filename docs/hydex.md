@@ -199,20 +199,29 @@ style judge. It rejects only clearly broken local-model outputs such as empty or
 placeholder payloads, visible reasoning leakage, obvious repetition loops,
 malformed protocol-like JSON, or tool-call stubs where plain text is expected.
 
-The deterministic gate currently runs before accepting durable local compaction
-payloads, before committing local memory payloads, and before dispatching or
-recording completed local sampling items. Tool-call validation happens before
-tool execution, so a rejected local tool-call item is not executed first.
+The deterministic gate runs before accepting durable local compaction payloads,
+before committing local memory payloads, and before dispatching or recording
+completed local sampling items. Tool-call validation happens before tool
+execution, so a rejected local tool-call item is not executed first.
 
 For local memory and local compaction, rejected payloads are hard-gated and are
-not committed as memory or replacement history. For ordinary local final text,
-a rejected completed item surfaces a controlled local-output failure. Streaming
-text deltas may already have been shown to the UI before the completed item is
-validated, but the item is not accepted into canonical history after rejection.
+not committed as memory or replacement history. If the cheap gate passes, local
+memory and local compaction also run a bounded model-based sanity validator on
+the local provider. The validator has a strict JSON contract:
+`{"accept": true}` or `{"accept": false}`. Malformed validator output is retried
+up to `validator_attempts`; validator unavailability is distinct from an
+explicit rejection. Explicit rejection retries the original local generation up
+to `generation_retries` before failing the hard-gated memory/compaction path.
 
-`validator_attempts`, `generation_retries`, and `retry_temperature` are reserved
-for the model-based validator/retry path. The current production gate is the
-bounded deterministic sanity check described above.
+For ordinary local final text and tool-call items, the current production path
+uses the deterministic gate only. A rejected completed item surfaces a
+controlled local-output failure. Streaming text deltas may already have been
+shown to the UI before the completed item is validated, but the item is not
+accepted into canonical history after rejection.
+
+`retry_temperature` is parsed and reserved for low-temperature local retry
+sampling once the shared Responses request layer exposes per-request temperature
+controls. It is not currently placed on the wire.
 
 ## Tools
 

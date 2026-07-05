@@ -10,7 +10,9 @@ use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
 use crate::local_output_validation::CheapValidationOutcome;
 use crate::local_output_validation::LocalOutputKind;
+use crate::local_output_validation::LocalOutputValidationResult;
 use crate::local_output_validation::cheap_validate_local_output;
+use crate::local_output_validation::validate_local_output_with_model;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
@@ -270,84 +272,134 @@ async fn run_compact_task_inner_impl(
     let window_id = sess.current_window_id().await;
     let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
         sess.installation_id.clone(),
-        window_id,
+        window_id.clone(),
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
+    let compaction_routes_local = client_session.is_local_offload_route_for(&responses_metadata);
 
-    loop {
-        // Clone is required because of the loop
-        let turn_input = history
-            .clone()
-            .for_prompt(&turn_context.model_info.input_modalities);
-        let turn_input_len = turn_input.len();
-        let prompt = Prompt {
-            input: turn_input,
-            base_instructions: sess.get_base_instructions().await,
-            ..Default::default()
-        };
-        let attempt_result = drain_to_completed(
-            &sess,
-            turn_context.as_ref(),
-            &mut client_session,
-            &responses_metadata,
-            &prompt,
-        )
-        .await;
+    let validation_metadata = turn_context.turn_metadata_state.to_responses_metadata(
+        sess.installation_id.clone(),
+        window_id.clone(),
+        CodexResponsesRequestKind::LocalOutputValidation,
+    );
+    let generation_retries = turn_context
+        .config
+        .model_offload
+        .validation
+        .generation_retries;
+    let mut generation_attempts = 0;
+    let (history_snapshot, summary_suffix, summary_text) = loop {
+        loop {
+            // Clone is required because of the loop
+            let turn_input = history
+                .clone()
+                .for_prompt(&turn_context.model_info.input_modalities);
+            let turn_input_len = turn_input.len();
+            let prompt = Prompt {
+                input: turn_input,
+                base_instructions: sess.get_base_instructions().await,
+                ..Default::default()
+            };
+            let attempt_result = drain_to_completed(
+                &sess,
+                turn_context.as_ref(),
+                &mut client_session,
+                &responses_metadata,
+                &prompt,
+            )
+            .await;
 
-        match attempt_result {
-            Ok(()) => {
-                break;
-            }
-            Err(CodexErr::Interrupted) => {
-                return Err(CodexErr::Interrupted);
-            }
-            Err(e @ CodexErr::ContextWindowExceeded) => {
-                if turn_input_len > 1 {
-                    // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
-                    error!(
-                        "Context window exceeded while compacting; removing oldest history item. Error: {e}"
-                    );
-                    history.remove_first_item();
-                    retries = 0;
-                    continue;
+            match attempt_result {
+                Ok(()) => {
+                    break;
                 }
-                sess.set_total_tokens_full(turn_context.as_ref()).await;
-                sess.track_turn_codex_error(turn_context.as_ref(), &e);
-                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
-                sess.send_event(&turn_context, event).await;
-                return Err(e);
-            }
-            Err(e) => {
-                if retries < max_retries {
-                    retries += 1;
-                    let delay = backoff(retries);
-                    sess.notify_stream_error(
-                        turn_context.as_ref(),
-                        format!("Reconnecting... {retries}/{max_retries}"),
-                        e,
-                    )
-                    .await;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                } else {
+                Err(CodexErr::Interrupted) => {
+                    return Err(CodexErr::Interrupted);
+                }
+                Err(e @ CodexErr::ContextWindowExceeded) => {
+                    if turn_input_len > 1 {
+                        // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
+                        error!(
+                            "Context window exceeded while compacting; removing oldest history item. Error: {e}"
+                        );
+                        history.remove_first_item();
+                        retries = 0;
+                        continue;
+                    }
+                    sess.set_total_tokens_full(turn_context.as_ref()).await;
                     sess.track_turn_codex_error(turn_context.as_ref(), &e);
                     let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                     sess.send_event(&turn_context, event).await;
                     return Err(e);
                 }
+                Err(e) => {
+                    if retries < max_retries {
+                        retries += 1;
+                        let delay = backoff(retries);
+                        sess.notify_stream_error(
+                            turn_context.as_ref(),
+                            format!("Reconnecting... {retries}/{max_retries}"),
+                            e,
+                        )
+                        .await;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    } else {
+                        sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                        let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                        sess.send_event(&turn_context, event).await;
+                        return Err(e);
+                    }
+                }
             }
         }
-    }
 
-    let history_snapshot = sess.clone_history().await;
+        let history_snapshot = sess.clone_history().await;
+        let history_items = history_snapshot.raw_items();
+        let summary_suffix =
+            get_last_assistant_message_from_turn(history_items).unwrap_or_default();
+        let local_handoff_role = turn_context
+            .config
+            .model_offload
+            .compaction_local_handoff_role;
+        let summary_text = local_compaction_summary_text(&summary_suffix, local_handoff_role);
+        match validate_local_compaction_payload_with_model(
+            turn_context.as_ref(),
+            &mut client_session,
+            &validation_metadata,
+            &summary_text,
+            compaction_routes_local,
+        )
+        .await?
+        {
+            LocalOutputValidationResult::Accepted | LocalOutputValidationResult::Disabled => {
+                break (history_snapshot, summary_suffix, summary_text);
+            }
+            LocalOutputValidationResult::Rejected(reason)
+                if generation_attempts < generation_retries =>
+            {
+                generation_attempts += 1;
+                tracing::warn!(
+                    "local compaction output rejected by sanity validator; retrying generation ({generation_attempts}/{generation_retries}): {reason}"
+                );
+            }
+            LocalOutputValidationResult::Rejected(reason) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "Local compaction output failed sanity validation: {reason}"
+                )));
+            }
+            LocalOutputValidationResult::ValidationUnavailable(reason) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "Local compaction output validation unavailable: {reason}"
+                )));
+            }
+        }
+    };
     let history_items = history_snapshot.raw_items();
-    let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let local_handoff_role = turn_context
         .config
         .model_offload
         .compaction_local_handoff_role;
-    let summary_text = local_compaction_summary_text(&summary_suffix, local_handoff_role);
-    validate_local_compaction_payload(turn_context.as_ref(), &summary_text)?;
     let user_messages = collect_user_messages(history_items);
 
     let mut new_history = build_compacted_history_with_handoff_role(
@@ -408,6 +460,32 @@ fn validate_local_compaction_payload(
         }
     }
     Ok(())
+}
+
+async fn validate_local_compaction_payload_with_model(
+    turn_context: &TurnContext,
+    client_session: &mut ModelClientSession,
+    responses_metadata: &CodexResponsesMetadata,
+    summary_text: &str,
+    compaction_routes_local: bool,
+) -> CodexResult<LocalOutputValidationResult> {
+    validate_local_compaction_payload(turn_context, summary_text)?;
+    if !compaction_routes_local {
+        return Ok(LocalOutputValidationResult::Disabled);
+    }
+    validate_local_output_with_model(
+        &turn_context.config.model_offload.validation,
+        LocalOutputKind::CompactionPayload,
+        summary_text,
+        client_session,
+        &turn_context.model_info,
+        &turn_context.session_telemetry,
+        turn_context.reasoning_effort.clone(),
+        turn_context.reasoning_summary,
+        turn_context.config.service_tier.clone(),
+        responses_metadata,
+    )
+    .await
 }
 
 pub(crate) struct CompactionAnalyticsAttempt {

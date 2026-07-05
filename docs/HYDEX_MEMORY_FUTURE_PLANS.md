@@ -303,10 +303,10 @@ Production Hydex should probably retry empty/tiny/placeholder local responses on
 ## Validation and Fallback Hardening
 
 Assistant-state compaction is now the Hydex local default. Hydex also has a
-bounded deterministic sanity gate for completed local/offloaded outputs. The
-gate is intentionally shallow: it rejects clearly broken local outputs before
-accepting local compaction replacement history, committing local memory payloads,
-or executing/recording completed local sampling items. It is not a quality or
+bounded sanity gate for completed local/offloaded outputs. The gate is
+intentionally shallow: it rejects clearly broken local outputs before accepting
+local compaction replacement history, committing local memory payloads, or
+executing/recording completed local sampling items. It is not a quality or
 correctness judge.
 
 Implemented cheap validation rejects at least:
@@ -318,26 +318,29 @@ Implemented cheap validation rejects at least:
 - malformed JSON-like protocol payloads
 - tool-call stubs where text or memory/compaction payloads are expected
 
-Still-useful future model-based validation/retry behavior:
+Implemented model-based validation/retry behavior:
 
 ```text
 local deterministic compaction or memory generation
   -> cheap validation
   -> model-based sanity validator if cheap validation passes and the output type is enabled
 
-if invalid:
-  retry once at very low temperature, e.g. 0.01
+if rejected:
+  retry once with the same local route
   -> validate
 
-if still invalid:
-  fall back to primary/baseline behavior where safe
+if still rejected or validator unavailable:
+  do not commit local memory or local compaction replacement history
 ```
 
 The harness may continue testing invalid payloads to measure downstream damage.
 Production Hydex now avoids storing invalid assistant-state payloads that fail
-the deterministic gate. Model-based validation remains a hardening follow-up for
-subtler malformed outputs that cheap checks cannot detect without becoming a
-quality judge.
+the deterministic gate or the bounded model validator. Remaining hardening work
+is to decide whether ordinary final-text and tool-call items should also use the
+model validator in the streaming turn loop; today those paths use the
+deterministic gate before canonical acceptance/tool execution. `retry_temperature`
+is parsed and reserved, but the shared Responses request type does not yet expose
+per-request temperature controls for local retries.
 
 ## Evaluation Status and Next Tests
 

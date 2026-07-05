@@ -1022,6 +1022,31 @@ fn memory_mode_local_routes_memory_requests_and_consolidation_local() {
     );
 }
 
+#[test]
+fn local_output_validation_routes_local_when_offload_provider_exists() {
+    let client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Primary,
+    );
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .expect("force off override should be accepted");
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:validation", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+}
+
 async fn request_model_for_metadata(
     client: &ModelClient,
     responses_metadata: &CodexResponsesMetadata,

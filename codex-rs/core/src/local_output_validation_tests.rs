@@ -87,3 +87,31 @@ fn accepts_coherent_compaction_text() {
         CheapValidationOutcome::Pass
     );
 }
+
+#[test]
+fn parses_exact_validator_accept_json() {
+    assert_eq!(parse_validator_acceptance(r#"{"accept": true}"#), Ok(true));
+    assert_eq!(
+        parse_validator_acceptance(r#"{"accept": false}"#),
+        Ok(false)
+    );
+}
+
+#[test]
+fn rejects_validator_output_with_extra_text_or_fields() {
+    assert!(
+        parse_validator_acceptance("sure\n{\"accept\": true}")
+            .expect_err("extra prose should fail")
+            .contains("invalid JSON")
+    );
+    assert!(
+        parse_validator_acceptance(r#"{"accept": true, "reason": "ok"}"#)
+            .expect_err("extra fields should fail")
+            .contains("only boolean accept")
+    );
+    assert!(
+        parse_validator_acceptance(r#"{"accept": "true"}"#)
+            .expect_err("non-boolean accept should fail")
+            .contains("invalid validator schema")
+    );
+}

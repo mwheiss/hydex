@@ -1119,6 +1119,10 @@ impl ModelClient {
             return ModelRequestRoute::LocalOffload;
         }
 
+        if self.local_output_validation_request_should_route_local(responses_metadata) {
+            return ModelRequestRoute::LocalOffload;
+        }
+
         if !self.local_offload_enabled_for_turns() {
             return ModelRequestRoute::Primary;
         }
@@ -1145,6 +1149,17 @@ impl ModelClient {
                 self.state.session_source,
                 SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
             ))
+    }
+
+    fn local_output_validation_request_should_route_local(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.state.offload_provider.is_some()
+            && matches!(
+                responses_metadata.request_kind,
+                Some(CodexResponsesRequestKind::LocalOutputValidation)
+            )
     }
 
     fn session_source_allows_local_offload(&self) -> bool {
@@ -1362,6 +1377,14 @@ impl ModelClientSession {
                 )
             }
         }
+    }
+
+    pub(crate) fn is_local_offload_route_for(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.route_for_responses_request(responses_metadata)
+            .is_local_offload()
     }
 
     fn reset_websocket_session(&mut self) {

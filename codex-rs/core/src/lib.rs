@@ -17,6 +17,7 @@ mod responses_retry;
 pub(crate) mod session;
 pub use responses_metadata::CodexResponsesMetadata;
 pub use session::SteerInputError;
+pub use turn_metadata::detached_local_output_validation_responses_metadata;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
 mod compact_remote;

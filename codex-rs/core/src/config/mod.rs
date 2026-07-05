@@ -209,6 +209,7 @@ pub struct ModelOffloadConfig {
     pub compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
     pub compaction_recovery: ModelOffloadCompactionRecoveryConfig,
     pub context: ModelOffloadContextConfig,
+    pub validation: ModelOffloadValidationConfig,
 }
 
 impl ModelOffloadConfig {
@@ -237,6 +238,37 @@ impl Default for ModelOffloadConfig {
             compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::AssistantState,
             compaction_recovery: ModelOffloadCompactionRecoveryConfig::default(),
             context: ModelOffloadContextConfig::default(),
+            validation: ModelOffloadValidationConfig::default(),
+        }
+    }
+}
+
+/// Resolved shallow sanity-validation settings for local/offloaded model outputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelOffloadValidationConfig {
+    pub enabled: bool,
+    pub validator_attempts: u32,
+    pub generation_retries: u32,
+    pub retry_temperature: f64,
+    pub final_text: bool,
+    pub tool_calls: bool,
+    pub structured_outputs: bool,
+    pub memory: bool,
+    pub compaction: bool,
+}
+
+impl Default for ModelOffloadValidationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            validator_attempts: 3,
+            generation_retries: 1,
+            retry_temperature: 0.01,
+            final_text: true,
+            tool_calls: true,
+            structured_outputs: true,
+            memory: true,
+            compaction: true,
         }
     }
 }
@@ -2557,6 +2589,17 @@ fn resolve_model_offload_config(
             context_window: offload.context.context_window,
             effective_context_window_percent: offload.context.effective_context_window_percent,
             auto_compact_token_limit: offload.context.auto_compact_token_limit,
+        },
+        validation: ModelOffloadValidationConfig {
+            enabled: offload.validation.enabled,
+            validator_attempts: offload.validation.validator_attempts,
+            generation_retries: offload.validation.generation_retries,
+            retry_temperature: offload.validation.retry_temperature,
+            final_text: offload.validation.final_text,
+            tool_calls: offload.validation.tool_calls,
+            structured_outputs: offload.validation.structured_outputs,
+            memory: offload.validation.memory,
+            compaction: offload.validation.compaction,
         },
     })
 }

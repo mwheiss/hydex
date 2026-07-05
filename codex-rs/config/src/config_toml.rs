@@ -505,7 +505,7 @@ pub struct ConfigToml {
     pub oss_provider: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelOffloadToml {
     /// Enables route-specific offload of eligible model inference requests.
@@ -525,6 +525,9 @@ pub struct ModelOffloadToml {
     /// Local offload context-window settings used for auto-compaction pressure.
     #[serde(default)]
     pub context: ModelOffloadContextToml,
+    /// Shallow sanity validation for completed local/offloaded model outputs.
+    #[serde(default)]
+    pub validation: ModelOffloadValidationToml,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
@@ -630,6 +633,81 @@ impl Default for ModelOffloadContextToml {
             effective_context_window_percent:
                 default_model_offload_effective_context_window_percent(),
             auto_compact_token_limit: None,
+        }
+    }
+}
+
+fn default_model_offload_validation_enabled() -> bool {
+    true
+}
+
+fn default_model_offload_validation_validator_attempts() -> u32 {
+    3
+}
+
+fn default_model_offload_validation_generation_retries() -> u32 {
+    1
+}
+
+fn default_model_offload_validation_retry_temperature() -> f64 {
+    0.01
+}
+
+fn default_model_offload_validation_final_text() -> bool {
+    true
+}
+
+fn default_model_offload_validation_tool_calls() -> bool {
+    true
+}
+
+fn default_model_offload_validation_structured_outputs() -> bool {
+    true
+}
+
+fn default_model_offload_validation_memory() -> bool {
+    true
+}
+
+fn default_model_offload_validation_compaction() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadValidationToml {
+    #[serde(default = "default_model_offload_validation_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_model_offload_validation_validator_attempts")]
+    pub validator_attempts: u32,
+    #[serde(default = "default_model_offload_validation_generation_retries")]
+    pub generation_retries: u32,
+    #[serde(default = "default_model_offload_validation_retry_temperature")]
+    pub retry_temperature: f64,
+    #[serde(default = "default_model_offload_validation_final_text")]
+    pub final_text: bool,
+    #[serde(default = "default_model_offload_validation_tool_calls")]
+    pub tool_calls: bool,
+    #[serde(default = "default_model_offload_validation_structured_outputs")]
+    pub structured_outputs: bool,
+    #[serde(default = "default_model_offload_validation_memory")]
+    pub memory: bool,
+    #[serde(default = "default_model_offload_validation_compaction")]
+    pub compaction: bool,
+}
+
+impl Default for ModelOffloadValidationToml {
+    fn default() -> Self {
+        Self {
+            enabled: default_model_offload_validation_enabled(),
+            validator_attempts: default_model_offload_validation_validator_attempts(),
+            generation_retries: default_model_offload_validation_generation_retries(),
+            retry_temperature: default_model_offload_validation_retry_temperature(),
+            final_text: default_model_offload_validation_final_text(),
+            tool_calls: default_model_offload_validation_tool_calls(),
+            structured_outputs: default_model_offload_validation_structured_outputs(),
+            memory: default_model_offload_validation_memory(),
+            compaction: default_model_offload_validation_compaction(),
         }
     }
 }

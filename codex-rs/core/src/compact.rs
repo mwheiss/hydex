@@ -8,6 +8,9 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+use crate::local_output_validation::CheapValidationOutcome;
+use crate::local_output_validation::LocalOutputKind;
+use crate::local_output_validation::cheap_validate_local_output;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
@@ -344,6 +347,7 @@ async fn run_compact_task_inner_impl(
         .model_offload
         .compaction_local_handoff_role;
     let summary_text = local_compaction_summary_text(&summary_suffix, local_handoff_role);
+    validate_local_compaction_payload(turn_context.as_ref(), &summary_text)?;
     let user_messages = collect_user_messages(history_items);
 
     let mut new_history = build_compacted_history_with_handoff_role(
@@ -385,6 +389,25 @@ async fn run_compact_task_inner_impl(
     });
     sess.send_event(&turn_context, warning).await;
     Ok(summary_suffix)
+}
+
+fn validate_local_compaction_payload(
+    turn_context: &TurnContext,
+    summary_text: &str,
+) -> CodexResult<()> {
+    match cheap_validate_local_output(
+        &turn_context.config.model_offload.validation,
+        LocalOutputKind::CompactionPayload,
+        summary_text,
+    ) {
+        CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => {}
+        CheapValidationOutcome::Reject(reason) => {
+            return Err(CodexErr::InvalidRequest(format!(
+                "Local compaction output failed sanity validation: {reason}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) struct CompactionAnalyticsAttempt {

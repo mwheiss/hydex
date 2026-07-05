@@ -76,6 +76,37 @@ fn content_items_to_text_ignores_image_only_content() {
     assert_eq!(None, joined);
 }
 
+#[tokio::test]
+async fn local_compaction_validation_rejects_reasoning_leakage() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+
+    let err = validate_local_compaction_payload(
+        &turn_context,
+        "Need / current state:\n- <think>hidden scratch</think>",
+    )
+    .expect_err("reasoning leakage should reject local compaction");
+
+    assert!(
+        err.to_string().contains("failed sanity validation"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn local_compaction_validation_can_be_disabled() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    std::sync::Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .validation
+        .compaction = false;
+
+    validate_local_compaction_payload(
+        &turn_context,
+        "Need / current state:\n- <think>hidden scratch</think>",
+    )
+    .expect("disabled compaction validation should not reject");
+}
+
 #[test]
 fn collect_user_messages_extracts_user_text_only() {
     let items = vec![

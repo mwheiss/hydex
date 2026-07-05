@@ -458,6 +458,71 @@ async fn memories_startup_memory_mode_local_uses_offload_route() -> anyhow::Resu
 }
 
 #[tokio::test]
+async fn memories_startup_local_memory_validation_rejects_before_commit() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let local_provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    let test = build_test_codex_with_memories_config_and_config(
+        &server,
+        Arc::clone(&home),
+        startup_test_memories_config(),
+        move |config| {
+            config.model_offload.provider_id = Some("local".to_string());
+            config.model_offload.provider = Some(local_provider);
+            config.model_offload.model = Some("local-memory-model".to_string());
+            config.model_offload.memory_mode = ModelOffloadMemoryMode::Local;
+        },
+    )
+    .await?;
+    let provider = Arc::new(MockMemoryModelProvider::new(
+        test.config.model_provider.clone(),
+        Some(test.thread_manager.auth_manager()),
+    ));
+    let db = test
+        .codex
+        .state_db()
+        .ok_or_else(|| anyhow::anyhow!("state db should be enabled for memory startup test"))?;
+    seed_stage1_candidate(
+        db.as_ref(),
+        home.path(),
+        chrono::Utc::now() - chrono::Duration::hours(2),
+        "startup-validation",
+    )
+    .await?;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-phase1"),
+            ev_assistant_message(
+                "msg-phase1",
+                r#"{"raw_memory":"<think>private scratch</think>","rollout_summary":"rollout summary","rollout_slug":"startup-validation"}"#,
+            ),
+            ev_completed("resp-phase1"),
+        ]),
+    )
+    .await;
+
+    let (context, config) = memory_startup_context_with_provider(&test, provider).await;
+    phase1::run(context, config).await;
+
+    let request = wait_for_single_request(&response).await;
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some("local-memory-model")
+    );
+    assert!(
+        db.memories()
+            .list_stage1_outputs_for_global(/*limit*/ 10)
+            .await?
+            .is_empty()
+    );
+
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn memories_startup_memory_mode_off_skips_generation() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);

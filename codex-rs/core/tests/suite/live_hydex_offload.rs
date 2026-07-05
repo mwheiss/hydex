@@ -127,6 +127,7 @@ async fn live_local_offload_responses_turn_completes() {
             codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
         compaction_recovery: codex_core::config::ModelOffloadCompactionRecoveryConfig::default(),
         context: Default::default(),
+        validation: Default::default(),
     };
 
     let codex_home = TempDir::new().expect("create codex home");

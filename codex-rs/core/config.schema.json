@@ -1626,6 +1626,72 @@
         "provider": {
           "description": "Key in `model_providers` identifying the local Responses-compatible provider.",
           "type": "string"
+        },
+        "validation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadValidationToml"
+            }
+          ],
+          "default": {
+            "compaction": true,
+            "enabled": true,
+            "final_text": true,
+            "generation_retries": 1,
+            "memory": true,
+            "retry_temperature": 0.01,
+            "structured_outputs": true,
+            "tool_calls": true,
+            "validator_attempts": 3
+          },
+          "description": "Shallow sanity validation for completed local/offloaded model outputs."
+        }
+      },
+      "type": "object"
+    },
+    "ModelOffloadValidationToml": {
+      "additionalProperties": false,
+      "properties": {
+        "compaction": {
+          "default": true,
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "final_text": {
+          "default": true,
+          "type": "boolean"
+        },
+        "generation_retries": {
+          "default": 1,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "memory": {
+          "default": true,
+          "type": "boolean"
+        },
+        "retry_temperature": {
+          "default": 0.01,
+          "format": "double",
+          "type": "number"
+        },
+        "structured_outputs": {
+          "default": true,
+          "type": "boolean"
+        },
+        "tool_calls": {
+          "default": true,
+          "type": "boolean"
+        },
+        "validator_attempts": {
+          "default": 3,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -5264,7 +5330,18 @@
         "enabled": false,
         "memory_mode": null,
         "model": null,
-        "provider": null
+        "provider": null,
+        "validation": {
+          "compaction": true,
+          "enabled": true,
+          "final_text": true,
+          "generation_retries": 1,
+          "memory": true,
+          "retry_temperature": 0.01,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "validator_attempts": 3
+        }
       },
       "description": "Optional local model offload settings. Disabled by default, preserving standard provider routing unless explicitly enabled."
     },

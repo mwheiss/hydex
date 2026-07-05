@@ -5291,6 +5291,10 @@ async fn load_config_defaults_model_offload_disabled() -> std::io::Result<()> {
         config.model_offload.compaction_recovery.projection,
         ModelOffloadCompactionRecoveryProjection::AssistantState
     );
+    assert_eq!(
+        config.model_offload.validation,
+        crate::config::ModelOffloadValidationConfig::default()
+    );
     assert!(config.model_offload.runtime_override.is_none());
     assert!(!config.model_offload.effective_enabled());
 
@@ -5319,6 +5323,17 @@ projection = "user_handoff"
 [model_offload.context]
 context_window = 200000
 auto_compact_token_limit = 250000
+
+[model_offload.validation]
+enabled = false
+validator_attempts = 5
+generation_retries = 2
+retry_temperature = 0.02
+final_text = false
+tool_calls = true
+structured_outputs = false
+memory = false
+compaction = true
 
 [model_providers.local]
 name = "Local Responses"
@@ -5389,6 +5404,20 @@ wire_api = "responses"
     assert_eq!(
         config.model_offload.context.auto_compact_token_limit(),
         Some(180_000)
+    );
+    assert_eq!(
+        config.model_offload.validation,
+        crate::config::ModelOffloadValidationConfig {
+            enabled: false,
+            validator_attempts: 5,
+            generation_retries: 2,
+            retry_temperature: 0.02,
+            final_text: false,
+            tool_calls: true,
+            structured_outputs: false,
+            memory: false,
+            compaction: true,
+        }
     );
 
     Ok(())

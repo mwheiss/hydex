@@ -148,6 +148,7 @@ fn test_model_client_with_local_offload_config_and_memory_mode(
             compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::UserSummary,
             context: Default::default(),
+            validation: Default::default(),
         },
     )
 }
@@ -777,6 +778,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
                 codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
             compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
+            validation: Default::default(),
         },
     );
     let client_session = client.new_session();

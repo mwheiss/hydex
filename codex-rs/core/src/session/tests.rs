@@ -8329,6 +8329,7 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
                 codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
             compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
             context: Default::default(),
+            validation: Default::default(),
         },
     );
     let rollout_path = attach_thread_persistence(&mut session).await;

@@ -40,6 +40,17 @@ fn assistant_output_text(text: &str) -> ResponseItem {
     }
 }
 
+fn function_call_item() -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call-1".to_string(),
+        metadata: None,
+    }
+}
+
 fn test_model_info_with_context_window(context_window: Option<i64>) -> ModelInfo {
     serde_json::from_value(json!({
         "slug": "gpt-test",
@@ -68,6 +79,62 @@ fn test_model_info_with_context_window(context_window: Option<i64>) -> ModelInfo
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+#[test]
+fn local_sampling_validation_candidate_classifies_final_text() {
+    assert_eq!(
+        local_sampling_validation_candidate(
+            &Prompt::default(),
+            &assistant_output_text("ordinary final text"),
+        ),
+        Some((
+            LocalOutputKind::FinalText,
+            "ordinary final text".to_string()
+        ))
+    );
+}
+
+#[test]
+fn local_sampling_validation_candidate_classifies_structured_output() {
+    let prompt = Prompt {
+        output_schema: Some(json!({"type": "object"})),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        local_sampling_validation_candidate(&prompt, &assistant_output_text(r#"{"ok":true}"#)),
+        Some((
+            LocalOutputKind::StructuredOutput,
+            r#"{"ok":true}"#.to_string()
+        ))
+    );
+}
+
+#[test]
+fn local_sampling_validation_candidate_classifies_tool_calls() {
+    assert_eq!(
+        local_sampling_validation_candidate(&Prompt::default(), &function_call_item())
+            .map(|(kind, _)| kind),
+        Some(LocalOutputKind::ToolCalls)
+    );
+}
+
+#[tokio::test]
+async fn local_sampling_validation_rejects_broken_final_text() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+
+    let err = validate_completed_local_sampling_item(
+        &turn_context,
+        &Prompt::default(),
+        &assistant_output_text("<think>hidden scratch</think>"),
+    )
+    .expect_err("reasoning leakage should reject local final text");
+
+    assert!(
+        err.to_string().contains("failed sanity validation"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

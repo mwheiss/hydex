@@ -36,6 +36,9 @@ use crate::hook_runtime::run_turn_stop_hooks;
 use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
+use crate::local_output_validation::CheapValidationOutcome;
+use crate::local_output_validation::LocalOutputKind;
+use crate::local_output_validation::cheap_validate_local_output;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
@@ -2568,6 +2571,10 @@ async fn try_run_sampling_request(
                     continue;
                 }
 
+                if client_session.local_offload_enabled_for_turns() {
+                    validate_completed_local_sampling_item(&turn_context, prompt, &item)?;
+                }
+
                 let mut ctx = HandleOutputCtx {
                     sess: sess.clone(),
                     turn_context: turn_context.clone(),
@@ -2906,6 +2913,55 @@ async fn try_run_sampling_request(
     }
 
     outcome
+}
+
+fn validate_completed_local_sampling_item(
+    turn_context: &TurnContext,
+    prompt: &Prompt,
+    item: &ResponseItem,
+) -> CodexResult<()> {
+    let Some((kind, candidate)) = local_sampling_validation_candidate(prompt, item) else {
+        return Ok(());
+    };
+    match cheap_validate_local_output(
+        &turn_context.config.model_offload.validation,
+        kind,
+        &candidate,
+    ) {
+        CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => Ok(()),
+        CheapValidationOutcome::Reject(reason) => Err(CodexErr::InvalidRequest(format!(
+            "Local model output failed sanity validation: {reason}"
+        ))),
+    }
+}
+
+fn local_sampling_validation_candidate(
+    prompt: &Prompt,
+    item: &ResponseItem,
+) -> Option<(LocalOutputKind, String)> {
+    if let Some(text) = raw_assistant_output_text_from_item(item) {
+        let kind = if prompt.output_schema.is_some() {
+            LocalOutputKind::StructuredOutput
+        } else {
+            LocalOutputKind::FinalText
+        };
+        return Some((kind, text));
+    }
+
+    if matches!(
+        item,
+        ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+    ) {
+        let candidate = serde_json::to_string(item).unwrap_or_else(|_| format!("{item:?}"));
+        return Some((LocalOutputKind::ToolCalls, candidate));
+    }
+
+    None
 }
 
 pub(crate) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {

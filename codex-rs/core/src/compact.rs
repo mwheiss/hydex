@@ -297,6 +297,13 @@ async fn run_compact_task_inner_impl(
             let turn_input_len = turn_input.len();
             let prompt = Prompt {
                 input: turn_input,
+                temperature: (generation_attempts > 0).then_some(
+                    turn_context
+                        .config
+                        .model_offload
+                        .validation
+                        .retry_temperature,
+                ),
                 base_instructions: sess.get_base_instructions().await,
                 ..Default::default()
             };

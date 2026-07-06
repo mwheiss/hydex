@@ -339,8 +339,11 @@ the deterministic gate or the bounded model validator. Remaining hardening work
 is to decide whether ordinary final-text and tool-call items should also use the
 model validator in the streaming turn loop; today those paths use the
 deterministic gate before canonical acceptance/tool execution. `retry_temperature`
-is emitted for local memory, local compaction, and local validation requests; it
-is not sent on ordinary user turns.
+is used for local memory/compaction generation retries after validator
+rejection. First-pass local helper temperatures are controlled separately by
+optional `memory_temperature`, `compaction_temperature`, and
+`validator_temperature` settings; unset helper temperatures are omitted from the
+wire request. Ordinary user turns do not send a temperature field.
 
 ## Evaluation Status and Next Tests
 

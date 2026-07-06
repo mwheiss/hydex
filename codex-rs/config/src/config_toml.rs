@@ -684,6 +684,12 @@ pub struct ModelOffloadValidationToml {
     pub generation_retries: u32,
     #[serde(default = "default_model_offload_validation_retry_temperature")]
     pub retry_temperature: f64,
+    #[serde(default)]
+    pub memory_temperature: Option<f64>,
+    #[serde(default)]
+    pub compaction_temperature: Option<f64>,
+    #[serde(default)]
+    pub validator_temperature: Option<f64>,
     #[serde(default = "default_model_offload_validation_final_text")]
     pub final_text: bool,
     #[serde(default = "default_model_offload_validation_tool_calls")]
@@ -703,6 +709,9 @@ impl Default for ModelOffloadValidationToml {
             validator_attempts: default_model_offload_validation_validator_attempts(),
             generation_retries: default_model_offload_validation_generation_retries(),
             retry_temperature: default_model_offload_validation_retry_temperature(),
+            memory_temperature: None,
+            compaction_temperature: None,
+            validator_temperature: None,
             final_text: default_model_offload_validation_final_text(),
             tool_calls: default_model_offload_validation_tool_calls(),
             structured_outputs: default_model_offload_validation_structured_outputs(),

@@ -57,6 +57,10 @@ enabled = true
 validator_attempts = 3
 generation_retries = 1
 retry_temperature = 0.01
+# Optional. When unset, Hydex omits `temperature` for that helper request type.
+# memory_temperature = 0.01
+# compaction_temperature = 0.01
+# validator_temperature = 0.01
 final_text = true
 tool_calls = true
 structured_outputs = true
@@ -219,9 +223,12 @@ controlled local-output failure. Streaming text deltas may already have been
 shown to the UI before the completed item is validated, but the item is not
 accepted into canonical history after rejection.
 
-`retry_temperature` is emitted only for deterministic local helper calls: local
-memory generation, local compaction generation, and local validation requests.
-Ordinary primary or local user turns do not send a temperature field.
+`memory_temperature`, `compaction_temperature`, and `validator_temperature`
+control whether local memory, local compaction, and local validation requests
+emit a `temperature` field. If a setting is unset, that helper request omits
+`temperature`. Ordinary primary or local user turns do not send a temperature
+field. `retry_temperature` is used for local memory/compaction generation
+retries after validator rejection.
 
 ## Tools
 

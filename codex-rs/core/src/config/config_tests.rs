@@ -5329,6 +5329,9 @@ enabled = false
 validator_attempts = 5
 generation_retries = 2
 retry_temperature = 0.02
+memory_temperature = 0.03
+compaction_temperature = 0.04
+validator_temperature = 0.05
 final_text = false
 tool_calls = true
 structured_outputs = false
@@ -5412,6 +5415,9 @@ wire_api = "responses"
             validator_attempts: 5,
             generation_retries: 2,
             retry_temperature: 0.02,
+            memory_temperature: Some(0.03),
+            compaction_temperature: Some(0.04),
+            validator_temperature: Some(0.05),
             final_text: false,
             tool_calls: true,
             structured_outputs: false,

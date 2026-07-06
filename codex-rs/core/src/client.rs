@@ -190,7 +190,9 @@ struct ModelClientState {
     offload_compaction_policy: ModelOffloadCompactionPolicy,
     offload_compaction_runtime_override: AtomicU8,
     offload_memory_mode: ModelOffloadMemoryMode,
-    offload_deterministic_temperature: f64,
+    offload_memory_temperature: Option<f64>,
+    offload_compaction_temperature: Option<f64>,
+    offload_validator_temperature: Option<f64>,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -499,7 +501,9 @@ impl ModelClient {
                 offload_compaction_policy: model_offload.compaction_policy,
                 offload_compaction_runtime_override: AtomicU8::new(COMPACTION_OVERRIDE_CONFIGURED),
                 offload_memory_mode: model_offload.memory_mode,
-                offload_deterministic_temperature: model_offload.validation.retry_temperature,
+                offload_memory_temperature: model_offload.validation.memory_temperature,
+                offload_compaction_temperature: model_offload.validation.compaction_temperature,
+                offload_validator_temperature: model_offload.validation.validator_temperature,
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -1031,6 +1035,7 @@ impl ModelClient {
         );
         let prompt_cache_key = Some(self.prompt_cache_key());
         let service_tier = model_info.service_tier_for_request(service_tier);
+        let temperature = prompt.temperature.or(temperature);
         let request = ResponsesApiRequest {
             model: model_override
                 .map(str::to_string)
@@ -1395,7 +1400,7 @@ impl ModelClientSession {
             .is_local_offload()
     }
 
-    fn local_deterministic_temperature_for_request(
+    fn local_helper_temperature_for_request(
         &self,
         route: ModelRequestRoute,
         responses_metadata: &CodexResponsesMetadata,
@@ -1404,11 +1409,13 @@ impl ModelClientSession {
             return None;
         }
         match responses_metadata.request_kind {
-            Some(
-                CodexResponsesRequestKind::Compaction(_)
-                | CodexResponsesRequestKind::LocalOutputValidation
-                | CodexResponsesRequestKind::Memory,
-            ) => Some(self.client.state.offload_deterministic_temperature),
+            Some(CodexResponsesRequestKind::Compaction(_)) => {
+                self.client.state.offload_compaction_temperature
+            }
+            Some(CodexResponsesRequestKind::LocalOutputValidation) => {
+                self.client.state.offload_validator_temperature
+            }
+            Some(CodexResponsesRequestKind::Memory) => self.client.state.offload_memory_temperature,
             Some(CodexResponsesRequestKind::Turn | CodexResponsesRequestKind::Prewarm)
             | Some(CodexResponsesRequestKind::CompactionRecovery)
             | None => None,
@@ -1754,7 +1761,7 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
                 !route.is_local_offload(),
-                self.local_deterministic_temperature_for_request(route, responses_metadata),
+                self.local_helper_temperature_for_request(route, responses_metadata),
             )?;
             let local_tool_names = if client_setup.route.is_local_offload() {
                 Some(transform_request_for_local_offload(

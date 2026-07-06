@@ -77,10 +77,13 @@ async fn stream_memory_generation(
     prompt: &Prompt,
     context: &StageOneRequestContext,
     responses_metadata: &codex_core::CodexResponsesMetadata,
+    temperature: Option<f64>,
 ) -> anyhow::Result<(String, Option<TokenUsage>)> {
+    let mut prompt = prompt.clone();
+    prompt.temperature = temperature;
     let mut stream = client_session
         .stream(
-            prompt,
+            &prompt,
             &context.model_info,
             &context.session_telemetry,
             context.reasoning_effort.clone(),
@@ -321,9 +324,15 @@ impl MemoryStartupContext {
         let generation_retries = config.model_offload.validation.generation_retries;
         let mut generation_attempts = 0;
         loop {
-            let (result, token_usage) =
-                stream_memory_generation(&mut client_session, prompt, context, &responses_metadata)
-                    .await?;
+            let (result, token_usage) = stream_memory_generation(
+                &mut client_session,
+                prompt,
+                context,
+                &responses_metadata,
+                (generation_attempts > 0)
+                    .then_some(config.model_offload.validation.retry_temperature),
+            )
+            .await?;
 
             if config.model_offload.memory_mode != ModelOffloadMemoryMode::Local {
                 return Ok((result, token_usage));

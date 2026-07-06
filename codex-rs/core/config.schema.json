@@ -1635,17 +1635,17 @@
           ],
           "default": {
             "compaction": true,
-            "compaction_temperature": null,
+            "compaction_temperature": 0.0,
             "enabled": true,
             "final_text": true,
             "generation_retries": 1,
             "memory": true,
-            "memory_temperature": null,
+            "memory_temperature": 0.0,
             "retry_temperature": 0.01,
             "structured_outputs": true,
             "tool_calls": true,
             "validator_attempts": 3,
-            "validator_temperature": null
+            "validator_temperature": 0.0
           },
           "description": "Shallow sanity validation for completed local/offloaded model outputs."
         }
@@ -1660,7 +1660,7 @@
           "type": "boolean"
         },
         "compaction_temperature": {
-          "default": null,
+          "default": 0.0,
           "format": "double",
           "type": "number"
         },
@@ -1683,7 +1683,7 @@
           "type": "boolean"
         },
         "memory_temperature": {
-          "default": null,
+          "default": 0.0,
           "format": "double",
           "type": "number"
         },
@@ -1707,7 +1707,7 @@
           "type": "integer"
         },
         "validator_temperature": {
-          "default": null,
+          "default": 0.0,
           "format": "double",
           "type": "number"
         }
@@ -5351,17 +5351,17 @@
         "provider": null,
         "validation": {
           "compaction": true,
-          "compaction_temperature": null,
+          "compaction_temperature": 0.0,
           "enabled": true,
           "final_text": true,
           "generation_retries": 1,
           "memory": true,
-          "memory_temperature": null,
+          "memory_temperature": 0.0,
           "retry_temperature": 0.01,
           "structured_outputs": true,
           "tool_calls": true,
           "validator_attempts": 3,
-          "validator_temperature": null
+          "validator_temperature": 0.0
         }
       },
       "description": "Optional local model offload settings. Disabled by default, preserving standard provider routing unless explicitly enabled."

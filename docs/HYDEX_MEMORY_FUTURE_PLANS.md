@@ -342,8 +342,8 @@ deterministic gate before canonical acceptance/tool execution. `retry_temperatur
 is used for local memory/compaction generation retries after validator
 rejection. First-pass local helper temperatures are controlled separately by
 optional `memory_temperature`, `compaction_temperature`, and
-`validator_temperature` settings; unset helper temperatures are omitted from the
-wire request. Ordinary user turns do not send a temperature field.
+`validator_temperature` settings, which default to `0.0`. Ordinary user turns do
+not send a temperature field.
 
 ## Evaluation Status and Next Tests
 

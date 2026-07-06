@@ -1091,7 +1091,7 @@ async fn request_model_for_metadata(
 }
 
 #[test]
-fn local_helper_temperature_is_omitted_when_options_are_unset() {
+fn local_helper_temperature_defaults_to_zero_for_first_pass_helpers() {
     let client = test_model_client_with_local_offload_config_and_memory_mode(
         SessionSource::Exec,
         ModelOffloadCompactionPolicy::Local,
@@ -1113,20 +1113,34 @@ fn local_helper_temperature_is_omitted_when_options_are_unset() {
         &client,
         CompactionImplementation::ResponsesCompactionV2,
     );
+    let validation_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:validation", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
 
     assert_eq!(
         session.local_helper_temperature_for_request(
             session.route_for_responses_request(&memory_metadata),
             &memory_metadata,
         ),
-        None
+        Some(0.0)
     );
     assert_eq!(
         session.local_helper_temperature_for_request(
             session.route_for_responses_request(&compaction_metadata),
             &compaction_metadata,
         ),
-        None
+        Some(0.0)
+    );
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&validation_metadata),
+            &validation_metadata,
+        ),
+        Some(0.0)
     );
 }
 

@@ -57,10 +57,10 @@ enabled = true
 validator_attempts = 3
 generation_retries = 1
 retry_temperature = 0.01
-# Optional. When unset, Hydex omits `temperature` for that helper request type.
-# memory_temperature = 0.01
-# compaction_temperature = 0.01
-# validator_temperature = 0.01
+# Optional first-pass helper temperatures. Defaults are 0.0.
+memory_temperature = 0.0
+compaction_temperature = 0.0
+validator_temperature = 0.0
 final_text = true
 tool_calls = true
 structured_outputs = true
@@ -224,11 +224,11 @@ shown to the UI before the completed item is validated, but the item is not
 accepted into canonical history after rejection.
 
 `memory_temperature`, `compaction_temperature`, and `validator_temperature`
-control whether local memory, local compaction, and local validation requests
-emit a `temperature` field. If a setting is unset, that helper request omits
-`temperature`. Ordinary primary or local user turns do not send a temperature
-field. `retry_temperature` is used for local memory/compaction generation
-retries after validator rejection.
+control the first-pass local memory, local compaction, and local validation
+request temperatures. They default to `0.0`. Ordinary primary or local user
+turns do not send a temperature field. `retry_temperature` defaults to `0.01`
+and is used for local memory/compaction generation retries after validator
+rejection.
 
 ## Tools
 

@@ -292,6 +292,7 @@ fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
         tools: Vec::new(),
         tool_choice: "auto".to_string(),
         parallel_tool_calls: false,
+        temperature: None,
         reasoning: None,
         store: false,
         stream: true,

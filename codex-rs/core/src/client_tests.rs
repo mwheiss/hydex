@@ -837,6 +837,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             /*service_tier*/ None,
             &responses_metadata,
             !route.is_local_offload(),
+            None,
         )
         .expect("local responses request builds");
     let mut request = request;
@@ -1068,9 +1069,89 @@ async fn request_model_for_metadata(
             /*service_tier*/ None,
             responses_metadata,
             !route.is_local_offload(),
+            None,
         )
         .expect("responses request builds")
         .model
+}
+
+#[test]
+fn local_deterministic_temperature_applies_only_to_durable_local_tasks() {
+    let client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let session = client.new_session();
+
+    let turn_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    assert_eq!(
+        session.local_deterministic_temperature_for_request(
+            session.route_for_responses_request(&turn_metadata),
+            &turn_metadata,
+        ),
+        None
+    );
+
+    let memory_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Memory,
+    );
+    assert_eq!(
+        session.local_deterministic_temperature_for_request(
+            session.route_for_responses_request(&memory_metadata),
+            &memory_metadata,
+        ),
+        Some(0.01)
+    );
+
+    let validation_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:validation", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
+    assert_eq!(
+        session.local_deterministic_temperature_for_request(
+            session.route_for_responses_request(&validation_metadata),
+            &validation_metadata,
+        ),
+        Some(0.01)
+    );
+
+    let compaction_metadata = compaction_responses_metadata_for_client(
+        &client,
+        CompactionImplementation::ResponsesCompactionV2,
+    );
+    assert_eq!(
+        session.local_deterministic_temperature_for_request(
+            session.route_for_responses_request(&compaction_metadata),
+            &compaction_metadata,
+        ),
+        None
+    );
+
+    client
+        .state
+        .offload_ever_used
+        .store(true, Ordering::Relaxed);
+    assert_eq!(
+        session.local_deterministic_temperature_for_request(
+            session.route_for_responses_request(&compaction_metadata),
+            &compaction_metadata,
+        ),
+        Some(0.01)
+    );
 }
 
 #[tokio::test]

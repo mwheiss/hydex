@@ -190,6 +190,7 @@ struct ModelClientState {
     offload_compaction_policy: ModelOffloadCompactionPolicy,
     offload_compaction_runtime_override: AtomicU8,
     offload_memory_mode: ModelOffloadMemoryMode,
+    offload_deterministic_temperature: f64,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -370,6 +371,7 @@ fn responses_request_properties_match(
         tools: previous_tools,
         tool_choice: previous_tool_choice,
         parallel_tool_calls: previous_parallel_tool_calls,
+        temperature: previous_temperature,
         reasoning: previous_reasoning,
         store: previous_store,
         stream: previous_stream,
@@ -386,6 +388,7 @@ fn responses_request_properties_match(
         tools: current_tools,
         tool_choice: current_tool_choice,
         parallel_tool_calls: current_parallel_tool_calls,
+        temperature: current_temperature,
         reasoning: current_reasoning,
         store: current_store,
         stream: current_stream,
@@ -401,6 +404,7 @@ fn responses_request_properties_match(
         && previous_tools == current_tools
         && previous_tool_choice == current_tool_choice
         && previous_parallel_tool_calls == current_parallel_tool_calls
+        && previous_temperature == current_temperature
         && previous_reasoning == current_reasoning
         && previous_store == current_store
         && previous_stream == current_stream
@@ -495,6 +499,7 @@ impl ModelClient {
                 offload_compaction_policy: model_offload.compaction_policy,
                 offload_compaction_runtime_override: AtomicU8::new(COMPACTION_OVERRIDE_CONFIGURED),
                 offload_memory_mode: model_offload.memory_mode,
+                offload_deterministic_temperature: model_offload.validation.retry_temperature,
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -726,6 +731,7 @@ impl ModelClient {
             settings.service_tier,
             responses_metadata,
             true,
+            None,
         )?;
         let ResponsesApiRequest {
             model,
@@ -993,6 +999,7 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
         include_codex_metadata: bool,
+        temperature: Option<f64>,
     ) -> Result<ResponsesApiRequest> {
         let instructions = &prompt.base_instructions.text;
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
@@ -1033,6 +1040,7 @@ impl ModelClient {
             tools,
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
+            temperature,
             reasoning,
             store: provider.is_azure_responses_endpoint(),
             stream: true,
@@ -1387,6 +1395,26 @@ impl ModelClientSession {
             .is_local_offload()
     }
 
+    fn local_deterministic_temperature_for_request(
+        &self,
+        route: ModelRequestRoute,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Option<f64> {
+        if !route.is_local_offload() {
+            return None;
+        }
+        match responses_metadata.request_kind {
+            Some(
+                CodexResponsesRequestKind::Compaction(_)
+                | CodexResponsesRequestKind::LocalOutputValidation
+                | CodexResponsesRequestKind::Memory,
+            ) => Some(self.client.state.offload_deterministic_temperature),
+            Some(CodexResponsesRequestKind::Turn | CodexResponsesRequestKind::Prewarm)
+            | Some(CodexResponsesRequestKind::CompactionRecovery)
+            | None => None,
+        }
+    }
+
     fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
@@ -1726,6 +1754,7 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
                 !route.is_local_offload(),
+                self.local_deterministic_temperature_for_request(route, responses_metadata),
             )?;
             let local_tool_names = if client_setup.route.is_local_offload() {
                 Some(transform_request_for_local_offload(
@@ -1849,6 +1878,7 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
                 true,
+                None,
             )?;
             let mut client_metadata = self
                 .client

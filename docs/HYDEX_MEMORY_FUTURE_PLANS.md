@@ -339,8 +339,8 @@ the deterministic gate or the bounded model validator. Remaining hardening work
 is to decide whether ordinary final-text and tool-call items should also use the
 model validator in the streaming turn loop; today those paths use the
 deterministic gate before canonical acceptance/tool execution. `retry_temperature`
-is parsed and reserved, but the shared Responses request type does not yet expose
-per-request temperature controls for local retries.
+is emitted for local memory, local compaction, and local validation requests; it
+is not sent on ordinary user turns.
 
 ## Evaluation Status and Next Tests
 

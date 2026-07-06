@@ -219,9 +219,9 @@ controlled local-output failure. Streaming text deltas may already have been
 shown to the UI before the completed item is validated, but the item is not
 accepted into canonical history after rejection.
 
-`retry_temperature` is parsed and reserved for low-temperature local retry
-sampling once the shared Responses request layer exposes per-request temperature
-controls. It is not currently placed on the wire.
+`retry_temperature` is emitted only for deterministic local helper calls: local
+memory generation, local compaction generation, and local validation requests.
+Ordinary primary or local user turns do not send a temperature field.
 
 ## Tools
 

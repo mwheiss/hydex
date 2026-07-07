@@ -494,6 +494,7 @@ mod tests {
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
         });
 

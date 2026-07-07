@@ -287,6 +287,11 @@ pub struct ConfigToml {
     #[serde(default, deserialize_with = "deserialize_model_providers")]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// Optional local model offload settings. Disabled by default, preserving
+    /// standard provider routing unless explicitly enabled.
+    #[serde(default)]
+    pub model_offload: ModelOffloadToml,
+
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
@@ -516,6 +521,226 @@ pub struct ConfigToml {
     pub experimental_use_unified_exec_tool: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadToml {
+    /// Enables route-specific offload of eligible model inference requests.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Key in `model_providers` identifying the local Responses-compatible provider.
+    pub provider: Option<String>,
+    /// Optional model id to send to the offload provider. When unset, Codex sends
+    /// the currently selected model id.
+    pub model: Option<String>,
+    /// Route used for memory generation. When unset, Hydex uses local memory
+    /// generation only when model offload is effectively enabled.
+    pub memory_mode: Option<ModelOffloadMemoryMode>,
+    /// Policy used for compaction after offload has actually been used.
+    #[serde(default)]
+    pub compaction: ModelOffloadCompactionToml,
+    /// Local offload context-window settings used for auto-compaction pressure.
+    #[serde(default)]
+    pub context: ModelOffloadContextToml,
+    /// Shallow sanity validation for completed local/offloaded model outputs.
+    #[serde(default)]
+    pub validation: ModelOffloadValidationToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadMemoryMode {
+    /// Disable memory generation. Existing memories and memory reads are unchanged.
+    Off,
+    /// Run memory generation on the primary provider.
+    #[default]
+    Primary,
+    /// Run memory generation on the configured local offload provider.
+    Local,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadCompactionToml {
+    #[serde(default)]
+    pub policy: ModelOffloadCompactionPolicy,
+    #[serde(default)]
+    pub local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+    #[serde(default)]
+    pub recovery: ModelOffloadCompactionRecoveryToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadCompactionPolicy {
+    /// Use local `/responses` compaction through the normal model-call path.
+    #[default]
+    Local,
+    /// Keep the primary provider's upstream compaction behavior.
+    Primary,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadCompactionLocalHandoffRole {
+    /// Supply local compaction output as assistant-history state before the next user turn.
+    #[default]
+    AssistantState,
+    /// Preserve legacy local compaction behavior: recovered summary is supplied as user context.
+    UserSummary,
+}
+
+fn default_model_offload_compaction_recovery_model() -> String {
+    "gpt-5.4".to_string()
+}
+
+fn default_model_offload_compaction_recovery_reasoning_effort() -> ReasoningEffort {
+    ReasoningEffort::None
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadCompactionRecoveryToml {
+    #[serde(default = "default_model_offload_compaction_recovery_model")]
+    pub model: String,
+    #[serde(default = "default_model_offload_compaction_recovery_reasoning_effort")]
+    pub reasoning_effort: ReasoningEffort,
+    #[serde(default)]
+    pub projection: ModelOffloadCompactionRecoveryProjection,
+}
+
+impl Default for ModelOffloadCompactionRecoveryToml {
+    fn default() -> Self {
+        Self {
+            model: default_model_offload_compaction_recovery_model(),
+            reasoning_effort: default_model_offload_compaction_recovery_reasoning_effort(),
+            projection: ModelOffloadCompactionRecoveryProjection::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadCompactionRecoveryProjection {
+    #[default]
+    AssistantState,
+    UserHandoff,
+}
+
+fn default_model_offload_effective_context_window_percent() -> i64 {
+    95
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadContextToml {
+    /// Size of the local offload model context window, in tokens.
+    pub context_window: Option<i64>,
+    /// Percentage of the raw context window used as the effective context limit.
+    #[serde(default = "default_model_offload_effective_context_window_percent")]
+    pub effective_context_window_percent: i64,
+    /// Token usage threshold triggering auto-compaction for local offload.
+    pub auto_compact_token_limit: Option<i64>,
+}
+
+impl Default for ModelOffloadContextToml {
+    fn default() -> Self {
+        Self {
+            context_window: None,
+            effective_context_window_percent:
+                default_model_offload_effective_context_window_percent(),
+            auto_compact_token_limit: None,
+        }
+    }
+}
+
+fn default_model_offload_validation_enabled() -> bool {
+    true
+}
+
+fn default_model_offload_validation_validator_attempts() -> u32 {
+    3
+}
+
+fn default_model_offload_validation_generation_retries() -> u32 {
+    1
+}
+
+fn default_model_offload_validation_retry_temperature() -> f64 {
+    0.01
+}
+
+fn default_model_offload_validation_helper_temperature() -> Option<f64> {
+    Some(0.0)
+}
+
+fn default_model_offload_validation_final_text() -> bool {
+    true
+}
+
+fn default_model_offload_validation_tool_calls() -> bool {
+    true
+}
+
+fn default_model_offload_validation_structured_outputs() -> bool {
+    true
+}
+
+fn default_model_offload_validation_memory() -> bool {
+    true
+}
+
+fn default_model_offload_validation_compaction() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelOffloadValidationToml {
+    #[serde(default = "default_model_offload_validation_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_model_offload_validation_validator_attempts")]
+    pub validator_attempts: u32,
+    #[serde(default = "default_model_offload_validation_generation_retries")]
+    pub generation_retries: u32,
+    #[serde(default = "default_model_offload_validation_retry_temperature")]
+    pub retry_temperature: f64,
+    #[serde(default = "default_model_offload_validation_helper_temperature")]
+    pub memory_temperature: Option<f64>,
+    #[serde(default = "default_model_offload_validation_helper_temperature")]
+    pub compaction_temperature: Option<f64>,
+    #[serde(default = "default_model_offload_validation_helper_temperature")]
+    pub validator_temperature: Option<f64>,
+    #[serde(default = "default_model_offload_validation_final_text")]
+    pub final_text: bool,
+    #[serde(default = "default_model_offload_validation_tool_calls")]
+    pub tool_calls: bool,
+    #[serde(default = "default_model_offload_validation_structured_outputs")]
+    pub structured_outputs: bool,
+    #[serde(default = "default_model_offload_validation_memory")]
+    pub memory: bool,
+    #[serde(default = "default_model_offload_validation_compaction")]
+    pub compaction: bool,
+}
+
+impl Default for ModelOffloadValidationToml {
+    fn default() -> Self {
+        Self {
+            enabled: default_model_offload_validation_enabled(),
+            validator_attempts: default_model_offload_validation_validator_attempts(),
+            generation_retries: default_model_offload_validation_generation_retries(),
+            retry_temperature: default_model_offload_validation_retry_temperature(),
+            memory_temperature: default_model_offload_validation_helper_temperature(),
+            compaction_temperature: default_model_offload_validation_helper_temperature(),
+            validator_temperature: default_model_offload_validation_helper_temperature(),
+            final_text: default_model_offload_validation_final_text(),
+            tool_calls: default_model_offload_validation_tool_calls(),
+            structured_outputs: default_model_offload_validation_structured_outputs(),
+            memory: default_model_offload_validation_memory(),
+            compaction: default_model_offload_validation_compaction(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]

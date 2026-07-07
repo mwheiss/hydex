@@ -7,6 +7,7 @@ use codex_core::ModelClientSession;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
+use codex_core::config::ModelOffloadConfig;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -2285,6 +2286,7 @@ async fn websocket_harness_with_provider_options(
             .enabled(Feature::ConcurrentReasoningSummaries),
         /*attestation_provider*/ None,
         config.http_client_factory(),
+        ModelOffloadConfig::default(),
     );
 
     WebsocketTestHarness {

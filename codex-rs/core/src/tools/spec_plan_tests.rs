@@ -1659,6 +1659,25 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     .await;
     standalone_web_search.assert_visible_lacks(&["web_search"]);
 
+    let hydex_offload_web_search = probe_with(
+        |turn| {
+            set_web_search_mode(turn, WebSearchMode::Live);
+            update_config(turn, |config| {
+                config.model_offload.enabled = true;
+            });
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    hydex_offload_web_search.assert_visible_lacks(&["web_search"]);
+    assert_eq!(
+        hydex_offload_web_search.namespace_function_names("web"),
+        &["run".to_string()][..]
+    );
+
     let unsupported_provider = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
         use_bedrock_provider(turn);

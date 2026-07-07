@@ -12,13 +12,26 @@ use super::X_OPENAI_SUBAGENT_HEADER;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
+use crate::config::ModelOffloadConfig;
+use crate::config::ModelOffloadValidationConfig;
+use crate::local_offload::transform_request_for_local_offload;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_metadata::CodexResponsesRequestKind;
+use crate::responses_metadata::CompactionTurnMetadata;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
+use codex_analytics::CompactionImplementation;
+use codex_analytics::CompactionPhase;
+use codex_analytics::CompactionReason;
+use codex_analytics::CompactionTrigger;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
+use codex_api::Compression;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::AuthCredentialsStoreMode;
@@ -36,6 +49,8 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -52,6 +67,10 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use codex_tools::ResponsesApiNamespace;
+use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -108,6 +127,119 @@ fn test_model_client_with_thread_id(
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        crate::config::ModelOffloadConfig::default(),
+    )
+}
+
+fn test_model_client_with_local_offload(session_source: SessionSource) -> ModelClient {
+    test_model_client_with_local_offload_config(session_source, ModelOffloadCompactionPolicy::Local)
+}
+
+fn test_model_client_with_local_offload_config(
+    session_source: SessionSource,
+    compaction_policy: ModelOffloadCompactionPolicy,
+) -> ModelClient {
+    test_model_client_with_local_offload_config_and_memory_mode(
+        session_source,
+        compaction_policy,
+        ModelOffloadMemoryMode::Local,
+    )
+}
+
+fn test_model_client_with_local_offload_config_and_memory_mode(
+    session_source: SessionSource,
+    compaction_policy: ModelOffloadCompactionPolicy,
+    memory_mode: ModelOffloadMemoryMode,
+) -> ModelClient {
+    test_model_client_with_local_offload_config_memory_mode_and_validation(
+        session_source,
+        compaction_policy,
+        memory_mode,
+        ModelOffloadValidationConfig::default(),
+    )
+}
+
+fn test_model_client_with_local_offload_config_memory_mode_and_validation(
+    session_source: SessionSource,
+    compaction_policy: ModelOffloadCompactionPolicy,
+    memory_mode: ModelOffloadMemoryMode,
+    validation: ModelOffloadValidationConfig,
+) -> ModelClient {
+    let primary_provider =
+        ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    ModelClient::new(
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+        AgentIdentityAuthPolicy::ChatGptAuth,
+        ThreadId::new(),
+        primary_provider,
+        session_source,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ModelOffloadConfig {
+            enabled: true,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::UserSummary,
+            context: Default::default(),
+            validation,
+        },
+    )
+}
+
+fn test_model_client_with_local_offload_and_api_primary(
+    session_source: SessionSource,
+    compaction_policy: ModelOffloadCompactionPolicy,
+) -> ModelClient {
+    let primary_provider =
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        primary_provider,
+        session_source,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ModelOffloadConfig {
+            enabled: true,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode: ModelOffloadMemoryMode::Local,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::UserSummary,
+            context: Default::default(),
+            validation: Default::default(),
+        },
     )
 }
 
@@ -154,6 +286,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ModelOffloadConfig::default(),
     );
     let prompt = Prompt {
         input: vec![ResponseItem::Message {
@@ -246,6 +379,28 @@ fn test_responses_metadata_for_client(
     )
 }
 
+fn compaction_responses_metadata_for_client(
+    client: &ModelClient,
+    implementation: CompactionImplementation,
+) -> CodexResponsesMetadata {
+    let mut metadata = CodexResponsesMetadata::new(
+        TEST_INSTALLATION_ID.to_string(),
+        client.state.thread_id.to_string(),
+        client.state.thread_id.to_string(),
+        format!("{}:0", client.state.thread_id),
+    );
+    metadata.turn_id = Some("turn-compact".to_string());
+    metadata.request_kind = Some(CodexResponsesRequestKind::Compaction(
+        CompactionTurnMetadata::new(
+            CompactionTrigger::Manual,
+            CompactionReason::UserRequested,
+            implementation,
+            CompactionPhase::StandaloneTurn,
+        ),
+    ));
+    metadata
+}
+
 fn test_model_info() -> ModelInfo {
     serde_json::from_value(json!({
         "slug": "gpt-test",
@@ -274,6 +429,21 @@ fn test_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+fn test_web_run_namespace_tool() -> ToolSpec {
+    ToolSpec::Namespace(ResponsesApiNamespace {
+        name: "web".to_string(),
+        description: "Web tools.".to_string(),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "run".to_string(),
+            description: "Run web commands.".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: serde_json::from_value(json!({"type": "object"})).expect("valid schema"),
+            output_schema: None,
+        })],
+    })
 }
 
 fn test_session_telemetry() -> SessionTelemetry {
@@ -591,6 +761,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        None,
     );
 
     let observed = stream
@@ -641,6 +812,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        None,
     );
 
     while stream.next().await.is_some() {}
@@ -716,6 +888,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -832,6 +1005,7 @@ fn model_client_with_counting_attestation(
             calls: attestation_calls.clone(),
         })),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        crate::config::ModelOffloadConfig::default(),
     );
     (model_client, attestation_calls)
 }
@@ -892,4 +1066,842 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
         None,
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
+    let primary_provider =
+        ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    let (attestation_client, attestation_calls) =
+        model_client_with_counting_attestation(/*include_attestation*/ true);
+    let client = ModelClient::new(
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+        AgentIdentityAuthPolicy::ChatGptAuth,
+        ThreadId::new(),
+        primary_provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        Some("beta-feature".to_string()),
+        /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        attestation_client.state.attestation_provider.clone(),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ModelOffloadConfig {
+            enabled: true,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode: ModelOffloadMemoryMode::Local,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role:
+                codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            context: Default::default(),
+            validation: Default::default(),
+        },
+    );
+    let client_session = client.new_session();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        Some(ThreadId::new()),
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    let route = client.route_for_responses_request(&responses_metadata);
+    assert!(route.is_local_offload());
+    let client_setup = client
+        .current_client_setup_for_route(route)
+        .await
+        .expect("local client setup resolves");
+    let prompt = Prompt {
+        input: vec![ResponseItem::FunctionCall {
+            id: None,
+            name: "run".to_string(),
+            namespace: Some("web".to_string()),
+            arguments: "{\"search_query\":[{\"q\":\"codex\"}]}".to_string(),
+            call_id: "call_web".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        tools: vec![
+            test_web_run_namespace_tool(),
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+                index_gated_web_access: None,
+            },
+        ],
+        ..Prompt::default()
+    };
+    let options = client_session
+        .build_responses_options(
+            &responses_metadata,
+            Compression::None,
+            /*use_responses_lite*/ false,
+            !route.is_local_offload(),
+        )
+        .await;
+    let request = client
+        .build_responses_request(
+            &client_setup.api_provider,
+            client_setup.model_provider.info(),
+            client_setup.model_override.as_deref(),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &responses_metadata,
+            !route.is_local_offload(),
+            None,
+        )
+        .expect("local responses request builds");
+    let mut request = request;
+    transform_request_for_local_offload(&mut request, &prompt.tools)
+        .expect("local request transform succeeds");
+
+    assert_eq!(request.model, "local-responses-model");
+    assert!(request.client_metadata.is_none());
+    let tools = request.tools.as_ref().expect("local tools are present");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "ns__web__run");
+    assert_eq!(
+        request.input,
+        vec![ResponseItem::FunctionCall {
+            id: None,
+            name: "ns__web__run".to_string(),
+            namespace: None,
+            arguments: "{\"search_query\":[{\"q\":\"codex\"}]}".to_string(),
+            call_id: "call_web".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }]
+    );
+    assert!(options.session_id.is_none());
+    assert!(options.thread_id.is_none());
+    assert!(options.session_source.is_none());
+    assert!(options.turn_state.is_none());
+    assert!(
+        options
+            .extra_headers
+            .get(http::header::AUTHORIZATION)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_INSTALLATION_ID_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_WINDOW_ID_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_TURN_METADATA_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_CODEX_PARENT_THREAD_ID_HEADER)
+            .is_none()
+    );
+    assert!(
+        options
+            .extra_headers
+            .get(X_OPENAI_SUBAGENT_HEADER)
+            .is_none()
+    );
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn no_offload_config_preserves_primary_turn_routing() {
+    let client = test_model_client(SessionSource::Exec);
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert!(
+        !client
+            .new_session()
+            .mark_offload_used_for_responses_request(&responses_metadata)
+    );
+    assert!(!client.offload_ever_used());
+}
+
+#[test]
+fn internal_and_subagent_sources_stay_primary_with_offload_configured() {
+    for session_source in [
+        SessionSource::SubAgent(SubAgentSource::Review),
+        SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
+    ] {
+        let client = test_model_client_with_local_offload(session_source.clone());
+        let responses_metadata = test_responses_metadata_for_client(
+            &client,
+            Some("turn-1"),
+            format!("{}:0", client.state.thread_id),
+            None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+
+        assert!(
+            !client
+                .route_for_responses_request(&responses_metadata)
+                .is_local_offload(),
+            "expected {session_source:?} to stay on the primary route",
+        );
+        assert!(
+            !client
+                .new_session()
+                .mark_offload_used_for_responses_request(&responses_metadata)
+        );
+        assert!(!client.offload_ever_used());
+    }
+}
+
+#[test]
+fn memory_mode_primary_keeps_memory_consolidation_primary() {
+    let client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Primary,
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+}
+
+#[test]
+fn memory_mode_local_routes_memory_requests_and_consolidation_local() {
+    let memory_client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let memory_metadata = test_responses_metadata_for_client(
+        &memory_client,
+        None,
+        format!("{}:0", memory_client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Memory,
+    );
+    assert!(
+        memory_client
+            .route_for_responses_request(&memory_metadata)
+            .is_local_offload()
+    );
+
+    let consolidation_client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let turn_metadata = test_responses_metadata_for_client(
+        &consolidation_client,
+        Some("turn-1"),
+        format!("{}:0", consolidation_client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    assert!(
+        consolidation_client
+            .route_for_responses_request(&turn_metadata)
+            .is_local_offload()
+    );
+}
+
+#[test]
+fn local_output_validation_routes_local_when_offload_provider_exists() {
+    let client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Primary,
+    );
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .expect("force off override should be accepted");
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:validation", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+}
+
+async fn request_model_for_metadata(
+    client: &ModelClient,
+    responses_metadata: &CodexResponsesMetadata,
+) -> String {
+    let route = client.route_for_responses_request(responses_metadata);
+    let client_setup = client
+        .current_client_setup_for_request(route, Some(responses_metadata))
+        .await
+        .expect("client setup resolves");
+    client
+        .build_responses_request(
+            &client_setup.api_provider,
+            client_setup.model_provider.info(),
+            client_setup.model_override.as_deref(),
+            &Prompt::default(),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            responses_metadata,
+            !route.is_local_offload(),
+            None,
+        )
+        .expect("responses request builds")
+        .model
+}
+
+#[test]
+fn local_helper_temperature_defaults_to_zero_for_first_pass_helpers() {
+    let client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let session = client.new_session();
+    let memory_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Memory,
+    );
+    client
+        .state
+        .offload_ever_used
+        .store(true, Ordering::Relaxed);
+    let compaction_metadata =
+        compaction_responses_metadata_for_client(&client, CompactionImplementation::Responses);
+    let validation_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:validation", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
+
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&memory_metadata),
+            &memory_metadata,
+        ),
+        Some(0.0)
+    );
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&compaction_metadata),
+            &compaction_metadata,
+        ),
+        Some(0.0)
+    );
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&validation_metadata),
+            &validation_metadata,
+        ),
+        Some(0.0)
+    );
+}
+
+#[test]
+fn configured_local_helper_temperature_applies_only_to_matching_local_tasks() {
+    let client = test_model_client_with_local_offload_config_memory_mode_and_validation(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+        ModelOffloadValidationConfig {
+            memory_temperature: Some(0.03),
+            compaction_temperature: Some(0.04),
+            validator_temperature: Some(0.05),
+            ..Default::default()
+        },
+    );
+    let session = client.new_session();
+
+    let turn_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&turn_metadata),
+            &turn_metadata,
+        ),
+        None
+    );
+
+    let memory_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Memory,
+    );
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&memory_metadata),
+            &memory_metadata,
+        ),
+        Some(0.03)
+    );
+
+    let validation_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:validation", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&validation_metadata),
+            &validation_metadata,
+        ),
+        Some(0.05)
+    );
+
+    let compaction_metadata =
+        compaction_responses_metadata_for_client(&client, CompactionImplementation::Responses);
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&compaction_metadata),
+            &compaction_metadata,
+        ),
+        None
+    );
+
+    client
+        .state
+        .offload_ever_used
+        .store(true, Ordering::Relaxed);
+    assert_eq!(
+        session.local_helper_temperature_for_request(
+            session.route_for_responses_request(&compaction_metadata),
+            &compaction_metadata,
+        ),
+        Some(0.04)
+    );
+}
+
+#[tokio::test]
+async fn prompt_temperature_override_takes_precedence_over_helper_temperature() {
+    let client = test_model_client_with_local_offload_config_memory_mode_and_validation(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+        ModelOffloadValidationConfig {
+            memory_temperature: Some(0.03),
+            ..Default::default()
+        },
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        None,
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Memory,
+    );
+    let session = client.new_session();
+    let route = client.route_for_responses_request(&responses_metadata);
+    let client_setup = client
+        .current_client_setup_for_request(route, Some(&responses_metadata))
+        .await
+        .expect("client setup resolves");
+    let prompt = Prompt {
+        temperature: Some(0.02),
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &client_setup.api_provider,
+            client_setup.model_provider.info(),
+            client_setup.model_override.as_deref(),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &responses_metadata,
+            !route.is_local_offload(),
+            session.local_helper_temperature_for_request(route, &responses_metadata),
+        )
+        .expect("responses request builds");
+
+    assert_eq!(request.temperature, Some(0.02));
+}
+
+#[tokio::test]
+async fn offload_primary_compaction_uses_current_primary_model() {
+    let client = test_model_client_with_local_offload_and_api_primary(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+
+    for implementation in [
+        CompactionImplementation::ResponsesCompact,
+        CompactionImplementation::ResponsesCompactionV2,
+    ] {
+        let responses_metadata = compaction_responses_metadata_for_client(&client, implementation);
+        assert!(
+            !client
+                .route_for_responses_request(&responses_metadata)
+                .is_local_offload()
+        );
+        assert_eq!(
+            request_model_for_metadata(&client, &responses_metadata).await,
+            "gpt-test"
+        );
+    }
+}
+
+#[tokio::test]
+async fn runtime_force_off_routes_eligible_turn_primary() {
+    let client = test_model_client_with_local_offload_and_api_primary(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "gpt-test"
+    );
+}
+
+#[tokio::test]
+async fn compaction_recovery_stays_primary_with_offload_configured() {
+    let client = test_model_client_with_local_offload_and_api_primary(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+    );
+    client.seed_offload_ever_used(true);
+    let mut responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    responses_metadata.request_kind = Some(CodexResponsesRequestKind::CompactionRecovery);
+
+    let route = client.route_for_responses_request(&responses_metadata);
+
+    assert!(!route.is_local_offload());
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "gpt-test"
+    );
+}
+
+#[tokio::test]
+async fn runtime_force_off_does_not_clear_offload_ever_used() {
+    let client = test_model_client_with_local_offload(SessionSource::Exec);
+    client.seed_offload_ever_used(true);
+
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
+
+    assert!(!client.local_offload_enabled_for_turns());
+    assert!(client.offload_ever_used());
+}
+
+#[tokio::test]
+async fn runtime_force_on_requires_resolved_offload_provider() {
+    let client = test_model_client(SessionSource::Exec);
+
+    let err = client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn))
+        .expect_err("force_on without a local provider must fail");
+    assert!(
+        err.to_string()
+            .contains("model_offload.provider is not configured or invalid"),
+        "unexpected error: {err}"
+    );
+
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .expect("force_off remains allowed");
+    client
+        .set_model_offload_runtime_override(None)
+        .expect("clearing override remains allowed");
+}
+
+#[tokio::test]
+async fn runtime_force_on_routes_eligible_turn_local() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn))
+        .unwrap();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "local-responses-model"
+    );
+}
+
+#[tokio::test]
+async fn local_turn_uses_offload_model() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "local-responses-model"
+    );
+}
+
+#[test]
+fn turn_session_force_primary_disables_local_offload_for_turn_only() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    let client_session = client.new_session();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert!(client_session.local_offload_enabled_for_turns());
+    assert!(
+        client_session
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+
+    client_session.force_primary_for_responses_requests();
+
+    assert!(!client_session.local_offload_enabled_for_turns());
+    assert!(
+        !client_session
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert!(client.local_offload_enabled_for_turns());
+}
+
+#[test]
+fn turn_session_force_primary_does_not_mark_offload_used() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Primary,
+    );
+    let client_session = client.new_session();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{}:0", client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    client_session.force_primary_for_responses_requests();
+
+    assert!(!client_session.mark_offload_used_for_responses_request(&responses_metadata));
+    assert!(!client.offload_ever_used());
+}
+
+#[tokio::test]
+async fn offload_local_compaction_policy_uses_local_only_when_effectively_enabled() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+    );
+    client.seed_offload_ever_used(true);
+    let responses_metadata =
+        compaction_responses_metadata_for_client(&client, CompactionImplementation::Responses);
+
+    assert!(
+        client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "local-responses-model"
+    );
+
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+}
+
+#[tokio::test]
+async fn remote_v2_compaction_stays_primary_under_local_compaction_policy() {
+    let client = test_model_client_with_local_offload_and_api_primary(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+    );
+    client.seed_offload_ever_used(true);
+    let responses_metadata = compaction_responses_metadata_for_client(
+        &client,
+        CompactionImplementation::ResponsesCompactionV2,
+    );
+
+    assert!(
+        !client
+            .route_for_responses_request(&responses_metadata)
+            .is_local_offload()
+    );
+    assert_eq!(
+        request_model_for_metadata(&client, &responses_metadata).await,
+        "gpt-test"
+    );
+}
+
+#[tokio::test]
+async fn compaction_runtime_override_updates_effective_policy_with_offload_guard() {
+    let client = test_model_client_with_local_offload_config(
+        SessionSource::Exec,
+        ModelOffloadCompactionPolicy::Local,
+    );
+
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Primary
+    );
+
+    client.seed_offload_ever_used(true);
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Local
+    );
+
+    client
+        .set_model_offload_compaction_runtime_override(Some(
+            ModelOffloadCompactionRuntimeOverride::Primary,
+        ))
+        .unwrap();
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Primary
+    );
+
+    client
+        .set_model_offload_compaction_runtime_override(Some(
+            ModelOffloadCompactionRuntimeOverride::Local,
+        ))
+        .unwrap();
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Local
+    );
+
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
+    assert_eq!(
+        client.effective_model_offload_compaction_policy(),
+        ModelOffloadCompactionPolicy::Primary
+    );
 }

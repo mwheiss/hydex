@@ -11,6 +11,8 @@ use codex_extension_api::ExtensionDataInit;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::permissions::FileSystemPath;
@@ -193,6 +195,14 @@ impl SessionConfiguration {
             reasoning_summary: self.model_reasoning_summary,
             personality: self.personality,
             collaboration_mode: self.collaboration_mode.clone(),
+            model_offload_override: self
+                .original_config_do_not_use
+                .model_offload
+                .runtime_override,
+            model_offload_compaction_override: self
+                .original_config_do_not_use
+                .model_offload
+                .compaction_runtime_override,
             session_source: self.session_source.clone(),
             history_mode: self.history_mode,
             forked_from_thread_id: self.forked_from_thread_id,
@@ -249,6 +259,44 @@ impl SessionConfiguration {
         }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
+        }
+        if let Some(model_offload_override) = updates.model_offload_override {
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            if matches!(
+                model_offload_override,
+                Some(ModelOffloadRuntimeOverride::ForceOn)
+            ) && !config.model_offload.can_route_local()
+            {
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed:
+                        "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                            .to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
+            config.model_offload.runtime_override = model_offload_override;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
+        if let Some(model_offload_compaction_override) = updates.model_offload_compaction_override {
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            if matches!(
+                model_offload_compaction_override,
+                Some(ModelOffloadCompactionRuntimeOverride::Local)
+            ) && !config.model_offload.can_route_local()
+            {
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_offload.compaction.runtime_override",
+                    candidate: "local".to_string(),
+                    allowed:
+                        "Cannot enable local compaction: model_offload.provider is not configured or invalid."
+                            .to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
+            config.model_offload.compaction_runtime_override = model_offload_compaction_override;
+            next_configuration.original_config_do_not_use = Arc::new(config);
         }
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
@@ -427,6 +475,9 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
+    pub(crate) model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+    pub(crate) model_offload_compaction_override:
+        Option<Option<ModelOffloadCompactionRuntimeOverride>>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     pub(crate) personality: Option<Personality>,
     pub(crate) app_server_client_name: Option<String>,
@@ -1116,6 +1167,7 @@ impl Session {
                         .enabled(Feature::ConcurrentReasoningSummaries),
                     attestation_provider,
                     config.http_client_factory(),
+                    config.model_offload.clone(),
                 )
                 .with_prompt_cache_key_override(
                     crate::guardian::prompt_cache_key_override_for_review_session(

@@ -85,6 +85,7 @@ use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
@@ -268,6 +269,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         model: model_cli_arg,
         oss,
         oss_provider,
+        offload,
+        no_offload,
         config_profile_v2,
         sandbox_mode: sandbox_mode_cli_arg,
         dangerously_bypass_approvals_and_sandbox,
@@ -275,6 +278,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cwd,
         add_dir,
     } = shared;
+    let model_offload_override = if offload {
+        Some(ModelOffloadRuntimeOverride::ForceOn)
+    } else if no_offload {
+        Some(ModelOffloadRuntimeOverride::ForceOff)
+    } else {
+        None
+    };
 
     let (_stdout_with_ansi, stderr_with_ansi) = match color {
         cli::Color::Always => (true, true),
@@ -431,6 +441,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cwd: resolved_cwd,
         workspace_roots: None,
         model_provider: model_provider.clone(),
+        model_offload_override,
         service_tier: None,
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -897,6 +908,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         sandbox_policy: None,
                         permissions: None,
                         model: None,
+                        model_offload_override: None,
+                        model_offload_compaction_override: None,
                         service_tier: None,
                         effort: default_effort,
                         summary: None,

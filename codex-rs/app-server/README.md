@@ -147,7 +147,7 @@ Example with notification opt-out:
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/items/list` — experimental; page through persisted thread items without resuming the thread. Pass `turnId` to restrict results to one turn, or omit it to page items across the thread. The active thread store must support item pagination.
 - `thread/metadata/update` — patch stored thread metadata in sqlite; currently supports updating persisted `gitInfo` fields and returns the refreshed `thread`.
-- `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `serviceTier: null` clears the tier; deprecated `multiAgentMode` is ignored, while Ultra reasoning effort enables proactive multi-agent behavior; `sandboxPolicy` and `permissions` cannot be combined. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
+- `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `serviceTier: null` clears the tier; Hydex `modelOffloadOverride` and `modelOffloadCompactionOverride` also use `null` to clear their runtime override and follow config; deprecated `multiAgentMode` is ignored, while Ultra reasoning effort enables proactive multi-agent behavior; `sandboxPolicy` and `permissions` cannot be combined. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
 - `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
 - `memory/reset` — experimental; clear the current `CODEX_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
 - `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`.
@@ -168,7 +168,7 @@ Example with notification opt-out:
 - `thread/backgroundTerminals/list` — list running background terminals for a loaded thread (experimental; requires `capabilities.experimentalApi`); returns `data` with the running terminal ids.
 - `thread/backgroundTerminals/terminate` — terminate one running background terminal by app-server `processId` (experimental; requires `capabilities.experimentalApi`); returns whether a process was terminated.
 - `thread/rollback` — deprecated and will be removed soon. Drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success.
-- `turn/start` — add user input to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode". Deprecated experimental `multiAgentMode` is ignored; Ultra reasoning effort selects proactive behavior.
+- `turn/start` — add user input to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. Hydex clients may set `modelOffloadOverride` and `modelOffloadCompactionOverride` here to affect the first turn before routing. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode". Deprecated experimental `multiAgentMode` is ignored; Ultra reasoning effort selects proactive behavior.
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
 - `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Review and manual compaction turns reject `turn/steer`.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`.
@@ -722,6 +722,14 @@ The `image` variant accepts inline data URLs. Remote HTTP(S) image URLs are reje
 
 You can optionally specify config overrides on the new turn. If specified, these settings become the default for subsequent turns on the same thread. `outputSchema` applies only to the current turn. Experimental `environments` is turn-scoped: omit it to inherit the thread's sticky environments, pass `[]` to run the turn with no environments, or pass explicit environment ids to override the sticky selection for this turn only.
 
+Hydex runtime routing overrides are also sticky thread settings. Omit
+`modelOffloadOverride` or `modelOffloadCompactionOverride` to leave the current
+override unchanged, pass `null` to clear the override and follow config, or pass
+`"force_on"` / `"force_off"` for model offload and `"local"` / `"primary"` for
+compaction routing. `modelOffloadOverride: "force_on"` and
+`modelOffloadCompactionOverride: "local"` require a valid resolved local offload
+provider.
+
 `approvalsReviewer` accepts:
 
 - `"user"` — default. Review approval requests directly in the client.
@@ -753,6 +761,8 @@ You can optionally specify config overrides on the new turn. If specified, these
     "effort": "medium",
     "summary": "concise",
     "personality": "friendly",
+    "modelOffloadOverride": "force_off",
+    "modelOffloadCompactionOverride": "primary",
     // Optional JSON Schema to constrain the final assistant message for this turn.
     "outputSchema": {
         "type": "object",

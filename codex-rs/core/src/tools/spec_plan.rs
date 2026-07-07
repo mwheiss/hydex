@@ -630,7 +630,21 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
                 .config
                 .features
                 .get()
-                .enabled(Feature::StandaloneWebSearch))
+                .enabled(Feature::StandaloneWebSearch)
+            || local_offload_turn_uses_namespace_tools(turn_context))
+}
+
+fn local_offload_turn_uses_namespace_tools(turn_context: &TurnContext) -> bool {
+    turn_context.config.model_offload.effective_enabled()
+        && matches!(
+            turn_context.session_source,
+            SessionSource::Cli
+                | SessionSource::VSCode
+                | SessionSource::Exec
+                | SessionSource::Mcp
+                | SessionSource::Custom(_)
+                | SessionSource::Unknown
+        )
 }
 
 fn tool_environment_mode(step_context: &StepContext) -> ToolEnvironmentMode {

@@ -1,3 +1,4 @@
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_core::CodexThread;
 use codex_core::ModelClient;
 use codex_core::NewThread;
@@ -6,8 +7,13 @@ use codex_core::ResponseEvent;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::config::ModelOffloadConfig;
 use codex_core::content_items_to_text;
+use codex_core::detached_local_output_validation_responses_metadata;
 use codex_core::detached_memory_responses_metadata;
+use codex_core::local_output_validation::LocalOutputKind;
+use codex_core::local_output_validation::LocalOutputValidationResult;
+use codex_core::local_output_validation::validate_local_output_with_model;
 use codex_core::resolve_installation_id;
 use codex_features::Feature;
 use codex_login::AuthManager;
@@ -65,6 +71,54 @@ impl StageOneRequestContext {
     pub(crate) fn histogram(&self, name: &str, value: i64, tags: &[(&str, &str)]) {
         self.session_telemetry.histogram(name, value, tags);
     }
+}
+
+async fn stream_memory_generation(
+    client_session: &mut codex_core::ModelClientSession,
+    prompt: &Prompt,
+    context: &StageOneRequestContext,
+    responses_metadata: &codex_core::CodexResponsesMetadata,
+    temperature: Option<f64>,
+) -> anyhow::Result<(String, Option<TokenUsage>)> {
+    let mut prompt = prompt.clone();
+    prompt.temperature = temperature;
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &context.model_info,
+            &context.session_telemetry,
+            context.reasoning_effort.clone(),
+            context.reasoning_summary,
+            context.service_tier.clone(),
+            responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await?;
+
+    let mut result = String::new();
+    let mut token_usage = None;
+    while let Some(message) = stream.next().await.transpose()? {
+        match message {
+            ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
+            ResponseEvent::OutputItemDone(item) => {
+                if result.is_empty()
+                    && let codex_protocol::models::ResponseItem::Message { content, .. } = item
+                    && let Some(text) = content_items_to_text(&content)
+                {
+                    result.push_str(&text);
+                }
+            }
+            ResponseEvent::Completed {
+                token_usage: usage, ..
+            } => {
+                token_usage = usage;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok((result, token_usage))
 }
 
 pub(crate) struct MemoryStartupContext {
@@ -249,6 +303,12 @@ impl MemoryStartupContext {
         let session_source = config_snapshot.session_source;
         let session_id = SessionId::from(self.thread_id);
         let session_id_string = session_id.to_string();
+        let model_offload = match config.model_offload.memory_mode {
+            ModelOffloadMemoryMode::Local => config.model_offload.clone(),
+            ModelOffloadMemoryMode::Off | ModelOffloadMemoryMode::Primary => {
+                ModelOffloadConfig::default()
+            }
+        };
         let model_client = ModelClient::new(
             Some(Arc::clone(&self.auth_manager)),
             AgentIdentityAuthPolicy::JwtOnly,
@@ -264,6 +324,7 @@ impl MemoryStartupContext {
             /*concurrent_reasoning_summaries_enabled*/ false,
             /*attestation_provider*/ None,
             config.http_client_factory(),
+            model_offload,
         );
 
         let mut client_session = model_client.new_session();
@@ -278,43 +339,66 @@ impl MemoryStartupContext {
             /*sandbox*/ None,
         )
         .await;
-        let mut stream = client_session
-            .stream(
+        let validation_metadata = detached_local_output_validation_responses_metadata(
+            resolve_installation_id(&config.codex_home).await?,
+            SessionId::from(self.thread_id).to_string(),
+            self.thread_id.to_string(),
+            format!("{}:validation", self.thread_id),
+            &session_source,
+            &config.cwd,
+            /*sandbox*/ None,
+        )
+        .await;
+        let generation_retries = config.model_offload.validation.generation_retries;
+        let mut generation_attempts = 0;
+        loop {
+            let (result, token_usage) = stream_memory_generation(
+                &mut client_session,
                 prompt,
+                context,
+                &responses_metadata,
+                (generation_attempts > 0)
+                    .then_some(config.model_offload.validation.retry_temperature),
+            )
+            .await?;
+
+            if config.model_offload.memory_mode != ModelOffloadMemoryMode::Local {
+                return Ok((result, token_usage));
+            }
+
+            match validate_local_output_with_model(
+                &config.model_offload.validation,
+                LocalOutputKind::MemoryPayload,
+                &result,
+                &mut client_session,
                 &context.model_info,
                 &context.session_telemetry,
                 context.reasoning_effort.clone(),
                 context.reasoning_summary,
                 context.service_tier.clone(),
-                &responses_metadata,
-                &InferenceTraceContext::disabled(),
+                &validation_metadata,
             )
-            .await?;
-
-        let mut result = String::new();
-        let mut token_usage = None;
-        while let Some(message) = stream.next().await.transpose()? {
-            match message {
-                ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
-                ResponseEvent::OutputItemDone(item) => {
-                    if result.is_empty()
-                        && let codex_protocol::models::ResponseItem::Message { content, .. } = item
-                        && let Some(text) = content_items_to_text(&content)
-                    {
-                        result.push_str(&text);
-                    }
+            .await?
+            {
+                LocalOutputValidationResult::Accepted | LocalOutputValidationResult::Disabled => {
+                    return Ok((result, token_usage));
                 }
-                ResponseEvent::Completed {
-                    token_usage: usage, ..
-                } => {
-                    token_usage = usage;
-                    break;
+                LocalOutputValidationResult::Rejected(reason)
+                    if generation_attempts < generation_retries =>
+                {
+                    generation_attempts += 1;
+                    tracing::warn!(
+                        "local memory output rejected by sanity validator; retrying generation ({generation_attempts}/{generation_retries}): {reason}"
+                    );
                 }
-                _ => {}
+                LocalOutputValidationResult::Rejected(reason) => {
+                    anyhow::bail!("local memory output failed sanity validation: {reason}");
+                }
+                LocalOutputValidationResult::ValidationUnavailable(reason) => {
+                    anyhow::bail!("local memory output validation unavailable: {reason}");
+                }
             }
         }
-
-        Ok((result, token_usage))
     }
 
     pub(crate) async fn spawn_consolidation_agent(

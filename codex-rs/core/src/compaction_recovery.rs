@@ -198,7 +198,7 @@ fn projected_recovery_message(
                 text: recovered_text,
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ModelOffloadCompactionRecoveryProjection::UserHandoff => {
             let text = format!(
@@ -217,7 +217,7 @@ fn user_message(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 

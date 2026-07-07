@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use super::SessionTask;
 use super::SessionTaskContext;
+use super::SessionTaskResult;
 use super::emit_compact_metric;
 use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
+use codex_features::Feature;
+use codex_protocol::error::CodexErr;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
@@ -27,8 +30,13 @@ impl SessionTask for CompactTask {
         ctx: Arc<TurnContext>,
         _input: Vec<TurnInput>,
         _cancellation_token: CancellationToken,
-    ) -> Option<String> {
+    ) -> SessionTaskResult {
         let session = session.clone_session();
+        if ctx.config.features.enabled(Feature::TokenBudget) {
+            crate::compact_token_budget::run_manual_compact_task(session, ctx).await?;
+            return Ok(None);
+        }
+
         let mut client_session = session.services.model_client.new_session();
         let mut use_remote = crate::compact::should_use_remote_compact_task_with_offload_policy(
             ctx.provider.info(),
@@ -49,11 +57,13 @@ impl SessionTask for CompactTask {
                     "manual local compaction recovery failed; falling back to primary compaction"
                 );
                 use_remote = true;
-            } else if !client_session.local_compaction_effective() {
+            } else if crate::compaction_recovery::active_history_has_remote_compaction(
+                &session.clone_history().await.into_raw_items(),
+            ) {
                 use_remote = true;
             }
         }
-        let _ = if use_remote {
+        let result = if use_remote {
             if ctx
                 .config
                 .features
@@ -86,6 +96,9 @@ impl SessionTask for CompactTask {
             }];
             crate::compact::run_compact_task(session.clone(), ctx, input).await
         };
-        None
+        if let Err(err @ CodexErr::TurnAborted) = result {
+            return Err(err);
+        }
+        Ok(None)
     }
 }

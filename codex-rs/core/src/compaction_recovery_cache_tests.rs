@@ -4,8 +4,9 @@ use pretty_assertions::assert_eq;
 
 fn remote_compaction_item(encrypted_content: &str) -> ResponseItem {
     ResponseItem::Compaction {
+        id: None,
         encrypted_content: encrypted_content.to_string(),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 

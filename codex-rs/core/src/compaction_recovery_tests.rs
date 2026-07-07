@@ -11,7 +11,7 @@ fn user_text(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
@@ -23,7 +23,7 @@ fn assistant_text(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
@@ -32,13 +32,15 @@ fn recovery_prompt_keeps_encrypted_compaction_and_strips_cleartext_history() {
     let history = vec![
         user_text("old cleartext user message"),
         ResponseItem::Compaction {
+            id: None,
             encrypted_content: "encrypted-v2-state".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         assistant_text("old cleartext assistant message"),
         ResponseItem::ContextCompaction {
+            id: None,
             encrypted_content: Some("encrypted-v1-state".to_string()),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
 
@@ -48,12 +50,14 @@ fn recovery_prompt_keeps_encrypted_compaction_and_strips_cleartext_history() {
         prompt.input,
         vec![
             ResponseItem::Compaction {
+                id: None,
                 encrypted_content: "encrypted-v2-state".to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::ContextCompaction {
+                id: None,
                 encrypted_content: Some("encrypted-v1-state".to_string()),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             user_message(REMOTE_COMPACTION_RECOVERY_SCAFFOLD),
             user_message(REMOTE_COMPACTION_RECOVERY_PROMPT),
@@ -126,8 +130,9 @@ fn assistant_state_projection_replaces_encrypted_compaction_with_assistant_messa
     let history = vec![
         user_text("retained user"),
         ResponseItem::Compaction {
+            id: None,
             encrypted_content: "encrypted".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         user_text("next user"),
     ];
@@ -152,8 +157,9 @@ fn assistant_state_projection_replaces_encrypted_compaction_with_assistant_messa
 #[test]
 fn user_handoff_projection_replaces_encrypted_compaction_with_user_message() {
     let history = vec![ResponseItem::ContextCompaction {
+        id: None,
         encrypted_content: Some("encrypted".to_string()),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
     let projected = project_recovered_remote_compaction(
@@ -175,13 +181,15 @@ fn user_handoff_projection_replaces_encrypted_compaction_with_user_message() {
 fn projection_drops_older_malformed_duplicate_encrypted_compactions() {
     let history = vec![
         ResponseItem::Compaction {
+            id: None,
             encrypted_content: "old".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         user_text("retained user"),
         ResponseItem::Compaction {
+            id: None,
             encrypted_content: "new".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
 
@@ -205,8 +213,9 @@ fn projection_drops_older_malformed_duplicate_encrypted_compactions() {
 #[test]
 fn primary_route_does_not_need_remote_compaction_recovery() {
     let history = vec![ResponseItem::Compaction {
+        id: None,
         encrypted_content: "encrypted".to_string(),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
     assert!(!remote_compaction_recovery_needed(false, &history));
@@ -215,8 +224,9 @@ fn primary_route_does_not_need_remote_compaction_recovery() {
 #[test]
 fn local_route_with_encrypted_compaction_needs_remote_compaction_recovery() {
     let history = vec![ResponseItem::ContextCompaction {
+        id: None,
         encrypted_content: Some("encrypted".to_string()),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
     assert!(remote_compaction_recovery_needed(true, &history));
@@ -232,8 +242,9 @@ fn local_route_without_encrypted_compaction_does_not_need_remote_compaction_reco
 #[test]
 fn local_route_recovers_new_remote_compaction_after_reentry_compaction() {
     let initial_remote_history = vec![ResponseItem::Compaction {
+        id: None,
         encrypted_content: "old encrypted remote state".to_string(),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
     let promoted_history = project_recovered_remote_compaction(
         &initial_remote_history,
@@ -244,8 +255,9 @@ fn local_route_recovers_new_remote_compaction_after_reentry_compaction() {
     let reentry_remote_history = vec![
         promoted_history[0].clone(),
         ResponseItem::Compaction {
+            id: None,
             encrypted_content: "new encrypted remote state".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
 
@@ -276,8 +288,9 @@ fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
     let projected = project_recovered_remote_compaction(
         &[
             ResponseItem::Compaction {
+                id: None,
                 encrypted_content: "encrypted".to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             user_text("next user"),
         ],
@@ -289,7 +302,7 @@ fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
         model: "local-model".to_string(),
         instructions: String::new(),
         input: projected,
-        tools: Vec::new(),
+        tools: Some(Vec::new()),
         tool_choice: "auto".to_string(),
         parallel_tool_calls: false,
         temperature: None,

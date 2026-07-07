@@ -23,7 +23,7 @@ impl LocalOffloadToolNameMap {
                 namespace,
                 arguments,
                 call_id,
-                metadata,
+                internal_chat_message_metadata_passthrough,
             } => {
                 let canonical = ToolName::new(namespace.clone(), name.clone());
                 if let Some(flattened) = self.canonical_to_flattened.get(&canonical) {
@@ -33,7 +33,7 @@ impl LocalOffloadToolNameMap {
                         namespace: None,
                         arguments,
                         call_id,
-                        metadata,
+                        internal_chat_message_metadata_passthrough,
                     }
                 } else {
                     ResponseItem::FunctionCall {
@@ -42,7 +42,7 @@ impl LocalOffloadToolNameMap {
                         namespace,
                         arguments,
                         call_id,
-                        metadata,
+                        internal_chat_message_metadata_passthrough,
                     }
                 }
             }
@@ -58,7 +58,7 @@ impl LocalOffloadToolNameMap {
                 namespace,
                 arguments,
                 call_id,
-                metadata,
+                internal_chat_message_metadata_passthrough,
             } if namespace.is_none() => {
                 if let Some(canonical) = self.flattened_to_canonical.get(&name) {
                     ResponseItem::FunctionCall {
@@ -67,7 +67,7 @@ impl LocalOffloadToolNameMap {
                         namespace: canonical.namespace.clone(),
                         arguments,
                         call_id,
-                        metadata,
+                        internal_chat_message_metadata_passthrough,
                     }
                 } else {
                     ResponseItem::FunctionCall {
@@ -76,7 +76,7 @@ impl LocalOffloadToolNameMap {
                         namespace,
                         arguments,
                         call_id,
-                        metadata,
+                        internal_chat_message_metadata_passthrough,
                     }
                 }
             }
@@ -144,7 +144,7 @@ pub(crate) fn transform_request_for_local_offload(
     tools: &[ToolSpec],
 ) -> Result<LocalOffloadToolNameMap, serde_json::Error> {
     let (local_tools, tool_names) = create_tools_json_for_local_offload(tools)?;
-    request.tools = local_tools;
+    request.tools = Some(local_tools);
     request.input = request
         .input
         .drain(..)
@@ -216,7 +216,7 @@ mod tests {
             namespace: None,
             arguments: "{}".to_string(),
             call_id: "call_1".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
         assert_eq!(
             names.unflatten_response_item(item),
@@ -226,7 +226,7 @@ mod tests {
                 namespace: Some("web".to_string()),
                 arguments: "{}".to_string(),
                 call_id: "call_1".to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }
         );
 
@@ -236,7 +236,7 @@ mod tests {
             namespace: Some("web".to_string()),
             arguments: "{}".to_string(),
             call_id: "call_2".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
         assert_eq!(
             names.flatten_response_item(canonical_item),
@@ -246,7 +246,7 @@ mod tests {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call_2".to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }
         );
     }
@@ -274,7 +274,7 @@ mod tests {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call_mcp".to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }),
             ResponseItem::FunctionCall {
                 id: None,
@@ -282,7 +282,7 @@ mod tests {
                 namespace: Some(namespace.to_string()),
                 arguments: "{}".to_string(),
                 call_id: "call_mcp".to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }
         );
     }
@@ -324,6 +324,7 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
+                index_gated_web_access: None,
             },
         ];
 

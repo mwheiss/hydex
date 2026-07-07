@@ -36,7 +36,7 @@ fn assistant_output_text(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
@@ -47,7 +47,7 @@ fn function_call_item() -> ResponseItem {
         namespace: None,
         arguments: "{}".to_string(),
         call_id: "call-1".to_string(),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
@@ -137,17 +137,20 @@ async fn local_sampling_validation_rejects_broken_final_text() {
     );
 }
 
-#[test]
-fn offload_context_window_200000_derives_auto_compact_thresholds() {
-    let model_info = test_model_info_with_context_window(Some(128_000));
-    let local_context = ModelOffloadContextConfig {
+#[tokio::test]
+async fn offload_context_window_200000_derives_auto_compact_thresholds() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    turn_context.model_info = test_model_info_with_context_window(Some(128_000));
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context = ModelOffloadContextConfig {
         context_window: Some(200_000),
         ..Default::default()
     };
 
     let thresholds = select_auto_compact_thresholds(
-        &model_info,
-        &local_context,
+        &turn_context,
+        &turn_context.config.model_offload.context,
         /*use_local_thresholds*/ true,
     );
 
@@ -155,18 +158,21 @@ fn offload_context_window_200000_derives_auto_compact_thresholds() {
     assert_eq!(thresholds.effective_context_window, Some(190_000));
 }
 
-#[test]
-fn offload_explicit_auto_compact_limit_is_clamped_to_local_90_percent() {
-    let model_info = test_model_info_with_context_window(Some(128_000));
-    let local_context = ModelOffloadContextConfig {
+#[tokio::test]
+async fn offload_explicit_auto_compact_limit_is_clamped_to_local_90_percent() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    turn_context.model_info = test_model_info_with_context_window(Some(128_000));
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context = ModelOffloadContextConfig {
         context_window: Some(200_000),
         auto_compact_token_limit: Some(250_000),
         ..Default::default()
     };
 
     let thresholds = select_auto_compact_thresholds(
-        &model_info,
-        &local_context,
+        &turn_context,
+        &turn_context.config.model_offload.context,
         /*use_local_thresholds*/ true,
     );
 
@@ -174,17 +180,20 @@ fn offload_explicit_auto_compact_limit_is_clamped_to_local_90_percent() {
     assert_eq!(thresholds.effective_context_window, Some(190_000));
 }
 
-#[test]
-fn offload_threshold_selector_preserves_no_offload_model_behavior() {
-    let model_info = test_model_info_with_context_window(Some(128_000));
-    let local_context = ModelOffloadContextConfig {
+#[tokio::test]
+async fn offload_threshold_selector_preserves_no_offload_model_behavior() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    turn_context.model_info = test_model_info_with_context_window(Some(128_000));
+    let config = Arc::make_mut(&mut turn_context.config);
+    config.model_context_window = None;
+    config.model_offload.context = ModelOffloadContextConfig {
         context_window: Some(200_000),
         ..Default::default()
     };
 
     let thresholds = select_auto_compact_thresholds(
-        &model_info,
-        &local_context,
+        &turn_context,
+        &turn_context.config.model_offload.context,
         /*use_local_thresholds*/ false,
     );
 
@@ -224,7 +233,7 @@ async fn offload_ever_used_alone_does_not_apply_local_auto_compact_thresholds() 
                 .local_offload_enabled_for_turns(),
         ),
         select_auto_compact_thresholds(
-            &turn_context.model_info,
+            &turn_context,
             &turn_context.config.model_offload.context,
             /*use_local_thresholds*/ false,
         )
@@ -250,24 +259,27 @@ async fn turn_forced_primary_uses_primary_auto_compact_thresholds() {
             client_session.local_offload_enabled_for_turns()
         ),
         select_auto_compact_thresholds(
-            &turn_context.model_info,
+            &turn_context,
             &turn_context.config.model_offload.context,
             /*use_local_thresholds*/ false,
         )
     );
 }
 
-#[test]
-fn offload_threshold_selector_does_not_require_global_model_context_window() {
-    let model_info = test_model_info_with_context_window(None);
-    let local_context = ModelOffloadContextConfig {
+#[tokio::test]
+async fn offload_threshold_selector_does_not_require_global_model_context_window() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    turn_context.model_info = test_model_info_with_context_window(None);
+    let config = Arc::make_mut(&mut turn_context.config);
+    config.model_context_window = None;
+    config.model_offload.context = ModelOffloadContextConfig {
         context_window: Some(200_000),
         ..Default::default()
     };
 
     let thresholds = select_auto_compact_thresholds(
-        &model_info,
-        &local_context,
+        &turn_context,
+        &turn_context.config.model_offload.context,
         /*use_local_thresholds*/ true,
     );
 

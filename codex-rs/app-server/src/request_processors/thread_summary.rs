@@ -1,9 +1,9 @@
 use super::*;
-
 #[cfg(test)]
 use chrono::DateTime;
 #[cfg(test)]
 use chrono::Utc;
+use codex_protocol::config_types::MultiAgentMode;
 
 #[cfg(test)]
 pub(crate) async fn read_summary_from_rollout(
@@ -208,6 +208,7 @@ pub(crate) fn thread_settings_from_config_snapshot(
         model_offload_override: config_snapshot.model_offload_override,
         model_offload_compaction_override: config_snapshot.model_offload_compaction_override,
         collaboration_mode: config_snapshot.collaboration_mode.clone(),
+        multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         personality: config_snapshot.personality,
     }
 }
@@ -248,6 +249,7 @@ pub(crate) fn thread_settings_from_core_snapshot(
         model_offload_override,
         model_offload_compaction_override,
         collaboration_mode,
+        multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         personality,
     }
 }
@@ -318,14 +320,17 @@ pub(crate) fn summary_to_thread(
     let thread_id = conversation_id.to_string();
     Thread {
         id: thread_id.clone(),
+        extra: None,
         session_id: thread_id,
         forked_from_id: None,
         parent_thread_id: None,
         preview,
         ephemeral: false,
+        history_mode: ThreadHistoryMode::Legacy,
         model_provider,
         created_at: created_at.map(|dt| dt.timestamp()).unwrap_or(0),
         updated_at: updated_at.map(|dt| dt.timestamp()).unwrap_or(0),
+        recency_at: updated_at.map(|dt| dt.timestamp()),
         status: ThreadStatus::NotLoaded,
         path: (!path.as_os_str().is_empty()).then_some(path),
         cwd,

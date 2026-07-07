@@ -11,6 +11,7 @@ use codex_core::ResponseEvent;
 use codex_core::config::ModelOffloadConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_otel::SessionTelemetry;
@@ -159,13 +160,16 @@ async fn live_local_offload_responses_turn_completes() {
         Some(AuthManager::from_auth_for_testing(
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         )),
+        AgentIdentityAuthPolicy::ChatGptAuth,
         thread_id,
         primary_provider,
         SessionSource::Exec,
+        "hydex_live_offload".to_string(),
         config.model_verbosity,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
         offload_config,
     );
@@ -178,7 +182,7 @@ async fn live_local_offload_responses_turn_completes() {
             text: "Reply with a short sentence containing the words Hydex smoke.".to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     });
 
     let mut stream = client

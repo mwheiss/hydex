@@ -5817,6 +5817,7 @@ mod tests {
             realtime_active: None,
             effort: None,
             summary: ReasoningSummaryConfig::Auto,
+            offload_ever_used: false,
         };
 
         let value = serde_json::to_value(item)?;

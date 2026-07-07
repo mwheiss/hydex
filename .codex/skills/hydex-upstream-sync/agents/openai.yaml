@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hydex Upstream Sync"
+  short_description: "Replay Hydex onto current Codex main safely"
+  default_prompt: "Use $hydex-upstream-sync to bring hydex/main onto current origin/main using the patch-stack transplant workflow."

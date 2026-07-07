@@ -165,9 +165,9 @@ Recommended workflow:
 
 Hydex currently has two runtime model request routes:
 
-| Route | Provider |
-|---|---|
-| `Primary` | The normal configured Codex/OpenAI provider. |
+| Route          | Provider                                            |
+| -------------- | --------------------------------------------------- |
+| `Primary`      | The normal configured Codex/OpenAI provider.        |
 | `LocalOffload` | The configured local Responses-compatible provider. |
 
 Normal turn inference is locally routed when offload is enabled and the session
@@ -271,9 +271,9 @@ OpenAI/Codex `alpha/search` backend.
 Hydex preserves upstream compaction behavior until offload has actually been
 used. After that, `[model_offload.compaction]` controls compaction routing:
 
-| Policy | Behavior |
-|---|---|
-| `local` | Use the normal local model-call compaction path. |
+| Policy    | Behavior                                                                          |
+| --------- | --------------------------------------------------------------------------------- |
+| `local`   | Use the normal local model-call compaction path.                                  |
 | `primary` | Keep primary-provider compaction behavior, including remote v1/v2 when supported. |
 
 If `policy = "primary"`, remote/primary compaction uses the currently selected

@@ -86,15 +86,20 @@ git commit -m "Hydex: replay offload patch on current main"
 git push -u origin <scratch-branch>
 ```
 
-8. Do not move `hydex/main` until explicitly approved.
+8. Advance `hydex/main` after validation passes.
 
-Updating `hydex/main` from the scratch branch may require:
+This rewrites the Hydex patch-stack branch shape onto current upstream main, so use
+`--force-with-lease` rather than a blind force push:
 
 ```bash
 git push --force-with-lease origin <scratch-branch>:hydex/main
 ```
 
-Ask first. This rewrites the Hydex branch shape.
+Then align the local branch ref if needed:
+
+```bash
+git branch -f hydex/main <scratch-branch>
+```
 
 ## Current Known Good Reference
 
@@ -103,7 +108,7 @@ The July 2026 current-main transplant produced:
 ```text
 origin/main: ff06ab7172
 scratch branch: hydex/rebase-apply
-scratch commit: bbd0c7d316
+scratch commit: c35e261d2e
 previous upstream anchor: a86d525e4d
 ```
 

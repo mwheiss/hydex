@@ -1555,6 +1555,297 @@
       },
       "type": "object"
     },
+    "ModelOffloadCompactionLocalHandoffRole": {
+      "oneOf": [
+        {
+          "description": "Supply local compaction output as assistant-history state before the next user turn.",
+          "enum": [
+            "assistant_state"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Preserve legacy local compaction behavior: recovered summary is supplied as user context.",
+          "enum": [
+            "user_summary"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ModelOffloadCompactionPolicy": {
+      "oneOf": [
+        {
+          "description": "Use local `/responses` compaction through the normal model-call path.",
+          "enum": [
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Keep the primary provider's upstream compaction behavior.",
+          "enum": [
+            "primary"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ModelOffloadCompactionRecoveryProjection": {
+      "enum": [
+        "assistant_state",
+        "user_handoff"
+      ],
+      "type": "string"
+    },
+    "ModelOffloadCompactionRecoveryToml": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "default": "gpt-5.4",
+          "type": "string"
+        },
+        "projection": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionRecoveryProjection"
+            }
+          ],
+          "default": "assistant_state"
+        },
+        "reasoning_effort": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            }
+          ],
+          "default": "none"
+        }
+      },
+      "type": "object"
+    },
+    "ModelOffloadCompactionToml": {
+      "additionalProperties": false,
+      "properties": {
+        "local_handoff_role": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionLocalHandoffRole"
+            }
+          ],
+          "default": "assistant_state"
+        },
+        "policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionPolicy"
+            }
+          ],
+          "default": "local"
+        },
+        "recovery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionRecoveryToml"
+            }
+          ],
+          "default": {
+            "model": "gpt-5.4",
+            "projection": "assistant_state",
+            "reasoning_effort": "none"
+          }
+        }
+      },
+      "type": "object"
+    },
+    "ModelOffloadContextToml": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_compact_token_limit": {
+          "description": "Token usage threshold triggering auto-compaction for local offload.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "context_window": {
+          "description": "Size of the local offload model context window, in tokens.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "effective_context_window_percent": {
+          "default": 95,
+          "description": "Percentage of the raw context window used as the effective context limit.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ModelOffloadMemoryMode": {
+      "oneOf": [
+        {
+          "description": "Disable memory generation. Existing memories and memory reads are unchanged.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Run memory generation on the primary provider.",
+          "enum": [
+            "primary"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Run memory generation on the configured local offload provider.",
+          "enum": [
+            "local"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ModelOffloadToml": {
+      "additionalProperties": false,
+      "properties": {
+        "compaction": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadCompactionToml"
+            }
+          ],
+          "default": {
+            "local_handoff_role": "assistant_state",
+            "policy": "local",
+            "recovery": {
+              "model": "gpt-5.4",
+              "projection": "assistant_state",
+              "reasoning_effort": "none"
+            }
+          },
+          "description": "Policy used for compaction after offload has actually been used."
+        },
+        "context": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadContextToml"
+            }
+          ],
+          "default": {
+            "auto_compact_token_limit": null,
+            "context_window": null,
+            "effective_context_window_percent": 95
+          },
+          "description": "Local offload context-window settings used for auto-compaction pressure."
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enables route-specific offload of eligible model inference requests.",
+          "type": "boolean"
+        },
+        "memory_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadMemoryMode"
+            }
+          ],
+          "description": "Route used for memory generation. When unset, Hydex uses local memory generation only when model offload is effectively enabled."
+        },
+        "model": {
+          "description": "Optional model id to send to the offload provider. When unset, Codex sends the currently selected model id.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Key in `model_providers` identifying the local Responses-compatible provider.",
+          "type": "string"
+        },
+        "validation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadValidationToml"
+            }
+          ],
+          "default": {
+            "compaction": true,
+            "compaction_temperature": 0.0,
+            "enabled": true,
+            "final_text": true,
+            "generation_retries": 1,
+            "memory": true,
+            "memory_temperature": 0.0,
+            "retry_temperature": 0.01,
+            "structured_outputs": true,
+            "tool_calls": true,
+            "validator_attempts": 3,
+            "validator_temperature": 0.0
+          },
+          "description": "Shallow sanity validation for completed local/offloaded model outputs."
+        }
+      },
+      "type": "object"
+    },
+    "ModelOffloadValidationToml": {
+      "additionalProperties": false,
+      "properties": {
+        "compaction": {
+          "default": true,
+          "type": "boolean"
+        },
+        "compaction_temperature": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "final_text": {
+          "default": true,
+          "type": "boolean"
+        },
+        "generation_retries": {
+          "default": 1,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "memory": {
+          "default": true,
+          "type": "boolean"
+        },
+        "memory_temperature": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        },
+        "retry_temperature": {
+          "default": 0.01,
+          "format": "double",
+          "type": "number"
+        },
+        "structured_outputs": {
+          "default": true,
+          "type": "boolean"
+        },
+        "tool_calls": {
+          "default": true,
+          "type": "boolean"
+        },
+        "validator_attempts": {
+          "default": 3,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "validator_temperature": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
     "ModelProviderAuthInfo": {
       "additionalProperties": false,
       "description": "Configuration for obtaining a provider bearer token from a command.",
@@ -5273,6 +5564,48 @@
         }
       ],
       "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codex will likely degrade model performance."
+    },
+    "model_offload": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ModelOffloadToml"
+        }
+      ],
+      "default": {
+        "compaction": {
+          "local_handoff_role": "assistant_state",
+          "policy": "local",
+          "recovery": {
+            "model": "gpt-5.4",
+            "projection": "assistant_state",
+            "reasoning_effort": "none"
+          }
+        },
+        "context": {
+          "auto_compact_token_limit": null,
+          "context_window": null,
+          "effective_context_window_percent": 95
+        },
+        "enabled": false,
+        "memory_mode": null,
+        "model": null,
+        "provider": null,
+        "validation": {
+          "compaction": true,
+          "compaction_temperature": 0.0,
+          "enabled": true,
+          "final_text": true,
+          "generation_retries": 1,
+          "memory": true,
+          "memory_temperature": 0.0,
+          "retry_temperature": 0.01,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "validator_attempts": 3,
+          "validator_temperature": 0.0
+        }
+      },
+      "description": "Optional local model offload settings. Disabled by default, preserving standard provider routing unless explicitly enabled."
     },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",

@@ -49,6 +49,7 @@ fn resume_history(
         summary: config
             .model_reasoning_summary
             .unwrap_or(ReasoningSummary::Auto),
+        offload_ever_used: false,
     };
 
     InitialHistory::Resumed(ResumedHistory {

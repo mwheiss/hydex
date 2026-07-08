@@ -12696,6 +12696,22 @@
         "title": "ModelListResponse",
         "type": "object"
       },
+      "ModelOffloadCompactionRuntimeOverride": {
+        "description": "Runtime override for Hydex compaction routing.\n\nThis is intentionally not a persisted TOML setting. `None` at the call site means \"use `model_offload.compaction.policy` from config\".",
+        "enum": [
+          "local",
+          "primary"
+        ],
+        "type": "string"
+      },
+      "ModelOffloadRuntimeOverride": {
+        "description": "Runtime override for Hydex local model offload.\n\nThis is intentionally not a persisted TOML setting. `None` at the call site means \"use `model_offload.enabled` from config\".",
+        "enum": [
+          "force_on",
+          "force_off"
+        ],
+        "type": "string"
+      },
       "ModelProviderCapabilitiesReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ModelProviderCapabilitiesReadParams",
@@ -19399,6 +19415,26 @@
           "model": {
             "type": "string"
           },
+          "modelOffloadCompactionOverride": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelOffloadCompactionRuntimeOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modelOffloadOverride": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelOffloadRuntimeOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "modelProvider": {
             "type": "string"
           },
@@ -20345,6 +20381,42 @@
               "string",
               "null"
             ]
+          },
+          "modelOffloadCompactionOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ModelOffloadCompactionRuntimeOverride"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Runtime override for Hydex compaction routing for this turn and subsequent turns. Omission leaves the current setting unchanged; null clears the override and follows config."
+          },
+          "modelOffloadOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ModelOffloadRuntimeOverride"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Runtime override for Hydex local model offload for this turn and subsequent turns. Omission leaves the current setting unchanged; null clears the override and follows config."
           },
           "outputSchema": {
             "description": "Optional JSON Schema used to constrain the final assistant message for this turn."

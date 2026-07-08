@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::*;
+use crate::app_command::AppCommand;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
@@ -36,6 +37,8 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
+const OFFLOAD_USAGE: &str = "Usage: /offload [status|on|off|auto]";
+const COMPACTION_USAGE: &str = "Usage: /compaction [status|auto|local|primary]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to use /usage.";
 
 impl ChatWidget {
@@ -136,6 +139,239 @@ impl ChatWidget {
             || (cmd == SlashCommand::Resume
                 && (self.input_queue.user_turn_pending_start
                     || self.turn_lifecycle.agent_turn_running))
+    }
+
+    fn model_offload_status_text(&self) -> String {
+        let offload = &self.config.model_offload;
+        let configured = if offload.enabled { "on" } else { "off" };
+        let override_text = match offload.runtime_override {
+            Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn) => "forced on",
+            Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff) => {
+                "forced off"
+            }
+            None => "configured",
+        };
+        let effective = if offload.effective_enabled() {
+            "on"
+        } else {
+            "off"
+        };
+        let local_model = offload.model.as_deref().unwrap_or("inherited");
+        format!(
+            "Model offload: {effective} ({override_text}; config {configured}; local model {local_model})"
+        )
+    }
+
+    fn add_model_offload_status_message(&mut self) {
+        self.add_info_message(
+            self.model_offload_status_text(),
+            Some(OFFLOAD_USAGE.to_string()),
+        );
+    }
+
+    fn model_offload_compaction_status_text(&self) -> String {
+        let offload = &self.config.model_offload;
+        let configured = match offload.compaction_policy {
+            codex_config::config_toml::ModelOffloadCompactionPolicy::Local => "local",
+            codex_config::config_toml::ModelOffloadCompactionPolicy::Primary => "primary",
+        };
+        let override_text = match offload.compaction_runtime_override {
+            Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local) => {
+                "local"
+            }
+            Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary) => {
+                "primary"
+            }
+            None => "auto",
+        };
+        let requested = match offload.compaction_runtime_override {
+            Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local) => {
+                "local"
+            }
+            Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary) => {
+                "primary"
+            }
+            None => configured,
+        };
+        let effective = if offload.effective_enabled() && requested == "local" {
+            "local when this branch has used offload"
+        } else {
+            "primary"
+        };
+        format!("Compaction: {effective} (requested {override_text}; config {configured})")
+    }
+
+    fn add_model_offload_compaction_status_message(&mut self) {
+        self.add_info_message(
+            self.model_offload_compaction_status_text(),
+            Some(COMPACTION_USAGE.to_string()),
+        );
+    }
+
+    fn set_model_offload_override(
+        &mut self,
+        runtime_override: codex_protocol::config_types::ModelOffloadRuntimeOverride,
+    ) {
+        if matches!(
+            runtime_override,
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn
+        ) && !self.config.model_offload.can_route_local()
+        {
+            self.add_error_message(
+                "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            );
+            return;
+        }
+        self.config.model_offload.runtime_override = Some(runtime_override);
+        self.app_event_tx
+            .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                approvals_reviewer: None,
+                permission_profile: None,
+                active_permission_profile: None,
+                windows_sandbox_level: None,
+                model: None,
+                model_offload_override: Some(Some(runtime_override)),
+                model_offload_compaction_override: None,
+                effort: None,
+                summary: None,
+                service_tier: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        match runtime_override {
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn => {
+                let local_model = self
+                    .config
+                    .model_offload
+                    .model
+                    .as_deref()
+                    .unwrap_or("inherited");
+                self.add_info_message(
+                    format!(
+                        "Model offload enabled for this session. Eligible turns will use local model {local_model}."
+                    ),
+                    None,
+                );
+            }
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff => {
+                let primary_model = self.config.model.as_deref().unwrap_or("the primary model");
+                self.add_info_message(
+                    format!(
+                        "Model offload disabled for this session. Eligible turns will use primary model {primary_model}."
+                    ),
+                    None,
+                );
+            }
+        }
+    }
+
+    fn clear_model_offload_override(&mut self) {
+        self.config.model_offload.runtime_override = None;
+        self.app_event_tx
+            .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                approvals_reviewer: None,
+                permission_profile: None,
+                active_permission_profile: None,
+                windows_sandbox_level: None,
+                model: None,
+                model_offload_override: Some(None),
+                model_offload_compaction_override: None,
+                effort: None,
+                summary: None,
+                service_tier: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        let effective = if self.config.model_offload.effective_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        self.add_info_message(
+            format!("Model offload now follows config.toml and is {effective}."),
+            None,
+        );
+    }
+
+    fn set_model_offload_compaction_override(
+        &mut self,
+        runtime_override: codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride,
+    ) {
+        if matches!(
+            runtime_override,
+            codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local
+        ) && !self.config.model_offload.can_route_local()
+        {
+            self.add_error_message(
+                "Cannot enable local compaction: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            );
+            return;
+        }
+        self.config.model_offload.compaction_runtime_override = Some(runtime_override);
+        self.app_event_tx
+            .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                approvals_reviewer: None,
+                permission_profile: None,
+                active_permission_profile: None,
+                windows_sandbox_level: None,
+                model: None,
+                model_offload_override: None,
+                model_offload_compaction_override: Some(Some(runtime_override)),
+                effort: None,
+                summary: None,
+                service_tier: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        match runtime_override {
+            codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local => {
+                self.add_info_message(
+                    "Local compaction requested for this session. It applies when offload is on and this branch has used offload."
+                        .to_string(),
+                    None,
+                );
+            }
+            codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary => {
+                self.add_info_message(
+                    "Primary compaction requested for this session. Future compactions will use the primary backend."
+                        .to_string(),
+                    None,
+                );
+            }
+        }
+    }
+
+    fn clear_model_offload_compaction_override(&mut self) {
+        self.config.model_offload.compaction_runtime_override = None;
+        self.app_event_tx
+            .send(AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                approvals_reviewer: None,
+                permission_profile: None,
+                active_permission_profile: None,
+                windows_sandbox_level: None,
+                model: None,
+                model_offload_override: None,
+                model_offload_compaction_override: Some(None),
+                effort: None,
+                summary: None,
+                service_tier: None,
+                collaboration_mode: None,
+                personality: None,
+            }));
+        self.add_info_message(
+            "Compaction now follows model_offload.compaction.policy from config.toml.".to_string(),
+            None,
+        );
     }
 
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -271,6 +507,12 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
                 self.defer_input_until_settings_applied();
+            }
+            SlashCommand::Offload => {
+                self.add_model_offload_status_message();
+            }
+            SlashCommand::Compaction => {
+                self.add_model_offload_compaction_status_message();
             }
             SlashCommand::Personality => {
                 self.open_personality_popup();
@@ -709,6 +951,30 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Offload => match trimmed.to_ascii_lowercase().as_str() {
+                "" => self.add_model_offload_status_message(),
+                "status" => self.add_model_offload_status_message(),
+                "on" => self.set_model_offload_override(
+                    codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn,
+                ),
+                "off" => self.set_model_offload_override(
+                    codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff,
+                ),
+                "auto" | "config" | "default" => self.clear_model_offload_override(),
+                _ => self.add_error_message(OFFLOAD_USAGE.to_string()),
+            },
+            SlashCommand::Compaction => match trimmed.to_ascii_lowercase().as_str() {
+                "" => self.add_model_offload_compaction_status_message(),
+                "status" => self.add_model_offload_compaction_status_message(),
+                "local" => self.set_model_offload_compaction_override(
+                    codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local,
+                ),
+                "primary" => self.set_model_offload_compaction_override(
+                    codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary,
+                ),
+                "auto" | "config" | "default" => self.clear_model_offload_compaction_override(),
+                _ => self.add_error_message(COMPACTION_USAGE.to_string()),
+            },
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;
@@ -1054,6 +1320,8 @@ impl ChatWidget {
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Offload
+            | SlashCommand::Compaction
             | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::App

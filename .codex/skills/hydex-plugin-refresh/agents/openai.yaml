@@ -1,0 +1,3 @@
+display_name: Hydex Plugin Refresh
+short_description: Refresh the Hydex Linux x64 VSIX bundle.
+default_prompt: Refresh the Hydex Linux x64 VS Code plugin bundle with the current Hydex release binary.

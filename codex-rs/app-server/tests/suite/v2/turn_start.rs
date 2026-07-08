@@ -48,6 +48,8 @@ use codex_app_server_protocol::ThreadDeletedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -68,6 +70,8 @@ use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -217,6 +221,485 @@ async fn received_response_input_images(server: &wiremock::MockServer) -> Result
     }
 
     Ok(input_images)
+}
+
+fn write_hydex_turn_start_config(
+    codex_home: &Path,
+    primary_uri: &str,
+    local_uri: Option<&str>,
+    offload_enabled: bool,
+) -> std::io::Result<()> {
+    let local_provider = local_uri
+        .map(|uri| {
+            format!(
+                r#"
+[model_providers.local_responses]
+name = "Local Responses Offload"
+base_url = "{uri}/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0
+"#
+            )
+        })
+        .unwrap_or_default();
+    let offload_provider = if local_uri.is_some() {
+        r#"provider = "local_responses""#
+    } else {
+        ""
+    };
+
+    std::fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            r#"
+model = "primary-model"
+approval_policy = "never"
+sandbox_mode = "read-only"
+model_provider = "primary_provider"
+
+[model_offload]
+enabled = {offload_enabled}
+{offload_provider}
+model = "local-model"
+
+[model_offload.compaction]
+policy = "primary"
+
+[model_providers.primary_provider]
+name = "Primary provider for test"
+base_url = "{primary_uri}/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0
+{local_provider}
+"#
+        ),
+    )
+}
+
+async fn start_thread_for_hydex_turn_start_test(
+    mcp: &mut TestAppServer,
+) -> Result<codex_app_server_protocol::Thread> {
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("primary-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+    Ok(thread)
+}
+
+async fn send_hydex_turn_start(
+    mcp: &mut TestAppServer,
+    thread_id: String,
+    model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+) -> Result<i64> {
+    mcp.send_turn_start_request(TurnStartParams {
+        thread_id,
+        client_user_message_id: None,
+        input: vec![V2UserInput::Text {
+            text: "Hello Hydex".to_string(),
+            text_elements: Vec::new(),
+        }],
+        model_offload_override,
+        ..Default::default()
+    })
+    .await
+}
+
+async fn send_hydex_turn_start_with_compaction_override(
+    mcp: &mut TestAppServer,
+    thread_id: String,
+    model_offload_compaction_override: Option<Option<ModelOffloadCompactionRuntimeOverride>>,
+) -> Result<i64> {
+    mcp.send_turn_start_request(TurnStartParams {
+        thread_id,
+        client_user_message_id: None,
+        input: vec![V2UserInput::Text {
+            text: "Hello Hydex".to_string(),
+            text_elements: Vec::new(),
+        }],
+        model_offload_compaction_override,
+        ..Default::default()
+    })
+    .await
+}
+
+async fn send_hydex_thread_settings_update(
+    mcp: &mut TestAppServer,
+    params: ThreadSettingsUpdateParams,
+) -> Result<()> {
+    let request_id = mcp.send_thread_settings_update_request(params).await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let _: ThreadSettingsUpdateResponse = to_response(response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/settings/updated"),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn await_hydex_turn_start_completed(mcp: &mut TestAppServer, request_id: i64) -> Result<()> {
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    Ok(())
+}
+
+fn hydex_turn_start_sse_response(response_id: &str, message_id: &str) -> String {
+    responses::sse(vec![
+        responses::ev_response_created(response_id),
+        responses::ev_assistant_message(message_id, "Done"),
+        responses::ev_completed(response_id),
+    ])
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_force_off_routes_first_turn_primary_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let local = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+    let local_mock = responses::mount_sse_once(
+        &local,
+        hydex_turn_start_sse_response("resp-local", "msg-local"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        Some(&local.uri()),
+        /*offload_enabled*/ true,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    let turn_req = send_hydex_turn_start(
+        &mut mcp,
+        thread.id,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOff)),
+    )
+    .await?;
+    await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
+
+    assert_eq!(primary_mock.requests().len(), 1);
+    assert_eq!(local_mock.requests().len(), 0);
+    assert_eq!(
+        primary_mock.single_request().body_json()["model"],
+        "primary-model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_force_on_routes_first_turn_local_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let local = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+    let local_mock = responses::mount_sse_once(
+        &local,
+        hydex_turn_start_sse_response("resp-local", "msg-local"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        Some(&local.uri()),
+        /*offload_enabled*/ false,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    let turn_req = send_hydex_turn_start(
+        &mut mcp,
+        thread.id,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOn)),
+    )
+    .await?;
+    await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
+
+    assert_eq!(primary_mock.requests().len(), 0);
+    assert_eq!(local_mock.requests().len(), 1);
+    assert_eq!(
+        local_mock.single_request().body_json()["model"],
+        "local-model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_force_on_without_provider_fails_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        None,
+        /*offload_enabled*/ false,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    let turn_req = send_hydex_turn_start(
+        &mut mcp,
+        thread.id,
+        Some(Some(ModelOffloadRuntimeOverride::ForceOn)),
+    )
+    .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+
+    assert_eq!(err.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        err.error
+            .message
+            .contains("model_offload.provider is not configured or invalid"),
+        "unexpected error message: {}",
+        err.error.message
+    );
+    assert_eq!(primary_mock.requests().len(), 0);
+    let turn_started = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await;
+    assert!(
+        turn_started.is_err(),
+        "did not expect a turn/started notification after rejected offload override"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_omitted_override_follows_config_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let local = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+    let local_mock = responses::mount_sse_once(
+        &local,
+        hydex_turn_start_sse_response("resp-local", "msg-local"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        Some(&local.uri()),
+        /*offload_enabled*/ true,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    let turn_req = send_hydex_turn_start(&mut mcp, thread.id, None).await?;
+    await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
+
+    assert_eq!(primary_mock.requests().len(), 0);
+    assert_eq!(local_mock.requests().len(), 1);
+    assert_eq!(
+        local_mock.single_request().body_json()["model"],
+        "local-model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_compaction_local_override_applies_to_first_turn_v2() -> Result<()>
+{
+    let primary = responses::start_mock_server().await;
+    let local = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        Some(&local.uri()),
+        /*offload_enabled*/ false,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    let turn_req = send_hydex_turn_start_with_compaction_override(
+        &mut mcp,
+        thread.id.clone(),
+        Some(Some(ModelOffloadCompactionRuntimeOverride::Local)),
+    )
+    .await?;
+    let updated: codex_app_server_protocol::ThreadSettingsUpdatedNotification =
+        serde_json::from_value(
+            timeout(
+                DEFAULT_READ_TIMEOUT,
+                mcp.read_stream_until_notification_message("thread/settings/updated"),
+            )
+            .await??
+            .params
+            .context("thread/settings/updated should include params")?,
+        )?;
+    await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
+
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(
+        updated.thread_settings.model_offload_compaction_override,
+        Some(ModelOffloadCompactionRuntimeOverride::Local)
+    );
+    assert_eq!(primary_mock.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_compaction_local_without_provider_fails_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        None,
+        /*offload_enabled*/ false,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    let turn_req = send_hydex_turn_start_with_compaction_override(
+        &mut mcp,
+        thread.id,
+        Some(Some(ModelOffloadCompactionRuntimeOverride::Local)),
+    )
+    .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+
+    assert_eq!(err.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        err.error.message.contains("Cannot enable local compaction"),
+        "unexpected error message: {}",
+        err.error.message
+    );
+    assert_eq!(primary_mock.requests().len(), 0);
+    let turn_started = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await;
+    assert!(
+        turn_started.is_err(),
+        "did not expect a turn/started notification after rejected compaction override"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_offload_null_override_clears_to_config_v2() -> Result<()> {
+    let primary = responses::start_mock_server().await;
+    let local = responses::start_mock_server().await;
+    let primary_mock = responses::mount_sse_once(
+        &primary,
+        hydex_turn_start_sse_response("resp-primary", "msg-primary"),
+    )
+    .await;
+    let local_mock = responses::mount_sse_once(
+        &local,
+        hydex_turn_start_sse_response("resp-local", "msg-local"),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_hydex_turn_start_config(
+        codex_home.path(),
+        &primary.uri(),
+        Some(&local.uri()),
+        /*offload_enabled*/ true,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread_for_hydex_turn_start_test(&mut mcp).await?;
+
+    send_hydex_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model_offload_override: Some(Some(ModelOffloadRuntimeOverride::ForceOff)),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let turn_req = send_hydex_turn_start(&mut mcp, thread.id, Some(None)).await?;
+    await_hydex_turn_start_completed(&mut mcp, turn_req).await?;
+
+    assert_eq!(primary_mock.requests().len(), 0);
+    assert_eq!(local_mock.requests().len(), 1);
+    assert_eq!(
+        local_mock.single_request().body_json()["model"],
+        "local-model"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -2606,6 +3089,8 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             }),
             permissions: None,
             model: Some("mock-model".to_string()),
+            model_offload_override: None,
+            model_offload_compaction_override: None,
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
             service_tier: None,
@@ -2646,6 +3131,8 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
             permissions: None,
             model: Some("mock-model".to_string()),
+            model_offload_override: None,
+            model_offload_compaction_override: None,
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
             service_tier: None,

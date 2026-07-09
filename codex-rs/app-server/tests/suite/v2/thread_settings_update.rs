@@ -22,6 +22,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::test_support::all_model_presets;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
@@ -150,6 +151,52 @@ async fn thread_settings_update_cwd_retargets_default_environment() -> Result<()
         "default environment should use the updated cwd: {environment_context}"
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_reports_model_offload_compaction_override() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![]).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model_offload_compaction_override: Some(Some(
+                ModelOffloadCompactionRuntimeOverride::Primary,
+            )),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(
+        updated.thread_settings.model_offload_compaction_override,
+        Some(ModelOffloadCompactionRuntimeOverride::Primary)
+    );
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id,
+            model_offload_compaction_override: Some(None),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(
+        updated.thread_settings.model_offload_compaction_override,
+        None
+    );
     Ok(())
 }
 

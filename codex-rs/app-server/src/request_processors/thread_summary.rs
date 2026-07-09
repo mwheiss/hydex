@@ -202,6 +202,8 @@ pub(crate) fn thread_settings_from_config_snapshot(
         service_tier: config_snapshot.service_tier.clone(),
         effort: config_snapshot.reasoning_effort.clone(),
         summary: config_snapshot.reasoning_summary,
+        model_offload_override: config_snapshot.model_offload_override,
+        model_offload_compaction_override: config_snapshot.model_offload_compaction_override,
         collaboration_mode: config_snapshot.collaboration_mode.clone(),
         multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         personality: config_snapshot.personality,
@@ -224,6 +226,8 @@ pub(crate) fn thread_settings_from_core_snapshot(
         reasoning_summary,
         personality,
         collaboration_mode,
+        model_offload_override,
+        model_offload_compaction_override,
     } = snapshot;
     let sandbox_policy = thread_response_sandbox_policy(&permission_profile, cwd.as_path());
     ThreadSettings {
@@ -239,6 +243,8 @@ pub(crate) fn thread_settings_from_core_snapshot(
         service_tier,
         effort: reasoning_effort,
         summary: reasoning_summary,
+        model_offload_override,
+        model_offload_compaction_override,
         collaboration_mode,
         multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         personality,

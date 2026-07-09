@@ -24,6 +24,10 @@ use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -83,12 +87,15 @@ use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
+use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -197,6 +204,169 @@ impl Default for GhostSnapshotConfig {
             ignore_large_untracked_dirs: Some(DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS),
             disable_warnings: false,
         }
+    }
+}
+
+/// Resolved route-specific local model offload configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelOffloadConfig {
+    pub enabled: bool,
+    pub runtime_override: Option<ModelOffloadRuntimeOverride>,
+    pub compaction_runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
+    pub memory_mode: ModelOffloadMemoryMode,
+    pub provider_id: Option<String>,
+    pub provider: Option<ModelProviderInfo>,
+    pub model: Option<String>,
+    pub compaction_policy: ModelOffloadCompactionPolicy,
+    pub compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+    pub compaction_recovery: ModelOffloadCompactionRecoveryConfig,
+    pub context: ModelOffloadContextConfig,
+    pub validation: ModelOffloadValidationConfig,
+}
+
+impl ModelOffloadConfig {
+    pub fn effective_enabled(&self) -> bool {
+        self.runtime_override
+            .map(ModelOffloadRuntimeOverride::effective_enabled)
+            .unwrap_or(self.enabled)
+    }
+
+    pub fn can_route_local(&self) -> bool {
+        self.provider.is_some()
+    }
+}
+
+impl Default for ModelOffloadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode: ModelOffloadMemoryMode::Primary,
+            provider_id: None,
+            provider: None,
+            model: None,
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::AssistantState,
+            compaction_recovery: ModelOffloadCompactionRecoveryConfig::default(),
+            context: ModelOffloadContextConfig::default(),
+            validation: ModelOffloadValidationConfig::default(),
+        }
+    }
+}
+
+/// Resolved shallow sanity-validation settings for local/offloaded model outputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelOffloadValidationConfig {
+    pub enabled: bool,
+    pub validator_attempts: u32,
+    pub generation_retries: u32,
+    pub retry_temperature: f64,
+    pub memory_temperature: Option<f64>,
+    pub compaction_temperature: Option<f64>,
+    pub validator_temperature: Option<f64>,
+    pub final_text: bool,
+    pub tool_calls: bool,
+    pub structured_outputs: bool,
+    pub memory: bool,
+    pub compaction: bool,
+}
+
+impl Default for ModelOffloadValidationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            validator_attempts: 3,
+            generation_retries: 1,
+            retry_temperature: 0.01,
+            memory_temperature: Some(0.0),
+            compaction_temperature: Some(0.0),
+            validator_temperature: Some(0.0),
+            final_text: true,
+            tool_calls: true,
+            structured_outputs: true,
+            memory: true,
+            compaction: true,
+        }
+    }
+}
+
+/// Resolved recovery settings for converting primary remote compaction into
+/// local-readable history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOffloadCompactionRecoveryConfig {
+    pub model: ModelOffloadCompactionRecoveryModel,
+    pub reasoning_effort: ReasoningEffort,
+    pub projection: ModelOffloadCompactionRecoveryProjection,
+}
+
+impl Default for ModelOffloadCompactionRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            model: ModelOffloadCompactionRecoveryModel::Explicit("gpt-5.4".to_string()),
+            reasoning_effort: ReasoningEffort::None,
+            projection: ModelOffloadCompactionRecoveryProjection::AssistantState,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelOffloadCompactionRecoveryModel {
+    Auto,
+    Primary,
+    Explicit(String),
+}
+
+impl ModelOffloadCompactionRecoveryModel {
+    fn from_toml_value(value: &str) -> std::io::Result<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "primary" => Ok(Self::Primary),
+            explicit if explicit.trim().is_empty() => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "model_offload.compaction.recovery.model must not be empty",
+            )),
+            explicit => Ok(Self::Explicit(explicit.to_string())),
+        }
+    }
+}
+
+/// Resolved local offload context-window settings used for auto-compaction pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelOffloadContextConfig {
+    pub context_window: Option<i64>,
+    pub effective_context_window_percent: i64,
+    pub auto_compact_token_limit: Option<i64>,
+}
+
+impl Default for ModelOffloadContextConfig {
+    fn default() -> Self {
+        Self {
+            context_window: None,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+        }
+    }
+}
+
+impl ModelOffloadContextConfig {
+    pub(crate) fn effective_context_window(&self) -> Option<i64> {
+        self.context_window.map(|context_window| {
+            context_window.saturating_mul(self.effective_context_window_percent) / 100
+        })
+    }
+
+    pub(crate) fn auto_compact_token_limit(&self) -> Option<i64> {
+        let context_limit = self
+            .context_window
+            .map(|context_window| context_window.saturating_mul(9) / 10);
+        let config_limit = self.auto_compact_token_limit;
+        if let Some(context_limit) = context_limit {
+            return Some(
+                config_limit.map_or(context_limit, |limit| std::cmp::min(limit, context_limit)),
+            );
+        }
+        config_limit
     }
 }
 
@@ -645,6 +815,9 @@ pub struct Config {
 
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
+
+    /// Optional local provider used only for route-specific model offload.
+    pub model_offload: ModelOffloadConfig,
 
     /// Optionally specify the personality of the model
     pub personality: Option<Personality>,
@@ -2408,6 +2581,7 @@ pub struct ConfigOverrides {
     pub permission_profile: Option<PermissionProfile>,
     pub default_permissions: Option<String>,
     pub model_provider: Option<String>,
+    pub model_offload_override: Option<ModelOffloadRuntimeOverride>,
     pub service_tier: Option<Option<String>>,
     pub codex_self_exe: Option<PathBuf>,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
@@ -2445,6 +2619,111 @@ pub fn resolve_oss_provider(
     } else {
         config_toml.oss_provider.clone()
     }
+}
+
+fn resolve_model_offload_config(
+    cfg: &ConfigToml,
+    model_providers: &HashMap<String, ModelProviderInfo>,
+    runtime_override: Option<ModelOffloadRuntimeOverride>,
+) -> std::io::Result<ModelOffloadConfig> {
+    let offload = &cfg.model_offload;
+    let effective_enabled = runtime_override
+        .map(ModelOffloadRuntimeOverride::effective_enabled)
+        .unwrap_or(offload.enabled);
+    let explicit_memory_mode = offload.memory_mode;
+    let must_validate_provider = offload.enabled
+        || effective_enabled
+        || matches!(explicit_memory_mode, Some(ModelOffloadMemoryMode::Local));
+    let provider = match offload.provider.as_ref() {
+        Some(provider_id) => match validate_model_offload_provider(provider_id, model_providers) {
+            Ok(provider) => Some(provider),
+            Err(err) if must_validate_provider => return Err(err),
+            Err(_) => None,
+        },
+        None if must_validate_provider => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "model_offload.provider must be set when model_offload is enabled",
+            ));
+        }
+        None => None,
+    };
+    let memory_mode = explicit_memory_mode.unwrap_or_else(|| {
+        if effective_enabled && provider.is_some() {
+            ModelOffloadMemoryMode::Local
+        } else {
+            ModelOffloadMemoryMode::Primary
+        }
+    });
+
+    Ok(ModelOffloadConfig {
+        enabled: offload.enabled,
+        runtime_override,
+        compaction_runtime_override: None,
+        memory_mode,
+        provider_id: offload.provider.clone(),
+        provider: provider.cloned(),
+        model: offload.model.clone(),
+        compaction_policy: offload.compaction.policy,
+        compaction_local_handoff_role: offload.compaction.local_handoff_role,
+        compaction_recovery: ModelOffloadCompactionRecoveryConfig {
+            model: ModelOffloadCompactionRecoveryModel::from_toml_value(
+                &offload.compaction.recovery.model,
+            )?,
+            reasoning_effort: offload.compaction.recovery.reasoning_effort.clone(),
+            projection: offload.compaction.recovery.projection,
+        },
+        context: ModelOffloadContextConfig {
+            context_window: offload.context.context_window,
+            effective_context_window_percent: offload.context.effective_context_window_percent,
+            auto_compact_token_limit: offload.context.auto_compact_token_limit,
+        },
+        validation: ModelOffloadValidationConfig {
+            enabled: offload.validation.enabled,
+            validator_attempts: offload.validation.validator_attempts,
+            generation_retries: offload.validation.generation_retries,
+            retry_temperature: offload.validation.retry_temperature,
+            memory_temperature: offload.validation.memory_temperature,
+            compaction_temperature: offload.validation.compaction_temperature,
+            validator_temperature: offload.validation.validator_temperature,
+            final_text: offload.validation.final_text,
+            tool_calls: offload.validation.tool_calls,
+            structured_outputs: offload.validation.structured_outputs,
+            memory: offload.validation.memory,
+            compaction: offload.validation.compaction,
+        },
+    })
+}
+
+fn validate_model_offload_provider<'a>(
+    provider_id: &str,
+    model_providers: &'a HashMap<String, ModelProviderInfo>,
+) -> std::io::Result<&'a ModelProviderInfo> {
+    let provider = model_providers.get(provider_id).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Model offload provider `{provider_id}` not found"),
+        )
+    })?;
+    if provider.requires_openai_auth || provider.is_openai() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must identify a non-OpenAI local provider",
+        ));
+    }
+    if provider.base_url.as_deref().is_none_or(str::is_empty) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must have a base_url",
+        ));
+    }
+    if provider.wire_api != WireApi::Responses {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "model_offload.provider must use wire_api = \"responses\"",
+        ));
+    }
+    Ok(provider)
 }
 
 /// Resolve the web search mode from explicit config and feature flags.
@@ -3001,6 +3280,7 @@ impl Config {
             permission_profile,
             default_permissions: default_permissions_override,
             model_provider,
+            model_offload_override,
             service_tier: service_tier_override,
             codex_self_exe,
             codex_linux_sandbox_exe,
@@ -3428,11 +3708,14 @@ impl Config {
             .filter(|value| !value.is_empty());
 
         let model_providers =
-            merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
+            merge_configured_model_providers(
+                built_in_model_providers(openai_base_url),
+                cfg.model_providers.clone(),
+            )
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
         let model_provider_id = model_provider
-            .or(cfg.model_provider)
+            .or_else(|| cfg.model_provider.clone())
             .unwrap_or_else(|| "openai".to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
@@ -3445,6 +3728,8 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+        let model_offload =
+            resolve_model_offload_config(&cfg, &model_providers, model_offload_override)?;
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -3795,6 +4080,7 @@ impl Config {
                 .unwrap_or_default(),
             model_provider_id,
             model_provider,
+            model_offload,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,

@@ -225,6 +225,8 @@ mod tests {
             service_tier: None,
             effort: Some(ReasoningEffort::High),
             summary: None,
+            model_offload_override: None,
+            model_offload_compaction_override: None,
             collaboration_mode: CollaborationMode {
                 mode: ModeKind::Default,
                 settings: Settings {

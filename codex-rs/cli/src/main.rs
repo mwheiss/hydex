@@ -2768,6 +2768,14 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
+    #[test]
+    fn offload_flags_conflict() {
+        let err = MultitoolCli::try_parse_from(["codex", "--offload", "--no-offload"])
+            .expect_err("offload flags should be mutually exclusive");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
     fn app_server_from_args(args: &[&str]) -> AppServerCommand {
         let cli = MultitoolCli::try_parse_from(args).expect("parse");
         let Subcommand::AppServer(app_server) = cli.subcommand.expect("app-server present") else {

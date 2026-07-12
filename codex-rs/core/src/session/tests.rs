@@ -38,6 +38,8 @@ use codex_http_client::OutboundProxyPolicy;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
@@ -75,6 +77,7 @@ use codex_utils_path_uri::PathUri;
 use tracing::Span;
 
 use crate::connectors::AppInfo;
+use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::rollout::recorder::RolloutRecorder;
 use crate::state::ActiveTurn;
 use crate::state::TaskKind;
@@ -93,6 +96,7 @@ use crate::tools::registry::ToolExecutor;
 use crate::tools::router::ToolCallSource;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_config::config_toml::ConfigToml;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::FilesystemPermissionsToml;
@@ -516,6 +520,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        crate::config::ModelOffloadConfig::default(),
     )
     .new_session()
 }
@@ -1734,6 +1739,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         first_window_id: Some(first_window_id.to_string()),
         previous_window_id: Some(previous_window_id.to_string()),
         window_id: Some(window_id.to_string()),
+        remote_compaction_model: None,
     })];
 
     let reconstructed = session
@@ -3115,6 +3121,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let turn_id = previous_context_item
         .turn_id
@@ -3483,6 +3490,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             first_window_id: Some(first_window_id.to_string()),
             previous_window_id: Some(previous_window_id.to_string()),
             window_id: Some(compacted_window_id.to_string()),
+            remote_compaction_model: None,
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: compact_turn_id,
@@ -5534,6 +5542,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
                 .enabled(Feature::ConcurrentReasoningSummaries),
             /*attestation_provider*/ None,
             config.http_client_factory(),
+            config.model_offload.clone(),
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
             codex_code_mode::InProcessCodeModeSessionProvider,
@@ -7665,6 +7674,7 @@ where
                 .enabled(Feature::ConcurrentReasoningSummaries),
             /*attestation_provider*/ None,
             config.http_client_factory(),
+            config.model_offload.clone(),
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
             codex_code_mode::InProcessCodeModeSessionProvider,
@@ -9022,6 +9032,91 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
         serde_json::to_value(Some(turn_context.to_turn_context_item()))
             .expect("serialize expected turn context item")
     );
+}
+
+#[tokio::test]
+async fn first_offloaded_turn_persists_offload_marker_for_resume() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    session.services.model_client = ModelClient::new(
+        Some(session.services.auth_manager.clone()),
+        AgentIdentityAuthPolicy::JwtOnly,
+        session.thread_id,
+        turn_context.provider.info().clone(),
+        turn_context.session_source.clone(),
+        "test_originator".to_string(),
+        turn_context.config.model_verbosity,
+        turn_context
+            .config
+            .features
+            .enabled(Feature::EnableRequestCompression),
+        turn_context
+            .config
+            .features
+            .enabled(Feature::RuntimeMetrics),
+        Session::build_model_client_beta_features_header(turn_context.config.as_ref()),
+        turn_context.config.features.enabled(Feature::ItemIds),
+        /*concurrent_reasoning_summaries_enabled*/
+        turn_context
+            .config
+            .features
+            .enabled(Feature::ConcurrentReasoningSummaries),
+        /*attestation_provider*/ None,
+        turn_context.config.http_client_factory(),
+        crate::config::ModelOffloadConfig {
+            enabled: true,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode: codex_config::config_toml::ModelOffloadMemoryMode::Local,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role:
+                codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            context: Default::default(),
+            validation: Default::default(),
+        },
+    );
+    let rollout_path = attach_thread_persistence(&mut session).await;
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
+
+    session
+        .record_context_updates_and_set_reference_context_item(&step_context)
+        .await;
+    let window_id = session.current_window_id().await;
+    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
+        session.installation_id.clone(),
+        window_id,
+        CodexResponsesRequestKind::Turn,
+    );
+    let client_session = session.services.model_client.new_session();
+    assert!(client_session.mark_offload_used_for_responses_request(&responses_metadata));
+    session
+        .persist_turn_context_item_and_set_reference_context_item(&turn_context)
+        .await;
+    session.flush_rollout().await.expect("rollout should flush");
+
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await
+        .expect("read rollout history")
+    else {
+        panic!("expected resumed rollout history");
+    };
+    let latest_marker = resumed.history.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(ctx) => Some(ctx.offload_ever_used),
+        _ => None,
+    });
+    assert_eq!(latest_marker, Some(true));
+
+    let (replay_session, _replay_turn_context) = make_session_and_context().await;
+    replay_session
+        .record_initial_history(InitialHistory::Resumed(resumed))
+        .await;
+    assert!(replay_session.services.model_client.offload_ever_used());
 }
 
 #[tokio::test]
@@ -10640,6 +10735,7 @@ async fn sample_rollout(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        remote_compaction_model: None,
     }));
 
     let user2 = ResponseItem::Message {
@@ -10687,6 +10783,7 @@ async fn sample_rollout(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        remote_compaction_model: None,
     }));
 
     let user3 = ResponseItem::Message {

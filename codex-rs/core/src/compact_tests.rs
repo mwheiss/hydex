@@ -1,5 +1,7 @@
 use super::*;
 use crate::session::tests::build_world_state_from_turn_context;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -79,6 +81,37 @@ fn content_items_to_text_ignores_image_only_content() {
     let joined = content_items_to_text(&items);
 
     assert_eq!(None, joined);
+}
+
+#[tokio::test]
+async fn local_compaction_validation_rejects_reasoning_leakage() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+
+    let err = validate_local_compaction_payload(
+        &turn_context,
+        "Need / current state:\n- <think>hidden scratch</think>",
+    )
+    .expect_err("reasoning leakage should reject local compaction");
+
+    assert!(
+        err.to_string().contains("failed sanity validation"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn local_compaction_validation_can_be_disabled() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    std::sync::Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .validation
+        .compaction = false;
+
+    validate_local_compaction_payload(
+        &turn_context,
+        "Need / current state:\n- <think>hidden scratch</think>",
+    )
+    .expect("disabled compaction validation should not reject");
 }
 
 #[test]
@@ -184,6 +217,7 @@ fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
         std::slice::from_ref(&user_message),
         "SUMMARY",
         max_tokens,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
     );
     assert_eq!(history.len(), 2);
 
@@ -257,6 +291,151 @@ fn build_compacted_history_preserves_user_message_passthrough_metadata() {
 }
 
 #[test]
+fn build_compacted_history_assistant_state_appends_assistant_summary() {
+    let history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        "summary text",
+        ModelOffloadCompactionLocalHandoffRole::AssistantState,
+    );
+
+    let expected = vec![
+        user_message("first user message"),
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "summary text".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+    assert_eq!(history, expected);
+}
+
+#[test]
+fn build_compacted_history_user_summary_appends_user_summary_by_default() {
+    let history = build_compacted_history(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        "summary text",
+    );
+
+    let expected = vec![
+        user_message("first user message"),
+        user_message("summary text"),
+    ];
+    assert_eq!(history, expected);
+}
+
+#[tokio::test]
+async fn local_compaction_prompt_assistant_state_uses_assistant_state_prompt_by_default() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+
+    assert_eq!(
+        local_compaction_prompt(&turn_context),
+        ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT
+    );
+}
+
+#[tokio::test]
+async fn local_compaction_prompt_user_summary_uses_summarization_prompt_without_override() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    std::sync::Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .compaction_local_handoff_role = ModelOffloadCompactionLocalHandoffRole::UserSummary;
+
+    assert_eq!(local_compaction_prompt(&turn_context), SUMMARIZATION_PROMPT);
+}
+
+#[tokio::test]
+async fn local_compaction_prompt_explicit_config_overrides_handoff_role_prompt() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    let config = std::sync::Arc::make_mut(&mut turn_context.config);
+    config.model_offload.compaction_local_handoff_role =
+        ModelOffloadCompactionLocalHandoffRole::AssistantState;
+    config.compact_prompt = Some("custom compact prompt".to_string());
+
+    assert_eq!(
+        local_compaction_prompt(&turn_context),
+        "custom compact prompt"
+    );
+}
+
+#[test]
+fn assistant_state_local_compaction_payload_is_raw_assistant_state() {
+    let summary_text = local_compaction_summary_text(
+        "summary text",
+        ModelOffloadCompactionLocalHandoffRole::AssistantState,
+    );
+    let history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        &summary_text,
+        ModelOffloadCompactionLocalHandoffRole::AssistantState,
+    );
+
+    assert_eq!(
+        history,
+        vec![
+            user_message("first user message"),
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "summary text".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]
+    );
+    assert!(!summary_text.contains(SUMMARY_PREFIX));
+}
+
+#[test]
+fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
+    let summary_text = local_compaction_summary_text(
+        "summary text",
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
+    );
+    let history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &[compacted_user_message("first user message")],
+        &summary_text,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
+    );
+
+    assert_eq!(
+        history,
+        vec![
+            user_message("first user message"),
+            user_message(&format!("{SUMMARY_PREFIX}\nsummary text")),
+        ]
+    );
+}
+
+#[test]
+fn build_compacted_history_preserves_user_message_metadata() {
+    let history = build_compacted_history(
+        Vec::new(),
+        &[CompactedUserMessage {
+            message: "first user message".to_string(),
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    turn_id: Some("turn-1".to_string()),
+                },
+            ),
+        }],
+        "summary text",
+    );
+
+    assert_eq!(history[0].turn_id(), Some("turn-1"));
+    assert_eq!(history[1].turn_id(), None);
+}
+
+#[test]
 fn should_use_remote_compact_task_for_azure_provider() {
     let provider = ModelProviderInfo {
         name: "Azure".into(),
@@ -280,6 +459,55 @@ fn should_use_remote_compact_task_for_azure_provider() {
 
     assert!(should_use_remote_compact_task(&provider));
 }
+
+#[test]
+fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
+    let provider = ModelProviderInfo {
+        name: "Azure".into(),
+        base_url: Some("https://example.com/openai".into()),
+        env_key: Some("AZURE_OPENAI_API_KEY".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    assert!(should_use_remote_compact_task_with_offload_policy(
+        &provider,
+        false,
+        true,
+        ModelOffloadCompactionPolicy::Local,
+    ));
+    assert!(!should_use_remote_compact_task_with_offload_policy(
+        &provider,
+        true,
+        true,
+        ModelOffloadCompactionPolicy::Local,
+    ));
+    assert!(should_use_remote_compact_task_with_offload_policy(
+        &provider,
+        true,
+        false,
+        ModelOffloadCompactionPolicy::Local,
+    ));
+    assert!(should_use_remote_compact_task_with_offload_policy(
+        &provider,
+        true,
+        true,
+        ModelOffloadCompactionPolicy::Primary,
+    ));
+}
+
 #[tokio::test]
 async fn process_compacted_history_replaces_developer_messages() {
     let compacted_history = vec![

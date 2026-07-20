@@ -188,7 +188,7 @@ pub fn generate_ts_with_options(
         }
     }
 
-    trim_trailing_whitespace_in_ts_files(&ts_files)?;
+    normalize_ts_files(&ts_files)?;
 
     Ok(())
 }
@@ -2015,17 +2015,30 @@ fn ts_files_in_recursive(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn trim_trailing_whitespace_in_ts_files(paths: &[PathBuf]) -> Result<()> {
+fn normalize_ts_files(paths: &[PathBuf]) -> Result<()> {
     for path in paths {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let trimmed = trim_trailing_line_whitespace(&content);
-        if trimmed != content {
-            fs::write(path, trimmed)
+        let normalized = normalize_typescript_content(&content);
+        if normalized != content {
+            fs::write(path, normalized)
                 .with_context(|| format!("Failed to write {}", path.display()))?;
         }
     }
     Ok(())
+}
+
+pub(crate) fn normalize_typescript_content(content: &str) -> String {
+    let content = normalize_duplicate_nullable_unions(content);
+    trim_trailing_line_whitespace(&content)
+}
+
+fn normalize_duplicate_nullable_unions(content: &str) -> String {
+    let mut normalized = content.to_string();
+    while normalized.contains("| null | null") {
+        normalized = normalized.replace("| null | null", "| null");
+    }
+    normalized
 }
 
 pub(crate) fn trim_trailing_line_whitespace(content: &str) -> String {
@@ -2198,6 +2211,7 @@ mod tests {
         );
 
         let mut undefined_offenders = Vec::new();
+        let mut duplicate_nullable_offenders = Vec::new();
         let mut optional_nullable_offenders = BTreeSet::new();
         for (path, contents) in &fixture_tree {
             if !matches!(path.extension().and_then(|ext| ext.to_str()), Some("ts")) {
@@ -2227,6 +2241,9 @@ mod tests {
             let contents = std::str::from_utf8(contents)?;
             if contents.contains("| undefined") {
                 undefined_offenders.push(path.clone());
+            }
+            if contents.contains("| null | null") {
+                duplicate_nullable_offenders.push(path.clone());
             }
 
             const SKIP_PREFIXES: &[&str] = &[
@@ -2363,6 +2380,10 @@ mod tests {
         assert!(
             undefined_offenders.is_empty(),
             "Generated TypeScript still includes unions with `undefined` in {undefined_offenders:?}"
+        );
+        assert!(
+            duplicate_nullable_offenders.is_empty(),
+            "Generated TypeScript still includes duplicate nullable unions in {duplicate_nullable_offenders:?}"
         );
 
         // If this assertion fails, it means a field was generated as "?: T | null",

@@ -269,7 +269,7 @@ async fn run_remote_compact_task_inner_impl(
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage(_) => {
-            Some(compaction_turn_context.to_turn_context_item())
+            Some(sess.turn_context_item(compaction_turn_context))
         }
     };
     let compacted_item = CompactedItem {
@@ -279,6 +279,7 @@ async fn run_remote_compact_task_inner_impl(
         first_window_id: Some(new_window_ids.first_window_id.to_string()),
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(new_window_ids.window_id.to_string()),
+        remote_compaction_model: Some(compaction_turn_context.model_info.slug.clone()),
     };
     // Install is the semantic boundary where the compact endpoint's output becomes live
     // thread history. Keep it distinct from the later inference request so the reducer can

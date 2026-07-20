@@ -11,6 +11,8 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
 use crate::context_manager::ContextManager;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
@@ -41,6 +43,9 @@ pub(crate) struct SessionState {
     pub(crate) current_time_reminder: CurrentTimeReminderState,
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
+    pub(crate) remote_compaction_recovery_cache:
+        HashMap<RemoteCompactionRecoveryCacheKey, RemoteCompactionRecoveryCacheEntry>,
+    active_remote_compaction_model: Option<String>,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
 }
@@ -73,6 +78,8 @@ impl SessionState {
             current_time_reminder: CurrentTimeReminderState::default(),
             active_connector_selection: HashSet::new(),
             pending_session_start_sources: VecDeque::new(),
+            remote_compaction_recovery_cache: HashMap::new(),
+            active_remote_compaction_model: None,
             granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,
         }
@@ -120,6 +127,15 @@ impl SessionState {
         self.history
             .set_reference_context_item(reference_context_item);
         self.auto_compact_window.clear_prefill();
+        self.active_remote_compaction_model = None;
+    }
+
+    pub(crate) fn set_active_remote_compaction_model(&mut self, model: Option<String>) {
+        self.active_remote_compaction_model = model;
+    }
+
+    pub(crate) fn active_remote_compaction_model(&self) -> Option<String> {
+        self.active_remote_compaction_model.clone()
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {

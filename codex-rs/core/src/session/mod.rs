@@ -19,6 +19,7 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::attestation::AttestationProvider;
 use crate::build_available_skills;
 use crate::compact;
+use crate::config::ConstraintError;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovalPromptContext;
@@ -300,6 +301,8 @@ pub(crate) struct PreviousTurnSettings {
 #[cfg(test)]
 use crate::SkillMetadata;
 use crate::SkillsService;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpManager;
@@ -1355,10 +1358,15 @@ impl Session {
             window_number,
             first_window_id,
             previous_window_id,
+            offload_ever_used,
             window_id,
+            active_remote_compaction_model,
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
+        self.services
+            .model_client
+            .seed_offload_ever_used(offload_ever_used);
         // Keep the recorded rollout unchanged. Prepare its reconstructed history before
         // installing it, so legacy images are processed once for this resume or fork and
         // will be processed again if the rollout is reconstructed in a future session.
@@ -1380,6 +1388,7 @@ impl Session {
                     window_id,
                 },
             );
+            state.set_active_remote_compaction_model(active_remote_compaction_model);
             state.set_previous_turn_settings(previous_turn_settings.clone());
         }
         let prefix_tokens = if matches!(
@@ -1441,6 +1450,8 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let model_offload_override = updates.model_offload_override;
+        let model_offload_compaction_override = updates.model_offload_compaction_override;
         let (previous_config, new_config, permission_profile_changed) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1467,6 +1478,28 @@ impl Session {
             state.session_configuration = updated;
             (previous_config, new_config, permission_profile_changed)
         };
+        if let Some(model_offload_override) = model_offload_override {
+            self.services
+                .model_client
+                .set_model_offload_runtime_override(model_offload_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+        }
+        if let Some(model_offload_compaction_override) = model_offload_compaction_override {
+            self.services
+                .model_client
+                .set_model_offload_compaction_runtime_override(model_offload_compaction_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.compaction.runtime_override",
+                    candidate: "local".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
@@ -3004,6 +3037,7 @@ impl Session {
             replacement_history: Some(items.clone()),
             ..compacted_item
         };
+        let remote_compaction_model = compacted_item.remote_compaction_model.clone();
         // Compaction starts a new history window, so its WorldState baseline must be full.
         let mut world_state_item = None;
         {
@@ -3014,6 +3048,7 @@ impl Session {
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
                 state.history.set_world_state_baseline(snapshot);
             }
+            state.set_active_remote_compaction_model(remote_compaction_model);
         }
 
         self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
@@ -3031,6 +3066,28 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+    }
+
+    pub(crate) async fn remote_compaction_recovery_cache_get(
+        &self,
+        key: &RemoteCompactionRecoveryCacheKey,
+    ) -> Option<RemoteCompactionRecoveryCacheEntry> {
+        let state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.get(key).cloned()
+    }
+
+    pub(crate) async fn remote_compaction_recovery_cache_insert(
+        &self,
+        key: RemoteCompactionRecoveryCacheKey,
+        entry: RemoteCompactionRecoveryCacheEntry,
+    ) {
+        let mut state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.insert(key, entry);
+    }
+
+    pub(crate) async fn active_remote_compaction_model(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.active_remote_compaction_model()
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {
@@ -3517,7 +3574,7 @@ impl Session {
         let context_items = self
             .build_initial_context_with_world_state(turn_context, world_state.as_ref())
             .await;
-        let turn_context_item = turn_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(turn_context);
         self.replace_compacted_history(
             turn_context,
             context_items,
@@ -3530,6 +3587,7 @@ impl Session {
                 first_window_id: Some(window_ids.first_window_id.to_string()),
                 previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
                 window_id: Some(window_ids.window_id.to_string()),
+                remote_compaction_model: None,
             },
         )
         .await;
@@ -3540,6 +3598,23 @@ impl Session {
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
         let state = self.state.lock().await;
         state.reference_context_item()
+    }
+
+    pub(crate) fn turn_context_item(&self, turn_context: &TurnContext) -> TurnContextItem {
+        turn_context.to_turn_context_item_with_offload_ever_used(
+            self.services.model_client.offload_ever_used(),
+        )
+    }
+
+    pub(crate) async fn persist_turn_context_item_and_set_reference_context_item(
+        &self,
+        turn_context: &TurnContext,
+    ) {
+        let turn_context_item = self.turn_context_item(turn_context);
+        self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
+            .await;
+        let mut state = self.state.lock().await;
+        state.set_reference_context_item(Some(turn_context_item));
     }
 
     /// Persist the latest turn context snapshot for the first real user turn and for
@@ -3565,7 +3640,7 @@ impl Session {
             let state = self.state.lock().await;
             state.reference_context_item()
         };
-        let turn_context_item = turn_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(turn_context);
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await);

@@ -68,6 +68,7 @@ mod image_rollout;
 mod items;
 mod json_result;
 mod live_cli;
+mod live_hydex_offload;
 mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
 #[cfg(unix)]

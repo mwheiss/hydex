@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hydex Upstream Sync"
+  short_description: "Sync fork main with OpenAI, then replay Hydex"
+  default_prompt: "Use $hydex-upstream-sync to sync the fork main branch with openai/codex main, then replay hydex/main with the patch-stack transplant workflow."

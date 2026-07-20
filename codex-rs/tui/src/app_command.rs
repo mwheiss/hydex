@@ -11,6 +11,8 @@ use codex_app_server_protocol::UserInput;
 use codex_config::types::ApprovalsReviewer;
 use codex_protocol::approvals::GuardianAssessmentEvent;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -51,6 +53,8 @@ pub(crate) enum AppCommand {
         active_permission_profile: Option<ActivePermissionProfile>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
+        model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+        model_offload_compaction_override: Option<Option<ModelOffloadCompactionRuntimeOverride>>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
         service_tier: Option<Option<String>>,
@@ -165,6 +169,8 @@ impl AppCommand {
             active_permission_profile,
             windows_sandbox_level,
             model,
+            model_offload_override: None,
+            model_offload_compaction_override: None,
             effort,
             summary,
             service_tier,

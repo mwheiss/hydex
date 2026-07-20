@@ -1,10 +1,12 @@
 use codex_config::ConfigLayerStack;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ModelClient;
 use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ThreadManager;
+use codex_core::config::ModelOffloadConfig;
 use codex_core::resolve_installation_id;
 use codex_core::thread_store_from_config;
 use codex_extension_api::empty_extension_registry;
@@ -63,6 +65,7 @@ use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_response_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
@@ -1282,6 +1285,143 @@ async fn provider_auth_command_refreshes_after_401() {
     send_provider_auth_request(&server, auth_fixture.auth()).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let response_mock = mount_response_once(
+        &server,
+        ResponseTemplate::new(401).set_body_string("unauthorized"),
+    )
+    .await;
+    let local_provider = ModelProviderInfo {
+        name: "local-offload".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+    let offload_config = ModelOffloadConfig {
+        enabled: true,
+        runtime_override: None,
+        compaction_runtime_override: None,
+        memory_mode: codex_config::config_toml::ModelOffloadMemoryMode::Local,
+        provider_id: Some(local_provider.name.clone()),
+        provider: Some(local_provider.clone()),
+        model: Some("local-responses-model".to_string()),
+        compaction_policy: ModelOffloadCompactionPolicy::Local,
+        compaction_local_handoff_role:
+            codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
+        compaction_recovery: codex_core::config::ModelOffloadCompactionRecoveryConfig::default(),
+        context: Default::default(),
+        validation: Default::default(),
+    };
+
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home).await;
+    let effort = config.model_reasoning_effort.clone();
+    let summary = config.model_reasoning_summary;
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    config.model = Some(model.clone());
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let thread_id = ThreadId::new();
+    let session_telemetry = SessionTelemetry::new(
+        thread_id,
+        model.as_str(),
+        model_info.slug.as_str(),
+        /*account_id*/ None,
+        Some("test@test.com".to_string()),
+        /*auth_mode*/ None,
+        "test_originator".to_string(),
+        /*log_user_prompts*/ false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+    let primary_provider =
+        ModelProviderInfo::create_openai_provider(Some("https://primary.invalid/v1".to_string()));
+    let client = ModelClient::new(
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+        AgentIdentityAuthPolicy::ChatGptAuth,
+        thread_id,
+        primary_provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        config.http_client_factory(),
+        offload_config,
+    );
+    let responses_metadata = test_turn_responses_metadata(&client, thread_id);
+    let mut client_session = client.new_session();
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "hello".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+
+    let error = match client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(ReasoningSummary::Auto),
+            /*service_tier*/ None,
+            &responses_metadata,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
+        )
+        .await
+    {
+        Ok(_) => panic!("local 401 should surface instead of auth-recovery retrying"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error.to_string().contains("401"),
+        "expected 401 error, got {error}"
+    );
+    let requests = response_mock.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "local 401 must not retry through primary auth recovery"
+    );
+    let request = requests.first().expect("captured local request");
+    assert_eq!(request.path(), "/v1/responses");
+    assert_eq!(request.header("authorization"), None);
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some("local-responses-model")
+    );
+}
+
 /// Issues one streamed Responses request through a provider configured with command-backed auth.
 ///
 /// The caller owns the server-side assertions, so this helper only validates that the request
@@ -1352,6 +1492,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
             .enabled(Feature::ConcurrentReasoningSummaries),
         /*attestation_provider*/ None,
         config.http_client_factory(),
+        ModelOffloadConfig::default(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();
@@ -3079,6 +3220,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         config.http_client_factory(),
+        ModelOffloadConfig::default(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();

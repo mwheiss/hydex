@@ -26,6 +26,7 @@ impl<'de> Deserialize<'de> for CompactedItem {
             first_window_id: serialized.first_window_id,
             previous_window_id: serialized.previous_window_id,
             window_id,
+            remote_compaction_model: serialized.remote_compaction_model,
         })
     }
 }
@@ -43,6 +44,8 @@ struct SerializedCompactedItem {
     previous_window_id: Option<String>,
     #[serde(default)]
     window_id: Option<SerializedWindowId>,
+    #[serde(default)]
+    remote_compaction_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +71,7 @@ mod tests {
             first_window_id: Some("019b3f6e-0000-7000-8000-000000000001".to_string()),
             previous_window_id: Some("019b3f6e-0000-7000-8000-000000000002".to_string()),
             window_id: Some("019b3f6e-7a10-7cc3-8b6e-1d09e2f7a001".to_string()),
+            remote_compaction_model: None,
         };
 
         assert_eq!(
@@ -99,6 +103,7 @@ mod tests {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                remote_compaction_model: None,
             }
         );
         Ok(())

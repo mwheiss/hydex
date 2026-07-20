@@ -118,6 +118,10 @@ struct ThreadSettingsBuildParams {
     sandbox_policy: Option<codex_app_server_protocol::SandboxPolicy>,
     permissions: Option<String>,
     model: Option<String>,
+    model_offload_override:
+        Option<Option<codex_protocol::config_types::ModelOffloadRuntimeOverride>>,
+    model_offload_compaction_override:
+        Option<Option<codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride>>,
     service_tier: Option<Option<String>>,
     effort: Option<ReasoningEffort>,
     summary: Option<ReasoningSummary>,
@@ -536,6 +540,8 @@ impl TurnRequestProcessor {
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
                     model: params.model,
+                    model_offload_override: params.model_offload_override,
+                    model_offload_compaction_override: params.model_offload_compaction_override,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,
@@ -681,6 +687,8 @@ impl TurnRequestProcessor {
             sandbox_policy,
             permissions,
             model,
+            model_offload_override,
+            model_offload_compaction_override,
             service_tier,
             effort,
             summary,
@@ -712,6 +720,8 @@ impl TurnRequestProcessor {
             || sandbox_policy.is_some()
             || permissions.is_some()
             || model.is_some()
+            || model_offload_override.is_some()
+            || model_offload_compaction_override.is_some()
             || service_tier.is_some()
             || effort.is_some()
             || summary.is_some()
@@ -780,6 +790,8 @@ impl TurnRequestProcessor {
                     profile_workspace_roots: profile_workspace_roots.clone(),
                     windows_sandbox_level: None,
                     model: model.clone(),
+                    model_offload_override,
+                    model_offload_compaction_override,
                     effort: effort.clone(),
                     summary,
                     service_tier: service_tier.clone(),
@@ -802,6 +814,8 @@ impl TurnRequestProcessor {
             active_permission_profile,
             windows_sandbox_level: None,
             model,
+            model_offload_override,
+            model_offload_compaction_override,
             effort,
             summary,
             service_tier,
@@ -836,6 +850,8 @@ impl TurnRequestProcessor {
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
                     model: params.model,
+                    model_offload_override: params.model_offload_override,
+                    model_offload_compaction_override: params.model_offload_compaction_override,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,

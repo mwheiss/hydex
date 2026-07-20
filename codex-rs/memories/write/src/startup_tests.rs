@@ -6,6 +6,7 @@ use crate::runtime::MemoryStartupContext;
 use crate::start_memories_startup_task;
 use crate::storage::rebuild_raw_memories_file_from_memories;
 use crate::storage::sync_rollout_summaries_from_memories;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_config::types::MemoriesConfig;
 use codex_features::Feature;
 use codex_git_utils::diff_since_latest_init;
@@ -18,6 +19,8 @@ use codex_model_provider::ProviderAccountResult;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ContentItem;
@@ -458,6 +461,157 @@ async fn memories_startup_phase1_explicit_model_override_drives_request_model() 
 }
 
 #[tokio::test]
+async fn memories_startup_memory_mode_primary_uses_primary_route() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let local_provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    let request = run_memory_phase_one_model_request_test_with_config(
+        &server,
+        home,
+        startup_test_memories_config(),
+        move |config| {
+            config.model_offload.provider_id = Some("local".to_string());
+            config.model_offload.provider = Some(local_provider);
+            config.model_offload.model = Some("local-memory-model".to_string());
+            config.model_offload.memory_mode = ModelOffloadMemoryMode::Primary;
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some(MOCK_PROVIDER_PHASE_ONE_MODEL)
+    );
+    assert!(request.header("x-codex-turn-metadata").is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn memories_startup_memory_mode_local_uses_offload_route() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let local_provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    let request = run_memory_phase_one_model_request_test_with_config(
+        &server,
+        home,
+        startup_test_memories_config(),
+        move |config| {
+            config.model_offload.provider_id = Some("local".to_string());
+            config.model_offload.provider = Some(local_provider);
+            config.model_offload.model = Some("local-memory-model".to_string());
+            config.model_offload.memory_mode = ModelOffloadMemoryMode::Local;
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some("local-memory-model")
+    );
+    assert!(request.header("x-codex-turn-metadata").is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn memories_startup_local_memory_validation_rejects_before_commit() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let local_provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    let test = build_test_codex_with_memories_config_and_config(
+        &server,
+        Arc::clone(&home),
+        startup_test_memories_config(),
+        move |config| {
+            config.model_offload.provider_id = Some("local".to_string());
+            config.model_offload.provider = Some(local_provider);
+            config.model_offload.model = Some("local-memory-model".to_string());
+            config.model_offload.memory_mode = ModelOffloadMemoryMode::Local;
+        },
+    )
+    .await?;
+    let provider = Arc::new(MockMemoryModelProvider::new(
+        test.config.model_provider.clone(),
+        Some(test.thread_manager.auth_manager()),
+    ));
+    let db = test
+        .codex
+        .state_db()
+        .ok_or_else(|| anyhow::anyhow!("state db should be enabled for memory startup test"))?;
+    seed_stage1_candidate(
+        db.as_ref(),
+        home.path(),
+        chrono::Utc::now() - chrono::Duration::hours(2),
+        "startup-validation",
+    )
+    .await?;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-phase1"),
+            ev_assistant_message(
+                "msg-phase1",
+                r#"{"raw_memory":"<think>private scratch</think>","rollout_summary":"rollout summary","rollout_slug":"startup-validation"}"#,
+            ),
+            ev_completed("resp-phase1"),
+        ]),
+    )
+    .await;
+
+    let (context, config) = memory_startup_context_with_provider(&test, provider).await;
+    phase1::run(context, config).await;
+
+    let request = wait_for_single_request(&response).await;
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some("local-memory-model")
+    );
+    assert!(
+        db.memories()
+            .list_stage1_outputs_for_global(/*limit*/ 10)
+            .await?
+            .is_empty()
+    );
+
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn memories_startup_memory_mode_off_skips_generation() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let memory_root = home.path().join("memories");
+    let test = test_codex()
+        .with_home(Arc::clone(&home))
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Sqlite)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MemoryTool)
+                .expect("test config should allow feature update");
+            config.memories = startup_test_memories_config();
+            config.model_offload.memory_mode = ModelOffloadMemoryMode::Off;
+        })
+        .build(&server)
+        .await?;
+
+    trigger_memories_startup(&test).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!memory_root.exists());
+
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn memories_startup_phase2_explicit_model_override_drives_request_model() -> anyhow::Result<()>
 {
     let server = start_mock_server().await;
@@ -479,7 +633,28 @@ async fn run_memory_phase_one_model_request_test(
     home: Arc<TempDir>,
     memories: MemoriesConfig,
 ) -> anyhow::Result<ResponsesRequest> {
-    let test = build_test_codex_with_memories_config(server, Arc::clone(&home), memories).await?;
+    run_memory_phase_one_model_request_test_with_config(
+        server,
+        home,
+        memories,
+        /*mutator*/ |_| {},
+    )
+    .await
+}
+
+async fn run_memory_phase_one_model_request_test_with_config(
+    server: &wiremock::MockServer,
+    home: Arc<TempDir>,
+    memories: MemoriesConfig,
+    mutator: impl FnOnce(&mut codex_core::config::Config) + Send + 'static,
+) -> anyhow::Result<ResponsesRequest> {
+    let test = build_test_codex_with_memories_config_and_config(
+        server,
+        Arc::clone(&home),
+        memories,
+        mutator,
+    )
+    .await?;
     let provider = Arc::new(MockMemoryModelProvider::new(
         test.config.model_provider.clone(),
         Some(test.thread_manager.auth_manager()),
@@ -582,6 +757,21 @@ async fn build_test_codex_with_memories_config(
     home: Arc<TempDir>,
     memories: MemoriesConfig,
 ) -> anyhow::Result<TestCodex> {
+    build_test_codex_with_memories_config_and_config(
+        server,
+        home,
+        memories,
+        /*mutator*/ |_| {},
+    )
+    .await
+}
+
+async fn build_test_codex_with_memories_config_and_config(
+    server: &wiremock::MockServer,
+    home: Arc<TempDir>,
+    memories: MemoriesConfig,
+    mutator: impl FnOnce(&mut codex_core::config::Config) + Send + 'static,
+) -> anyhow::Result<TestCodex> {
     test_codex()
         .with_home(home)
         .with_config(move |config| {
@@ -590,6 +780,7 @@ async fn build_test_codex_with_memories_config(
                 .enable(Feature::Sqlite)
                 .expect("test config should allow feature update");
             config.memories = memories;
+            mutator(config);
         })
         .build(server)
         .await

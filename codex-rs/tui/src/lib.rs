@@ -1045,12 +1045,21 @@ pub async fn run_main(
 
     let additional_dirs = cli.add_dir.clone();
 
+    let model_offload_override = if cli.offload {
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn)
+    } else if cli.no_offload {
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff)
+    } else {
+        None
+    };
+
     let overrides = ConfigOverrides {
         model,
         approval_policy,
         sandbox_mode,
         cwd: cwd_override,
         model_provider: model_provider_override.clone(),
+        model_offload_override,
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),

@@ -109,6 +109,10 @@ impl CompactionTurnMetadata {
     pub(crate) fn phase(self) -> CompactionPhase {
         self.phase
     }
+
+    pub(crate) fn is_local_responses_compaction(self) -> bool {
+        matches!(self.implementation, CompactionImplementation::Responses)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -116,6 +120,8 @@ pub(crate) enum CodexResponsesRequestKind {
     Turn,
     Prewarm,
     Compaction(CompactionTurnMetadata),
+    CompactionRecovery,
+    LocalOutputValidation,
     Memory,
 }
 
@@ -125,12 +131,17 @@ impl CodexResponsesRequestKind {
             CodexResponsesRequestKind::Turn => ("turn", None),
             CodexResponsesRequestKind::Prewarm => ("prewarm", None),
             CodexResponsesRequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
+            CodexResponsesRequestKind::CompactionRecovery => ("compaction_recovery", None),
+            CodexResponsesRequestKind::LocalOutputValidation => ("local_output_validation", None),
             CodexResponsesRequestKind::Memory => ("memory", None),
         }
     }
 
     fn has_turn_identity(self) -> bool {
-        !matches!(self, CodexResponsesRequestKind::Memory)
+        !matches!(
+            self,
+            CodexResponsesRequestKind::LocalOutputValidation | CodexResponsesRequestKind::Memory
+        )
     }
 }
 

@@ -5,10 +5,14 @@ use crate::metrics::MEMORY_PHASE_ONE_OUTPUT;
 use crate::metrics::MEMORY_PHASE_ONE_TOKEN_USAGE;
 use crate::runtime::MemoryStartupContext;
 use crate::runtime::StageOneRequestContext;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_config::types::MemoriesConfig;
 use codex_core::Prompt;
 use codex_core::RolloutRecorder;
 use codex_core::config::Config;
+use codex_core::local_output_validation::CheapValidationOutcome;
+use codex_core::local_output_validation::LocalOutputKind;
+use codex_core::local_output_validation::cheap_validate_local_output;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -319,6 +323,19 @@ mod job {
         output.raw_memory = redact_secrets(output.raw_memory);
         output.rollout_summary = redact_secrets(output.rollout_summary);
         output.rollout_slug = output.rollout_slug.map(redact_secrets);
+        if config.model_offload.memory_mode == ModelOffloadMemoryMode::Local {
+            let validation_text = format!("{}\n{}", output.rollout_summary, output.raw_memory);
+            match cheap_validate_local_output(
+                &config.model_offload.validation,
+                LocalOutputKind::MemoryPayload,
+                &validation_text,
+            ) {
+                CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => {}
+                CheapValidationOutcome::Reject(reason) => {
+                    anyhow::bail!("local memory output failed sanity validation: {reason}");
+                }
+            }
+        }
 
         Ok((output, token_usage))
     }

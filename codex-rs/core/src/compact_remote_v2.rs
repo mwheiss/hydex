@@ -290,7 +290,7 @@ async fn run_remote_compact_task_inner_impl(
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage { .. } => {
-            Some(compaction_turn_context.to_turn_context_item())
+            Some(sess.turn_context_item(compaction_turn_context))
         }
     };
     if let Some(trace_input_history) = trace_input_history.as_deref() {
@@ -307,6 +307,7 @@ async fn run_remote_compact_task_inner_impl(
             message: String::new(),
             window_number: new_window_number,
             window_ids: new_window_ids,
+            remote_compaction_model: Some(compaction_turn_context.model_info.slug.clone()),
         },
     )
     .await;
@@ -330,10 +331,8 @@ async fn run_remote_compaction_request_v2(
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
 ) -> CodexResult<RemoteCompactionV2Output> {
-    let max_retries = turn_context
-        .provider
-        .info()
-        .stream_max_retries()
+    let max_retries = client_session
+        .stream_max_retries_for(responses_metadata)
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retries = 0;
     loop {

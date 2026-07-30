@@ -206,6 +206,7 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         window_number: None,
         first_window_id: None,
         previous_window_id: None,
+        remote_compaction_model: None,
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,

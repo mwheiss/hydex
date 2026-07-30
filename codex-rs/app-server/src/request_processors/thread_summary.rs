@@ -188,6 +188,8 @@ pub(crate) fn thread_settings_from_config_snapshot(
         service_tier: config_snapshot.service_tier.clone(),
         effort: config_snapshot.reasoning_effort.clone(),
         summary: config_snapshot.reasoning_summary,
+        model_offload_override: config_snapshot.model_offload_override,
+        model_offload_compaction_override: config_snapshot.model_offload_compaction_override,
         collaboration_mode: config_snapshot.collaboration_mode.clone(),
         multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         personality: config_snapshot.personality,

@@ -11,7 +11,9 @@ use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::spec_plan::ToolWireTarget;
 use crate::tools::spec_plan::build_tool_router;
+use crate::tools::spec_plan::build_tool_router_for_wire;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
@@ -105,6 +107,24 @@ impl ToolRouter {
             mcp,
             params,
             tool_search_handler_cache,
+        )
+    }
+
+    pub(crate) fn from_context_for_wire(
+        turn_context: &TurnContext,
+        environments: &TurnEnvironmentSnapshot,
+        mcp: &codex_mcp::McpBinding,
+        params: ToolRouterParams<'_>,
+        tool_search_handler_cache: &ToolSearchHandlerCache,
+        wire_target: ToolWireTarget,
+    ) -> Self {
+        build_tool_router_for_wire(
+            turn_context,
+            environments,
+            mcp,
+            params,
+            tool_search_handler_cache,
+            wire_target,
         )
     }
 

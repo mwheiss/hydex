@@ -45,6 +45,7 @@ use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
+use crate::tools::spec_plan::ToolWireTarget;
 
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
@@ -184,11 +185,19 @@ async fn probe_with(
     configure_turn: impl FnOnce(&mut TurnContext),
     inputs: ToolPlanInputs,
 ) -> ToolPlanProbe {
+    probe_with_wire_target(configure_turn, inputs, ToolWireTarget::Primary).await
+}
+
+async fn probe_with_wire_target(
+    configure_turn: impl FnOnce(&mut TurnContext),
+    inputs: ToolPlanInputs,
+    wire_target: ToolWireTarget,
+) -> ToolPlanProbe {
     let (_session, mut turn) = make_session_and_context().await;
     configure_turn(&mut turn);
     let turn = Arc::new(turn);
     let step_context = StepContext::for_test(Arc::clone(&turn));
-    let router = ToolRouter::from_context(
+    let router = ToolRouter::from_context_for_wire(
         step_context.turn.as_ref(),
         &step_context.environments,
         step_context.mcp.as_ref(),
@@ -200,6 +209,7 @@ async fn probe_with(
             dynamic_tools: inputs.dynamic_tools.as_slice(),
         },
         &Default::default(),
+        wire_target,
     );
     ToolPlanProbe::from_router(router)
 }
@@ -1917,6 +1927,51 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     )
     .await;
     standalone_web_search.assert_visible_lacks(&["web_search"]);
+
+    let hydex_configured_primary_web_search = probe_with(
+        |turn| {
+            set_web_search_mode(turn, WebSearchMode::Live);
+            update_config(turn, |config| {
+                config.model_offload.enabled = true;
+            });
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            ..Default::default()
+        },
+    )
+    .await;
+    hydex_configured_primary_web_search.assert_visible_contains(&["web_search"]);
+    assert_eq!(
+        hydex_configured_primary_web_search.namespace_function_names("web"),
+        &[] as &[String]
+    );
+
+    let hydex_offload_web_search = probe_with_wire_target(
+        |turn| {
+            set_web_search_mode(turn, WebSearchMode::Live);
+            update_config(turn, |config| {
+                config.model_offload.enabled = true;
+            });
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            ..Default::default()
+        },
+        ToolWireTarget::LocalOffload,
+    )
+    .await;
+    hydex_offload_web_search.assert_visible_lacks(&["web_search"]);
+    assert_eq!(
+        hydex_offload_web_search.namespace_function_names("web"),
+        &["run".to_string()][..]
+    );
 
     let unsupported_provider = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);

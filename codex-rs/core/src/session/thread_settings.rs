@@ -52,6 +52,8 @@ pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSetti
         effort,
         summary,
         service_tier,
+        model_offload_override,
+        model_offload_compaction_override,
         collaboration_mode,
         personality,
     } = overrides;
@@ -72,6 +74,8 @@ pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSetti
         permission_profile,
         active_permission_profile,
         windows_sandbox_level,
+        model_offload_override,
+        model_offload_compaction_override,
         ..Default::default()
     }
 }

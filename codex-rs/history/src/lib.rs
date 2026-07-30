@@ -141,6 +141,8 @@ pub struct CompactedItem {
     pub first_window_id: Option<String>,
     pub previous_window_id: Option<String>,
     pub window_id: Option<String>,
+    /// Producing model for encrypted primary remote compaction, when known.
+    pub remote_compaction_model: Option<String>,
 }
 
 impl Serialize for CompactedItem {

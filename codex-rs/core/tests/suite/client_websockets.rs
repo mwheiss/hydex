@@ -9,6 +9,7 @@ use codex_core::ResponseEvent;
 use codex_core::X_CODEX_ROUTING_HINT_HEADER;
 use codex_core::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 use codex_core::test_support::with_parent_turn;
+use codex_core::config::ModelOffloadConfig;
 use codex_features::Feature;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::CodexAuth;
@@ -2534,6 +2535,7 @@ async fn websocket_harness_with_provider_options_and_auth(
             .enabled(Feature::ConcurrentReasoningSummaries),
         /*attestation_provider*/ None,
         http_client_factory,
+        ModelOffloadConfig::default(),
     );
 
     WebsocketTestHarness {

@@ -1219,6 +1219,8 @@ impl AppServerSession {
                     sandbox_policy,
                     permissions,
                     model: Some(model),
+                    model_offload_override: None,
+                    model_offload_compaction_override: None,
                     service_tier,
                     service_tier_for_turn: None,
                     effort,

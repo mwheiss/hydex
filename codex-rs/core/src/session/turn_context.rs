@@ -572,7 +572,15 @@ impl TurnContext {
             .flatten()
     }
 
+    #[cfg(test)]
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
+        self.to_turn_context_item_with_offload_ever_used(false)
+    }
+
+    pub(crate) fn to_turn_context_item_with_offload_ever_used(
+        &self,
+        offload_ever_used: bool,
+    ) -> TurnContextItem {
         let workspace_roots = self.effective_workspace_roots();
         #[allow(deprecated)]
         let cwd = self.cwd.clone();
@@ -602,6 +610,7 @@ impl TurnContext {
             cyber_access_program: self.cyber_access_program,
             effort: self.reasoning_effort().cloned(),
             summary: ReasoningSummaryConfig::Auto,
+            offload_ever_used,
         }
     }
 

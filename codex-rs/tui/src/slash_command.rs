@@ -13,6 +13,8 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Offload,
+    Compaction,
     Ide,
     Permissions,
     Keymap,
@@ -123,6 +125,8 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Offload => "toggle Hydex local model offload",
+            SlashCommand::Compaction => "toggle Hydex compaction routing",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -177,6 +181,8 @@ impl SlashCommand {
                 | SlashCommand::Raw
                 | SlashCommand::Cd
                 | SlashCommand::Pwd
+                | SlashCommand::Offload
+                | SlashCommand::Compaction
                 | SlashCommand::Usage
                 | SlashCommand::Pets
                 | SlashCommand::Side
@@ -214,6 +220,11 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Recap
             | SlashCommand::Export
+            | SlashCommand::Model
+            | SlashCommand::Offload
+            | SlashCommand::Compaction
+            | SlashCommand::Personality
+            | SlashCommand::Permissions
             | SlashCommand::Keymap
             | SlashCommand::Vim
             | SlashCommand::ElevateSandbox
@@ -230,9 +241,6 @@ impl SlashCommand {
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
             | SlashCommand::Resume
-            | SlashCommand::Model
-            | SlashCommand::Personality
-            | SlashCommand::Permissions
             | SlashCommand::Copy
             | SlashCommand::Raw
             | SlashCommand::Rename

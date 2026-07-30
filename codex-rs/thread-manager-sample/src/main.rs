@@ -31,6 +31,7 @@ use codex_core_api::GhostSnapshotConfig;
 use codex_core_api::History;
 use codex_core_api::MemoriesConfig;
 use codex_core_api::ModelAvailabilityNuxConfig;
+use codex_core_api::ModelOffloadConfig;
 use codex_core_api::MultiAgentV2Config;
 use codex_core_api::NewThread;
 use codex_core_api::Notice;
@@ -300,6 +301,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         use_experimental_unified_exec_tool: false,
         background_terminal_max_timeout: 300_000,
         ghost_snapshot: GhostSnapshotConfig::default(),
+        model_offload: ModelOffloadConfig::default(),
         multi_agent_v2: MultiAgentV2Config::default(),
         max_goal_token_budget: None,
         token_budget: None,

@@ -320,6 +320,7 @@ fn reference_context_item() -> TurnContextItem {
         realtime_active: Some(false),
         effort: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     }
 }
 

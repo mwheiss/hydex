@@ -51,6 +51,8 @@ pub(super) async fn prepare_update(
         effort,
         summary,
         service_tier,
+        model_offload_override,
+        model_offload_compaction_override,
         collaboration_mode,
         personality,
     } = overrides;
@@ -78,6 +80,8 @@ pub(super) async fn prepare_update(
         collaboration_mode: Some(collaboration_mode),
         reasoning_summary: summary,
         service_tier,
+        model_offload_override,
+        model_offload_compaction_override,
         personality,
         ..Default::default()
     }

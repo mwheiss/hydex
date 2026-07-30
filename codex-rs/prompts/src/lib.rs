@@ -5,6 +5,7 @@ mod realtime;
 mod review_exit;
 mod review_request;
 
+pub use compact::ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT;
 pub use compact::SUMMARIZATION_PROMPT;
 pub use compact::SUMMARY_PREFIX;
 pub use goals::budget_limit_prompt;

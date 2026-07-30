@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a Hydex patch-stack transplant onto current upstream main."""
+"""Prepare a Hydex patch-stack transplant onto a selected upstream base."""
 
 import argparse
 import datetime as dt
@@ -56,9 +56,16 @@ def ref_exists(repo: pathlib.Path, ref: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Create a scratch branch from upstream and apply the Hydex delta with git apply --3way.",
+        description=(
+            "Create a scratch branch from upstream and apply the Hydex delta from its "
+            "authoritative upstream-base pointer with git apply --3way."
+        ),
     )
-    parser.add_argument("--base-anchor", required=True, help="Previous upstream anchor SHA/ref.")
+    parser.add_argument(
+        "--base-anchor",
+        default="origin/main",
+        help="Authoritative previous upstream base SHA/ref (default: origin/main).",
+    )
     parser.add_argument("--hydex-branch", default="hydex/main", help="Hydex branch/ref to replay.")
     parser.add_argument("--upstream", default="origin/main", help="Current upstream base ref.")
     parser.add_argument("--scratch-branch", help="Scratch branch to create from upstream.")
@@ -82,6 +89,31 @@ def main() -> int:
             print(f"Required ref does not exist: {ref}", file=sys.stderr)
             return 2
 
+    base_sha = capture(["git", "rev-parse", f"{args.base_anchor}^{{commit}}"], cwd=repo)
+    hydex_sha = capture(["git", "rev-parse", f"{args.hydex_branch}^{{commit}}"], cwd=repo)
+    upstream_sha = capture(["git", "rev-parse", f"{args.upstream}^{{commit}}"], cwd=repo)
+    base_is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", base_sha, hydex_sha],
+        cwd=repo,
+        check=False,
+    ).returncode == 0
+    if not base_is_ancestor:
+        print(
+            f"Hydex base contract violated: {args.base_anchor} ({base_sha}) is not an "
+            f"ancestor of {args.hydex_branch} ({hydex_sha}).",
+            file=sys.stderr,
+        )
+        return 2
+
+    hydex_commit_count = capture(
+        ["git", "rev-list", "--count", f"{base_sha}..{hydex_sha}"],
+        cwd=repo,
+    )
+    print(f"Hydex base: {args.base_anchor} -> {base_sha}")
+    print(f"Hydex tip: {args.hydex_branch} -> {hydex_sha}")
+    print(f"Replay target: {args.upstream} -> {upstream_sha}")
+    print(f"Hydex commits above base: {hydex_commit_count}")
+
     scratch_branch = args.scratch_branch
     if not scratch_branch:
         stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
@@ -100,7 +132,7 @@ def main() -> int:
     print(f"Writing patch: {patch_path}")
     with patch_path.open("wb") as patch_file:
         subprocess.run(
-            ["git", "diff", "--binary", f"{args.base_anchor}..{args.hydex_branch}"],
+            ["git", "diff", "--binary", f"{base_sha}..{hydex_sha}"],
             cwd=repo,
             stdout=patch_file,
             check=True,

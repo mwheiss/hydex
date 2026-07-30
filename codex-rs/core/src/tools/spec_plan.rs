@@ -144,6 +144,7 @@ struct CoreToolPlanContext<'a> {
     turn_context: &'a TurnContext,
     environments: &'a TurnEnvironmentSnapshot,
     mcp: &'a codex_mcp::McpBinding,
+    wire_target: ToolWireTarget,
     tool_runtimes: &'a [PlannedRuntime],
     tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
     extension_tool_executors: &'a [Arc<dyn ToolExecutor<ExtensionToolCall>>],
@@ -154,6 +155,13 @@ struct CoreToolPlanContext<'a> {
     wait_agent_timeouts: WaitAgentTimeoutOptions,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToolWireTarget {
+    #[default]
+    Primary,
+    LocalOffload,
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
@@ -162,12 +170,32 @@ pub(crate) fn build_tool_router(
     params: ToolRouterParams<'_>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
 ) -> ToolRouter {
+    build_tool_router_for_wire(
+        turn_context,
+        environments,
+        mcp,
+        params,
+        tool_search_handler_cache,
+        ToolWireTarget::Primary,
+    )
+}
+
+#[instrument(level = "trace", skip_all)]
+pub(crate) fn build_tool_router_for_wire(
+    turn_context: &TurnContext,
+    environments: &TurnEnvironmentSnapshot,
+    mcp: &codex_mcp::McpBinding,
+    params: ToolRouterParams<'_>,
+    tool_search_handler_cache: &ToolSearchHandlerCache,
+    wire_target: ToolWireTarget,
+) -> ToolRouter {
     let (model_visible_specs, registry) = build_tool_specs_and_registry(
         turn_context,
         environments,
         mcp,
         params,
         tool_search_handler_cache,
+        wire_target,
     );
     ToolRouter::from_parts(registry, model_visible_specs)
 }
@@ -179,6 +207,7 @@ fn build_tool_specs_and_registry(
     mcp: &codex_mcp::McpBinding,
     params: ToolRouterParams<'_>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
+    wire_target: ToolWireTarget,
 ) -> (Vec<ToolSpec>, ToolRegistry) {
     let ToolRouterParams {
         tool_runtimes,
@@ -193,6 +222,7 @@ fn build_tool_specs_and_registry(
         turn_context,
         environments,
         mcp,
+        wire_target,
         tool_runtimes: &tool_runtimes,
         tool_suggest_candidates: tool_suggest_candidates.as_ref(),
         extension_tool_executors: &extension_tool_executors,
@@ -307,7 +337,7 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     }
 
     let mut specs = Vec::new();
-    let standalone_web_search_available = standalone_web_search_enabled(turn_context)
+    let standalone_web_search_available = standalone_web_search_enabled(context)
         && context
             .extension_tool_executors
             .iter()
@@ -631,7 +661,8 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     }
 }
 
-fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
+fn standalone_web_search_enabled(context: &CoreToolPlanContext<'_>) -> bool {
+    let turn_context = context.turn_context;
     namespace_tools_enabled(turn_context)
         && turn_context.provider.capabilities().web_search
         && (turn_context.model_info.use_responses_lite
@@ -639,7 +670,8 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
                 .config
                 .features
                 .get()
-                .enabled(Feature::StandaloneWebSearch))
+                .enabled(Feature::StandaloneWebSearch)
+            || context.wire_target == ToolWireTarget::LocalOffload)
 }
 
 fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironmentMode {
@@ -935,11 +967,7 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
 fn add_extension_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     // Extension ToolContributor implementations are resolved into executors
     // before planning. Core only adapts those executors into its runtime set.
-    append_extension_tool_executors(
-        context.turn_context,
-        context.extension_tool_executors,
-        planned_tools,
-    );
+    append_extension_tool_executors(context, planned_tools);
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -987,10 +1015,11 @@ fn prepend_code_mode_executors(
 }
 
 fn append_extension_tool_executors(
-    turn_context: &TurnContext,
-    executors: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    context: &CoreToolPlanContext<'_>,
     planned_tools: &mut PlannedTools,
 ) {
+    let turn_context = context.turn_context;
+    let executors = context.extension_tool_executors;
     if executors.is_empty() {
         return;
     }
@@ -1014,7 +1043,7 @@ fn append_extension_tool_executors(
         reserved_tool_names.insert(ToolName::plain(TOOL_SEARCH_TOOL_NAME));
     }
 
-    let standalone_web_search_enabled = standalone_web_search_enabled(turn_context);
+    let standalone_web_search_enabled = standalone_web_search_enabled(context);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
 
     for executor in executors.iter().cloned() {

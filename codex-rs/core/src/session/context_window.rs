@@ -24,34 +24,43 @@ pub(crate) async fn context_window_token_status(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> ContextWindowTokenStatus {
+    let auto_compact_scope_limit = match turn_context.config.model_auto_compact_token_limit_scope {
+        AutoCompactTokenLimitScope::Total => turn_context.model_info.auto_compact_token_limit(),
+        AutoCompactTokenLimitScope::BodyAfterPrefix => turn_context
+            .config
+            .model_auto_compact_token_limit
+            .or_else(|| turn_context.model_info.auto_compact_token_limit()),
+    };
+    context_window_token_status_with_thresholds(
+        sess,
+        turn_context,
+        auto_compact_scope_limit,
+        turn_context.model_context_window(),
+    )
+    .await
+}
+
+pub(crate) async fn context_window_token_status_with_thresholds(
+    sess: &Session,
+    turn_context: &TurnContext,
+    auto_compact_scope_limit: Option<i64>,
+    full_context_window_limit: Option<i64>,
+) -> ContextWindowTokenStatus {
     let active_context_tokens = sess.get_total_token_usage().await;
 
     // Count either the full active context or only the tokens added after the initial prefix.
-    let (auto_compact_scope_tokens, auto_compact_scope_limit, auto_compact_window_prefill_tokens) =
+    let (auto_compact_scope_tokens, auto_compact_window_prefill_tokens) =
         match turn_context.config.model_auto_compact_token_limit_scope {
-            AutoCompactTokenLimitScope::Total => (
-                active_context_tokens,
-                turn_context.model_info.auto_compact_token_limit(),
-                None,
-            ),
+            AutoCompactTokenLimitScope::Total => (active_context_tokens, None),
             AutoCompactTokenLimitScope::BodyAfterPrefix => {
                 let window = sess.auto_compact_window_snapshot().await;
                 let baseline = window.prefill_input_tokens.unwrap_or(active_context_tokens);
-
-                let scope_limit = turn_context
-                    .config
-                    .model_auto_compact_token_limit
-                    .or_else(|| turn_context.model_info.auto_compact_token_limit());
                 (
                     active_context_tokens.saturating_sub(baseline),
-                    scope_limit,
                     window.prefill_input_tokens,
                 )
             }
         };
-
-    // The model's full context window is a hard cap, independent of the auto-compaction scope.
-    let full_context_window_limit = turn_context.model_context_window();
 
     // Report remaining tokens against the base (unbuffered) window, capped by the full context.
     let base_window_tokens_remaining = [

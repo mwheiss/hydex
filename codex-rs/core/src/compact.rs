@@ -11,6 +11,11 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+use crate::local_output_validation::CheapValidationOutcome;
+use crate::local_output_validation::LocalOutputKind;
+use crate::local_output_validation::LocalOutputValidationResult;
+use crate::local_output_validation::cheap_validate_local_output;
+use crate::local_output_validation::validate_local_output_with_model;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
@@ -56,6 +61,11 @@ use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
 use tracing::error;
 
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_model_provider_info::ModelProviderInfo;
+
+pub use codex_prompts::ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
@@ -86,6 +96,7 @@ pub(crate) struct CompactedHistoryMetadata {
     pub(crate) window_number: u64,
     pub(crate) window_ids: AutoCompactWindowIds,
     pub(crate) compaction_response_id: Option<String>,
+    pub(crate) remote_compaction_model: Option<String>,
 }
 
 pub(crate) async fn build_compaction_initial_context(
@@ -113,6 +124,28 @@ pub(crate) async fn build_compaction_initial_context(
     }
 }
 
+pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
+    provider.is_openai()
+        || provider.is_amazon_bedrock()
+        || codex_api::is_azure_responses_provider(&provider.name, provider.base_url.as_deref())
+}
+
+pub(crate) fn should_use_remote_compact_task_with_offload_policy(
+    provider: &ModelProviderInfo,
+    offload_ever_used: bool,
+    effective_model_offload_enabled: bool,
+    offload_compaction_policy: ModelOffloadCompactionPolicy,
+) -> bool {
+    if effective_model_offload_enabled
+        && offload_ever_used
+        && offload_compaction_policy == ModelOffloadCompactionPolicy::Local
+    {
+        return false;
+    }
+
+    should_use_remote_compact_task(provider)
+}
+
 pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -120,22 +153,9 @@ pub(crate) async fn run_inline_auto_compact_task(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    let prompt = turn_context
-        .config
-        .compact_prompt
-        .as_deref()
-        .unwrap_or(SUMMARIZATION_PROMPT)
-        .to_string();
-    let input = vec![UserInput::Text {
-        text: prompt,
-        // Compaction prompt is synthesized; no UI element ranges to preserve.
-        text_elements: Vec::new(),
-    }];
-
     run_compact_task_inner(
         sess,
         turn_context,
-        input,
         initial_context_injection,
         CompactionTrigger::Auto,
         reason,
@@ -148,7 +168,6 @@ pub(crate) async fn run_inline_auto_compact_task(
 pub(crate) async fn run_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    input: Vec<UserInput>,
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
@@ -161,7 +180,6 @@ pub(crate) async fn run_compact_task(
     run_compact_task_inner(
         sess.clone(),
         turn_context,
-        input,
         InitialContextInjection::DoNotInject,
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
@@ -171,10 +189,51 @@ pub(crate) async fn run_compact_task(
     Ok(())
 }
 
+pub(crate) fn local_compaction_prompt(
+    turn_context: &TurnContext,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+) -> &str {
+    turn_context
+        .config
+        .compact_prompt
+        .as_deref()
+        .unwrap_or(match local_handoff_role {
+            ModelOffloadCompactionLocalHandoffRole::UserSummary => SUMMARIZATION_PROMPT,
+            ModelOffloadCompactionLocalHandoffRole::AssistantState => {
+                ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT
+            }
+        })
+}
+
+fn local_compaction_summary_text(
+    summary_suffix: &str,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+) -> String {
+    match local_handoff_role {
+        ModelOffloadCompactionLocalHandoffRole::UserSummary => {
+            format!("{SUMMARY_PREFIX}\n{summary_suffix}")
+        }
+        ModelOffloadCompactionLocalHandoffRole::AssistantState => summary_suffix.to_string(),
+    }
+}
+
+fn compaction_handoff_role(
+    turn_context: &TurnContext,
+    compaction_routes_local: bool,
+) -> ModelOffloadCompactionLocalHandoffRole {
+    if compaction_routes_local {
+        turn_context
+            .config
+            .model_offload
+            .compaction_local_handoff_role
+    } else {
+        ModelOffloadCompactionLocalHandoffRole::UserSummary
+    }
+}
+
 async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
     trigger: CompactionTrigger,
     reason: CompactionReason,
@@ -210,7 +269,6 @@ async fn run_compact_task_inner(
     let result = run_compact_task_inner_impl(
         Arc::clone(&sess),
         Arc::clone(&turn_context),
-        input,
         initial_context_injection,
         compaction_metadata,
     )
@@ -245,21 +303,12 @@ async fn run_compact_task_inner(
 async fn run_compact_task_inner_impl(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<String> {
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
-
-    let mut history = sess.clone_history().await;
-    history.record_items(
-        &[initial_input_for_turn.into()],
-        turn_context.model_info().truncation_policy.into(),
-    );
-
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
     let mut client_session = sess.services.model_client.new_session();
@@ -272,91 +321,166 @@ async fn run_compact_task_inner_impl(
             CodexResponsesRequestKind::Compaction(compaction_metadata),
         )
         .await;
+    let window_id = responses_metadata.window_id.clone();
+    let compaction_routes_local = client_session.is_local_offload_route_for(&responses_metadata);
+    let local_handoff_role = compaction_handoff_role(&turn_context, compaction_routes_local);
+    let input = vec![UserInput::Text {
+        text: local_compaction_prompt(&turn_context, local_handoff_role).to_string(),
+        // Compaction prompt is synthesized; no UI element ranges to preserve.
+        text_elements: Vec::new(),
+    }];
+    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
-    let compaction_response_id = loop {
-        // Clone is required because of the loop
-        let turn_input = history
-            .clone()
-            .for_prompt(&turn_context.model_info().input_modalities);
-        let turn_input_len = turn_input.len();
-        let prompt = Prompt {
-            input: turn_input,
-            base_instructions: sess.get_prompt_base_instructions().await,
-            ..Default::default()
-        };
-        let attempt_result = drain_to_completed(
-            &sess,
-            turn_context.as_ref(),
-            &mut client_session,
-            &responses_metadata,
-            &prompt,
-        )
-        .await;
+    let mut history = sess.clone_history().await;
+    history.record_items(
+        &[initial_input_for_turn.into()],
+        turn_context.model_info().truncation_policy.into(),
+    );
 
-        match attempt_result {
-            Ok(response_id) => {
-                break response_id;
-            }
-            Err(err)
-                if matches!(
-                    err.details(),
-                    CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
-                ) =>
-            {
-                return Err(err);
-            }
-            Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {
-                sess.track_turn_codex_error(turn_context.as_ref(), &e);
-                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
-                sess.send_event(&turn_context, event).await;
-                return Err(e);
-            }
-            Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
-                if turn_input_len > 1 {
-                    // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
-                    error!(
-                        "Context window exceeded while compacting; removing oldest history item. Error: {e}"
-                    );
-                    history.remove_first_item();
-                    retries = 0;
-                    continue;
+    let validation_metadata = turn_context.turn_metadata_state.to_responses_metadata(
+        sess.installation_id.clone(),
+        window_id.clone(),
+        CodexResponsesRequestKind::LocalOutputValidation,
+    );
+    let generation_retries = turn_context
+        .config
+        .model_offload
+        .validation
+        .generation_retries;
+    let mut generation_attempts = 0;
+    let (history_snapshot, summary_suffix, summary_text, compaction_response_id) = loop {
+        let compaction_response_id = loop {
+            // Clone is required because of the loop
+            let turn_input = history
+                .clone()
+                .for_prompt(&turn_context.model_info().input_modalities);
+            let turn_input_len = turn_input.len();
+            let prompt = Prompt {
+                input: turn_input,
+                temperature: (generation_attempts > 0).then_some(
+                    turn_context
+                        .config
+                        .model_offload
+                        .validation
+                        .retry_temperature,
+                ),
+                base_instructions: sess.get_prompt_base_instructions().await,
+                ..Default::default()
+            };
+            let attempt_result = drain_to_completed(
+                &sess,
+                turn_context.as_ref(),
+                &mut client_session,
+                &responses_metadata,
+                &prompt,
+            )
+            .await;
+
+            match attempt_result {
+                Ok(response_id) => {
+                    break response_id;
                 }
-                sess.set_total_tokens_full(turn_context.as_ref()).await;
-                sess.track_turn_codex_error(turn_context.as_ref(), &e);
-                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
-                sess.send_event(&turn_context, event).await;
-                return Err(e);
-            }
-            Err(e) => {
-                if retries < max_retries {
-                    retries += 1;
-                    let delay = backoff(retries);
-                    sess.notify_stream_error(
-                        turn_context.as_ref(),
-                        format!("Reconnecting... {retries}/{max_retries}"),
-                        e,
-                    )
-                    .await;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                } else {
+                Err(err)
+                    if matches!(
+                        err.details(),
+                        CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
+                    ) =>
+                {
+                    return Err(err);
+                }
+                Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {
                     sess.track_turn_codex_error(turn_context.as_ref(), &e);
                     let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                     sess.send_event(&turn_context, event).await;
                     return Err(e);
                 }
+                Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
+                    if turn_input_len > 1 {
+                        // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
+                        error!(
+                            "Context window exceeded while compacting; removing oldest history item. Error: {e}"
+                        );
+                        history.remove_first_item();
+                        retries = 0;
+                        continue;
+                    }
+                    sess.set_total_tokens_full(turn_context.as_ref()).await;
+                    sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                    let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                    sess.send_event(&turn_context, event).await;
+                    return Err(e);
+                }
+                Err(e) => {
+                    if retries < max_retries {
+                        retries += 1;
+                        let delay = backoff(retries);
+                        sess.notify_stream_error(
+                            turn_context.as_ref(),
+                            format!("Reconnecting... {retries}/{max_retries}"),
+                            e,
+                        )
+                        .await;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    } else {
+                        sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                        let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                        sess.send_event(&turn_context, event).await;
+                        return Err(e);
+                    }
+                }
+            }
+        };
+
+        let history_snapshot = sess.clone_history().await;
+        let summary_suffix =
+            get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default();
+        let summary_text = local_compaction_summary_text(&summary_suffix, local_handoff_role);
+        match validate_local_compaction_payload_with_model(
+            turn_context.as_ref(),
+            &mut client_session,
+            &validation_metadata,
+            &summary_text,
+            compaction_routes_local,
+        )
+        .await?
+        {
+            LocalOutputValidationResult::Accepted | LocalOutputValidationResult::Disabled => {
+                break (
+                    history_snapshot,
+                    summary_suffix,
+                    summary_text,
+                    compaction_response_id,
+                );
+            }
+            LocalOutputValidationResult::Rejected(reason)
+                if generation_attempts < generation_retries =>
+            {
+                generation_attempts += 1;
+                tracing::warn!(
+                    "local compaction output rejected by sanity validator; retrying generation ({generation_attempts}/{generation_retries}): {reason}"
+                );
+            }
+            LocalOutputValidationResult::Rejected(reason) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "Local compaction output failed sanity validation: {reason}"
+                )));
+            }
+            LocalOutputValidationResult::ValidationUnavailable(reason) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "Local compaction output validation unavailable: {reason}"
+                )));
             }
         }
     };
+    let user_messages = collect_annotated_user_messages(history_snapshot.annotated_items());
 
-    let history_snapshot = sess.clone_history().await;
-    let history_items = history_snapshot.annotated_items();
-    let summary_suffix =
-        get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let user_messages = collect_annotated_user_messages(history_items);
-
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    let mut new_history = build_compacted_history_with_handoff_role(
+        Vec::new(),
+        &user_messages,
+        &summary_text,
+        local_handoff_role,
+    );
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -373,7 +497,7 @@ async fn run_compact_task_inner_impl(
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage { .. } => {
-            Some(turn_context.to_turn_context_item())
+            Some(sess.turn_context_item(&turn_context))
         }
     };
     sess.replace_compacted_history(
@@ -385,6 +509,7 @@ async fn run_compact_task_inner_impl(
             window_number,
             window_ids,
             compaction_response_id: Some(compaction_response_id),
+            remote_compaction_model: None,
         },
     )
     .await;
@@ -397,6 +522,51 @@ async fn run_compact_task_inner_impl(
     });
     sess.send_event(&turn_context, warning).await;
     Ok(summary_suffix)
+}
+
+fn validate_local_compaction_payload(
+    turn_context: &TurnContext,
+    summary_text: &str,
+) -> CodexResult<()> {
+    match cheap_validate_local_output(
+        &turn_context.config.model_offload.validation,
+        LocalOutputKind::CompactionPayload,
+        summary_text,
+    ) {
+        CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => {}
+        CheapValidationOutcome::Reject(reason) => {
+            return Err(CodexErr::InvalidRequest(format!(
+                "Local compaction output failed sanity validation: {reason}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn validate_local_compaction_payload_with_model(
+    turn_context: &TurnContext,
+    client_session: &mut ModelClientSession,
+    responses_metadata: &CodexResponsesMetadata,
+    summary_text: &str,
+    compaction_routes_local: bool,
+) -> CodexResult<LocalOutputValidationResult> {
+    if !compaction_routes_local {
+        return Ok(LocalOutputValidationResult::Disabled);
+    }
+    validate_local_compaction_payload(turn_context, summary_text)?;
+    validate_local_output_with_model(
+        &turn_context.config.model_offload.validation,
+        LocalOutputKind::CompactionPayload,
+        summary_text,
+        client_session,
+        &turn_context.model_info,
+        &turn_context.session_telemetry,
+        turn_context.reasoning_effort.clone(),
+        turn_context.reasoning_summary,
+        turn_context.config.service_tier.clone(),
+        responses_metadata,
+    )
+    .await
 }
 
 pub(crate) struct CompactionAnalyticsAttempt {
@@ -647,11 +817,26 @@ pub(crate) fn build_compacted_history(
     user_messages: &[CompactedUserMessage],
     summary_text: &str,
 ) -> Vec<ResponseItemEnvelope> {
+    build_compacted_history_with_handoff_role(
+        initial_context,
+        user_messages,
+        summary_text,
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
+    )
+}
+
+pub(crate) fn build_compacted_history_with_handoff_role(
+    initial_context: Vec<ResponseItemEnvelope>,
+    user_messages: &[CompactedUserMessage],
+    summary_text: &str,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
+) -> Vec<ResponseItemEnvelope> {
     build_compacted_history_with_limit(
         initial_context,
         user_messages,
         summary_text,
         COMPACT_USER_MESSAGE_MAX_TOKENS,
+        local_handoff_role,
     )
 }
 
@@ -660,6 +845,7 @@ fn build_compacted_history_with_limit(
     user_messages: &[CompactedUserMessage],
     summary_text: &str,
     max_tokens: usize,
+    local_handoff_role: ModelOffloadCompactionLocalHandoffRole,
 ) -> Vec<ResponseItemEnvelope> {
     let mut selected_messages: Vec<CompactedUserMessage> = Vec::new();
     if max_tokens > 0 {
@@ -726,9 +912,19 @@ fn build_compacted_history_with_limit(
         summary_text.to_string()
     };
 
-    history.push(ResponseItemEnvelope::new(ContextualUserFragment::into(
-        CompactionSummary::new(summary_text),
-    )));
+    let summary_item = match local_handoff_role {
+        ModelOffloadCompactionLocalHandoffRole::UserSummary => {
+            ContextualUserFragment::into(CompactionSummary::new(summary_text))
+        }
+        ModelOffloadCompactionLocalHandoffRole::AssistantState => ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText { text: summary_text }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    };
+    history.push(ResponseItemEnvelope::new(summary_item));
 
     history
 }

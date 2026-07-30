@@ -31,6 +31,18 @@ pub struct SharedCliOptions {
     #[arg(long = "local-provider")]
     pub oss_provider: Option<String>,
 
+    /// Force Hydex local model offload on for this process/session.
+    #[arg(
+        long = "offload",
+        default_value_t = false,
+        conflicts_with = "no_offload"
+    )]
+    pub offload: bool,
+
+    /// Force Hydex local model offload off for this process/session.
+    #[arg(long = "no-offload", default_value_t = false)]
+    pub no_offload: bool,
+
     /// Layer $CODEX_HOME/<name>.config.toml on top of the base user config.
     #[arg(long = "profile", short = 'p')]
     pub config_profile_v2: Option<ProfileV2Name>,
@@ -97,6 +109,8 @@ impl SharedCliOptions {
             model,
             oss,
             oss_provider,
+            offload,
+            no_offload,
             config_profile_v2,
             sandbox_mode,
             auto_review,
@@ -110,6 +124,8 @@ impl SharedCliOptions {
             model: root_model,
             oss: root_oss,
             oss_provider: root_oss_provider,
+            offload: root_offload,
+            no_offload: root_no_offload,
             config_profile_v2: root_config_profile_v2,
             sandbox_mode: root_sandbox_mode,
             auto_review: root_auto_review,
@@ -127,6 +143,14 @@ impl SharedCliOptions {
         }
         if oss_provider.is_none() {
             oss_provider.clone_from(root_oss_provider);
+        }
+        if *root_offload {
+            *offload = true;
+            *no_offload = false;
+        }
+        if *root_no_offload {
+            *no_offload = true;
+            *offload = false;
         }
         if config_profile_v2.is_none() {
             config_profile_v2.clone_from(root_config_profile_v2);
@@ -164,6 +188,8 @@ impl SharedCliOptions {
             model,
             oss,
             oss_provider,
+            offload,
+            no_offload,
             config_profile_v2,
             sandbox_mode,
             auto_review,
@@ -181,6 +207,14 @@ impl SharedCliOptions {
         }
         if let Some(oss_provider) = oss_provider {
             self.oss_provider = Some(oss_provider);
+        }
+        if offload {
+            self.offload = true;
+            self.no_offload = false;
+        }
+        if no_offload {
+            self.no_offload = true;
+            self.offload = false;
         }
         if let Some(config_profile_v2) = config_profile_v2 {
             self.config_profile_v2 = Some(config_profile_v2);

@@ -117,6 +117,13 @@ struct CoreToolPlanContext<'a> {
     wait_agent_timeouts: WaitAgentTimeoutOptions,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToolWireTarget {
+    #[default]
+    Primary,
+    LocalOffload,
+}
+
 #[instrument(level = "trace", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_tool_router(
@@ -128,6 +135,31 @@ pub(crate) fn build_tool_router(
     apps_enabled: bool,
     step_store: &ExtensionData,
     tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
+) -> CodexResult<ToolRouter> {
+    build_tool_router_for_wire(
+        session,
+        turn_context,
+        model_info,
+        environments,
+        mcp,
+        apps_enabled,
+        step_store,
+        tool_suggest_candidates,
+        ToolWireTarget::Primary,
+    )
+}
+
+#[instrument(level = "trace", skip_all)]
+pub(crate) fn build_tool_router_for_wire(
+    session: &Session,
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    environments: &TurnEnvironmentSnapshot,
+    mcp: &Arc<codex_mcp::McpBinding>,
+    apps_enabled: bool,
+    step_store: &ExtensionData,
+    tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
+    wire_target: ToolWireTarget,
 ) -> CodexResult<ToolRouter> {
     let default_agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
@@ -157,6 +189,7 @@ pub(crate) fn build_tool_router(
             append_extension_tool_executors(
                 turn_context,
                 model_info,
+                wire_target,
                 history_tools.0.iter().cloned(),
                 &mut registry,
             );
@@ -181,6 +214,7 @@ pub(crate) fn build_tool_router(
         let standalone_web_search_tool = append_extension_tool_executors(
             turn_context,
             model_info,
+            wire_target,
             extension_tool_executors(session, step_store),
             &mut registry,
         );
@@ -188,6 +222,7 @@ pub(crate) fn build_tool_router(
         hosted_model_tool_specs(
             turn_context,
             model_info,
+            wire_target,
             standalone_web_search_tool.as_slice(),
         )
     };
@@ -313,6 +348,7 @@ pub(crate) fn append_source_tools(
         Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>,
     >,
     dynamic_tools: &[DynamicToolSpec],
+    wire_target: ToolWireTarget,
 ) -> Vec<ToolSpec> {
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
         return Vec::new();
@@ -324,6 +360,7 @@ pub(crate) fn append_source_tools(
     let standalone_web_search_tool = append_extension_tool_executors(
         turn_context,
         model_info,
+        wire_target,
         extension_tool_executors,
         registry,
     );
@@ -331,6 +368,7 @@ pub(crate) fn append_source_tools(
     hosted_model_tool_specs(
         turn_context,
         model_info,
+        wire_target,
         standalone_web_search_tool.as_slice(),
     )
 }
@@ -602,6 +640,7 @@ fn spec_for_model_request(
 fn hosted_model_tool_specs(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
     registered_extension_tool_names: &[ToolName],
 ) -> Vec<ToolSpec> {
     // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
@@ -612,7 +651,8 @@ fn hosted_model_tool_specs(
     }
 
     let mut specs = Vec::new();
-    let standalone_web_search_available = standalone_web_search_enabled(turn_context, model_info)
+    let standalone_web_search_available =
+        standalone_web_search_enabled(turn_context, model_info, wire_target)
         && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
@@ -1034,7 +1074,11 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
     add_collaboration_tools(context, registry);
 }
 
-fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
+fn standalone_web_search_enabled(
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
+) -> bool {
     namespace_tools_enabled(turn_context)
         && turn_context.provider.capabilities().web_search
         && (model_info.use_responses_lite
@@ -1042,7 +1086,8 @@ fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelI
                 .config
                 .features
                 .get()
-                .enabled(Feature::StandaloneWebSearch))
+                .enabled(Feature::StandaloneWebSearch)
+            || wire_target == ToolWireTarget::LocalOffload)
 }
 
 fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironmentMode {
@@ -1378,10 +1423,12 @@ fn append_tool_search_executor(
 fn append_extension_tool_executors(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
     executors: impl IntoIterator<Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>>,
     registry: &mut ToolRegistry,
 ) -> Option<ToolName> {
-    let standalone_web_search_enabled = standalone_web_search_enabled(turn_context, model_info);
+    let standalone_web_search_enabled =
+        standalone_web_search_enabled(turn_context, model_info, wire_target);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
     let mut standalone_web_search_tool = None;
 

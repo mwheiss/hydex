@@ -150,6 +150,8 @@ pub(super) struct CompactedItemWire<'a> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     window_id: Option<WindowIdWire<'a>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_compaction_model: Option<Cow<'a, str>>,
 }
 
 impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
@@ -185,6 +187,7 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
                 .window_id
                 .as_deref()
                 .map(|window_id| WindowIdWire::Id(Cow::Borrowed(window_id))),
+            remote_compaction_model: item.remote_compaction_model.as_deref().map(Cow::Borrowed),
         }
     }
 }
@@ -246,6 +249,7 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
             first_window_id: item.first_window_id.map(Cow::into_owned),
             previous_window_id: item.previous_window_id.map(Cow::into_owned),
             window_id,
+            remote_compaction_model: item.remote_compaction_model.map(Cow::into_owned),
         })
     }
 }

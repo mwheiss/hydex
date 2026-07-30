@@ -170,6 +170,8 @@ pub struct CompactedItem {
     /// `thread/resume` can restore token usage totals from this field without scanning arbitrarily
     /// far past the compaction.
     pub latest_token_usage_record: Option<TokenUsageRecord>,
+    /// Producing model for encrypted primary remote compaction, when known.
+    pub remote_compaction_model: Option<String>,
 }
 
 impl Serialize for CompactedItem {

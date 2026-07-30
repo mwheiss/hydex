@@ -501,6 +501,19 @@ pub struct ThreadSettingsOverrides {
     /// Updated model slug. When set, the model info is derived automatically.
     pub model: Option<String>,
 
+    /// Runtime override for local model offload.
+    ///
+    /// Use `Some(Some(_))` to set a runtime override, `Some(None)` to clear it
+    /// and follow config, or `None` to leave the existing value unchanged.
+    pub model_offload_override: Option<Option<crate::config_types::ModelOffloadRuntimeOverride>>,
+
+    /// Runtime override for local/primary compaction routing.
+    ///
+    /// Use `Some(Some(_))` to set a runtime override, `Some(None)` to clear it
+    /// and follow config, or `None` to leave the existing value unchanged.
+    pub model_offload_compaction_override:
+        Option<Option<crate::config_types::ModelOffloadCompactionRuntimeOverride>>,
+
     /// Updated reasoning effort (honored only for reasoning-capable models).
     ///
     /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear the
@@ -2073,6 +2086,13 @@ pub struct ThreadSettingsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_offload_override: Option<crate::config_types::ModelOffloadRuntimeOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_offload_compaction_override:
+        Option<crate::config_types::ModelOffloadCompactionRuntimeOverride>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -3084,6 +3104,8 @@ pub struct TurnContextItem {
     // read by context reconstruction and should be removed in a future schema
     // cleanup.
     pub summary: ReasoningSummaryConfig,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offload_ever_used: bool,
 }
 
 impl TurnContextItem {
@@ -5829,6 +5851,7 @@ mod tests {
             realtime_active: None,
             effort: None,
             summary: ReasoningSummaryConfig::Auto,
+            offload_ever_used: false,
         };
 
         let value = serde_json::to_value(item)?;

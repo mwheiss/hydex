@@ -494,7 +494,15 @@ impl TurnContext {
             .flatten()
     }
 
+    #[cfg(test)]
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
+        self.to_turn_context_item_with_offload_ever_used(false)
+    }
+
+    pub(crate) fn to_turn_context_item_with_offload_ever_used(
+        &self,
+        offload_ever_used: bool,
+    ) -> TurnContextItem {
         let workspace_roots = self.effective_workspace_roots();
         #[allow(deprecated)]
         let cwd = self.cwd.clone();
@@ -523,6 +531,7 @@ impl TurnContext {
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort.clone(),
             summary: ReasoningSummaryConfig::Auto,
+            offload_ever_used,
         }
     }
 
@@ -742,6 +751,8 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> CodexResult<Arc<TurnContext>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let model_offload_override = updates.model_offload_override;
+        let model_offload_compaction_override = updates.model_offload_compaction_override;
         let update_result: CodexResult<_> = {
             let mut state = self.state.lock().await;
             match self.apply_session_settings(&state.session_configuration, &updates) {
@@ -806,6 +817,16 @@ impl Session {
                 return Err(CodexErr::InvalidRequest(message));
             }
         };
+        if let Some(model_offload_override) = model_offload_override {
+            self.services
+                .model_client
+                .set_model_offload_runtime_override(model_offload_override)?;
+        }
+        if let Some(model_offload_compaction_override) = model_offload_compaction_override {
+            self.services
+                .model_client
+                .set_model_offload_compaction_runtime_override(model_offload_compaction_override)?;
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if mcp_inputs_changed {
             self.schedule_mcp_prewarm();

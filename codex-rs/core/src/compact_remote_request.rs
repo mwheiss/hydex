@@ -67,6 +67,7 @@ pub(super) async fn run_remote_compact_attempt(
         base_instructions,
         output_schema: None,
         output_schema_strict: true,
+        temperature: None,
     };
     let responses_metadata = sess
         .responses_metadata(

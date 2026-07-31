@@ -128,6 +128,23 @@ Use this when updating the Hydex VS Code plugin.
    Do not run the sudo command automatically unless the user explicitly asks for installation.
    Pacman replaces the conflicting `openai-codex-bin` package; no separate removal is needed.
 
+   Always include the concrete VSIX path and these extension update reminders too:
+
+   - Local Linux x64 VS Code:
+
+     ```bash
+     code --install-extension /absolute/path/to/hydex-chatgpt-<extension-version>-linux-x64.vsix --force
+     code --list-extensions --show-versions | rg '^mwheiss\.hydex@'
+     ```
+
+   - Remote-SSH: connect to each host, then run `Extensions: Install from VSIX...` inside that
+     connected remote window, select the generated Linux x64 VSIX, verify it under
+     `SSH: <host> - Installed`, and run `Developer: Reload Window`.
+
+   State explicitly that local and Remote-SSH extension hosts are separate and every SSH host must
+   be updated independently. Do not present the ordinary local `code --install-extension` command
+   as updating a remote extension host.
+
 ## Mainline Workflow
 
 Use this when intentionally syncing Hydex to current OpenAI `main`, independent of the plugin.

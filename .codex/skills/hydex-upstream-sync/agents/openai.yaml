@@ -1,4 +1,4 @@
 interface:
   display_name: "Hydex Upstream Sync"
   short_description: "Replay Hydex onto an exact OpenAI base"
-  default_prompt: "Use $hydex-upstream-sync to replay hydex/main onto the selected OpenAI Codex base, refresh the plugin, build the local hydex-bin package, and report the pacman update command."
+  default_prompt: "Use $hydex-upstream-sync to replay hydex/main onto the selected OpenAI Codex base, refresh the plugin, build the local hydex-bin package, and report the pacman plus local and Remote-SSH VS Code update steps."

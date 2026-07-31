@@ -109,11 +109,24 @@ Use this when updating the Hydex VS Code plugin.
    git add vendor metadata .codex/skills scripts README.md analysis
    git commit -m "Refresh Hydex plugin for Codex <version>"
    git push
+   cd ..
+   ./packaging/arch/build-local-package.sh
    ```
 
    The plugin refresh script stamps the Hydex workspace version to the bundled
    `codex-package.json` version before building, then verifies that the bundled Hydex
-   `codex --version` matches.
+   `codex --version` matches. The local package helper then builds the matching pacman-managed
+   `hydex-bin` package from that refreshed baseline.
+
+   Always include the generated package path and SHA-256 in the final report, followed by the exact
+   update command:
+
+   ```bash
+   sudo pacman -U /absolute/path/to/hydex-bin-<version>-1-x86_64.pkg.tar.zst
+   ```
+
+   Do not run the sudo command automatically unless the user explicitly asks for installation.
+   Pacman replaces the conflicting `openai-codex-bin` package; no separate removal is needed.
 
 ## Mainline Workflow
 

@@ -1,0 +1,66 @@
+# Maintainer: Michael W. Heiss
+
+pkgname=hydex-bin
+pkgver="${HYDEX_PACKAGE_VERSION//-/.}"
+pkgrel=1
+pkgdesc="Codex CLI with Hydex local model offload"
+arch=('x86_64')
+url="https://github.com/mwheiss/hydex"
+license=('Apache-2.0')
+provides=("codex=${pkgver}" "openai-codex=${pkgver}")
+conflicts=('openai-codex' 'openai-codex-bin' 'openai-codex-autoup-bin')
+replaces=('openai-codex-bin' 'openai-codex-autoup-bin')
+optdepends=(
+  'git: working with Git repositories'
+  'ripgrep: accelerated repository search'
+)
+options=('!debug' '!strip')
+
+source=(
+  "codex::file://${HYDEX_CODEX_BINARY:?}"
+  "codex-code-mode-host::file://${HYDEX_CODE_MODE_HOST_BINARY:?}"
+  "LICENSE::file://${HYDEX_LICENSE_FILE:?}"
+)
+sha256sums=(
+  "${HYDEX_CODEX_SHA256:?}"
+  "${HYDEX_CODE_MODE_HOST_SHA256:?}"
+  "${HYDEX_LICENSE_SHA256:?}"
+)
+
+package() {
+  chmod 755 "${srcdir}/codex" "${srcdir}/codex-code-mode-host"
+
+  install -Dm755 "${srcdir}/codex" "${pkgdir}/usr/bin/codex"
+  install -Dm755 \
+    "${srcdir}/codex-code-mode-host" \
+    "${pkgdir}/usr/bin/codex-code-mode-host"
+  install -Dm644 \
+    "${srcdir}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+  install -d \
+    "${pkgdir}/usr/share/bash-completion/completions" \
+    "${pkgdir}/usr/share/elvish/lib" \
+    "${pkgdir}/usr/share/fish/vendor_completions.d" \
+    "${pkgdir}/usr/share/powershell/Completions" \
+    "${pkgdir}/usr/share/zsh/site-functions" \
+    "${pkgdir}/usr/share/hydex"
+
+  "${srcdir}/codex" completion bash \
+    > "${pkgdir}/usr/share/bash-completion/completions/codex"
+  "${srcdir}/codex" completion elvish \
+    > "${pkgdir}/usr/share/elvish/lib/codex.elv"
+  "${srcdir}/codex" completion fish \
+    > "${pkgdir}/usr/share/fish/vendor_completions.d/codex.fish"
+  "${srcdir}/codex" completion powershell \
+    > "${pkgdir}/usr/share/powershell/Completions/codex.ps1"
+  "${srcdir}/codex" completion zsh \
+    > "${pkgdir}/usr/share/zsh/site-functions/_codex"
+
+  printf '%s\n' \
+    "plugin_baseline=${HYDEX_PLUGIN_BASELINE:?}" \
+    "codex_version=${HYDEX_PACKAGE_VERSION:?}" \
+    "codex_sha256=${HYDEX_CODEX_SHA256:?}" \
+    "code_mode_host_sha256=${HYDEX_CODE_MODE_HOST_SHA256:?}" \
+    > "${pkgdir}/usr/share/hydex/build-info"
+}

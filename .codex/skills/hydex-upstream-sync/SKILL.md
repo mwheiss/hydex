@@ -168,7 +168,7 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
    python3 .codex/skills/hydex-upstream-sync/scripts/prepare_hydex_upstream_sync.py \
      --base-anchor "$BASE_ANCHOR" \
      --hydex-branch hydex/main \
-     --upstream origin/main \
+     --upstream openai/main \
      --scratch-branch "$SCRATCH" \
      --allow-untracked \
      --patch-out "/tmp/hydex-main-delta-$(date -u +%Y%m%d).patch"

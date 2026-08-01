@@ -149,6 +149,7 @@ async fn local_sampling_validation_rejects_broken_final_text() {
         &turn_context,
         &Prompt::default(),
         &assistant_output_text("<think>hidden scratch</think>"),
+        /*local_context_window*/ None,
     )
     .expect_err("reasoning leakage should reject local final text");
 
@@ -239,7 +240,7 @@ async fn offload_ever_used_alone_does_not_apply_local_auto_compact_thresholds() 
             .local_offload_enabled_for_turns()
     );
     assert!(!local_offload_context_applies_to_auto_compaction(
-        &turn_context,
+        &turn_context.config.model_offload.context,
         session
             .services
             .model_client
@@ -248,6 +249,7 @@ async fn offload_ever_used_alone_does_not_apply_local_auto_compact_thresholds() 
     assert_eq!(
         auto_compact_thresholds(
             &turn_context,
+            &turn_context.config.model_offload.context,
             session
                 .services
                 .model_client
@@ -277,6 +279,7 @@ async fn turn_forced_primary_uses_primary_auto_compact_thresholds() {
     assert_eq!(
         auto_compact_thresholds(
             &turn_context,
+            &turn_context.config.model_offload.context,
             client_session.local_offload_enabled_for_turns()
         ),
         select_auto_compact_thresholds(

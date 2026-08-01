@@ -73,12 +73,19 @@ impl StageOneRequestContext {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemoryResponseCompletion {
+    PreservePrimaryBehavior,
+    RequireCompleted,
+}
+
 async fn stream_memory_generation(
     client_session: &mut codex_core::ModelClientSession,
     prompt: &Prompt,
     context: &StageOneRequestContext,
     responses_metadata: &codex_core::CodexResponsesMetadata,
     temperature: Option<f64>,
+    completion: MemoryResponseCompletion,
 ) -> anyhow::Result<(String, Option<TokenUsage>)> {
     let mut prompt = prompt.clone();
     prompt.temperature = temperature;
@@ -97,6 +104,7 @@ async fn stream_memory_generation(
 
     let mut result = String::new();
     let mut token_usage = None;
+    let mut completed = false;
     while let Some(message) = stream.next().await.transpose()? {
         match message {
             ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
@@ -112,10 +120,14 @@ async fn stream_memory_generation(
                 token_usage: usage, ..
             } => {
                 token_usage = usage;
+                completed = true;
                 break;
             }
             _ => {}
         }
+    }
+    if completion == MemoryResponseCompletion::RequireCompleted && !completed {
+        anyhow::bail!("local memory response ended before response.completed");
     }
 
     Ok((result, token_usage))
@@ -297,7 +309,7 @@ impl MemoryStartupContext {
         config: &Config,
         prompt: &Prompt,
         context: &StageOneRequestContext,
-    ) -> anyhow::Result<(String, Option<TokenUsage>)> {
+    ) -> anyhow::Result<(String, Option<TokenUsage>, Option<i64>)> {
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let config_snapshot = self.thread.config_snapshot().await;
         let session_source = config_snapshot.session_source;
@@ -359,12 +371,19 @@ impl MemoryStartupContext {
                 &responses_metadata,
                 (generation_attempts > 0)
                     .then_some(config.model_offload.validation.retry_temperature),
+                if config.model_offload.memory_mode == ModelOffloadMemoryMode::Local {
+                    MemoryResponseCompletion::RequireCompleted
+                } else {
+                    MemoryResponseCompletion::PreservePrimaryBehavior
+                },
             )
             .await?;
 
             if config.model_offload.memory_mode != ModelOffloadMemoryMode::Local {
-                return Ok((result, token_usage));
+                return Ok((result, token_usage, None));
             }
+
+            let local_context_window = client_session.local_offload_context_window();
 
             match validate_local_output_with_model(
                 &config.model_offload.validation,
@@ -377,11 +396,12 @@ impl MemoryStartupContext {
                 context.reasoning_summary,
                 context.service_tier.clone(),
                 &validation_metadata,
+                local_context_window,
             )
             .await?
             {
                 LocalOutputValidationResult::Accepted | LocalOutputValidationResult::Disabled => {
-                    return Ok((result, token_usage));
+                    return Ok((result, token_usage, local_context_window));
                 }
                 LocalOutputValidationResult::Rejected(reason)
                     if generation_attempts < generation_retries =>

@@ -6,6 +6,7 @@ use crate::responses_metadata::CodexResponsesMetadata;
 use codex_otel::SessionTelemetry;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -14,10 +15,19 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_utils_output_truncation::approx_token_count;
 use futures::StreamExt;
 use serde::Deserialize;
 
-const MAX_CANDIDATE_CHARS: usize = 512_000;
+const DEFAULT_MAX_CANDIDATE_BYTES: usize = 512_000;
+// Four bytes per token is common for prose; 16 keeps this a runaway guard rather than a normal
+// generation limit for source code, JSON, or unusual tokenizers.
+const LOCAL_OUTPUT_BYTES_PER_CONTEXT_TOKEN: usize = 16;
+const LOCAL_OUTPUT_STREAM_FIXED_OVERHEAD_BYTES: usize = 1024 * 1024;
+const LOCAL_OUTPUT_STREAM_MIN_BYTES: usize = 4 * 1024 * 1024;
+const LOCAL_OUTPUT_MAX_BYTES: usize = 64 * 1024 * 1024;
+const VALIDATOR_CONTEXT_RESERVE_TOKENS: usize = 1024;
+const VALIDATOR_OUTPUT_MAX_BYTES: usize = 4 * 1024;
 const VALIDATOR_INSTRUCTIONS: &str = r#"You are checking a completed local model output for superficial structural sanity only.
 
 Reject only if the candidate is clearly broken: empty, placeholder, repetitive loop, visible reasoning/thinking leakage, malformed protocol output, tool-call stub in text, or obviously not the expected broad output type.
@@ -56,7 +66,12 @@ pub enum LocalOutputValidationResult {
     Disabled,
 }
 
-pub fn validation_enabled_for_kind(
+enum ValidatorOutputError {
+    Call(CodexErr),
+    InvalidOutput(String),
+}
+
+fn validation_enabled_for_kind(
     config: &ModelOffloadValidationConfig,
     kind: LocalOutputKind,
 ) -> bool {
@@ -70,10 +85,20 @@ pub fn validation_enabled_for_kind(
         }
 }
 
-pub fn cheap_validate_local_output(
+#[cfg(test)]
+fn cheap_validate_local_output(
     config: &ModelOffloadValidationConfig,
     kind: LocalOutputKind,
     candidate: &str,
+) -> CheapValidationOutcome {
+    cheap_validate_local_output_with_context(config, kind, candidate, None)
+}
+
+pub fn cheap_validate_local_output_with_context(
+    config: &ModelOffloadValidationConfig,
+    kind: LocalOutputKind,
+    candidate: &str,
+    local_context_window: Option<i64>,
 ) -> CheapValidationOutcome {
     if !validation_enabled_for_kind(config, kind) {
         return CheapValidationOutcome::Disabled;
@@ -83,11 +108,14 @@ pub fn cheap_validate_local_output(
     if expects_non_empty_text(kind) && trimmed.is_empty() {
         return CheapValidationOutcome::Reject("empty output");
     }
-    if trimmed.len() > MAX_CANDIDATE_CHARS {
+    if trimmed.len() > local_output_candidate_max_bytes(local_context_window) {
         return CheapValidationOutcome::Reject("output exceeds sanity limit");
     }
     if expects_non_empty_text(kind) && is_placeholder_output(trimmed) {
         return CheapValidationOutcome::Reject("placeholder output");
+    }
+    if is_durable_payload(kind) && !trimmed.chars().any(char::is_alphanumeric) {
+        return CheapValidationOutcome::Reject("content-free durable payload");
     }
     if contains_visible_reasoning_leak(trimmed) {
         return CheapValidationOutcome::Reject("visible reasoning leakage");
@@ -118,6 +146,31 @@ pub fn cheap_validate_local_output(
     CheapValidationOutcome::Pass
 }
 
+pub(crate) fn local_output_candidate_max_bytes(local_context_window: Option<i64>) -> usize {
+    local_context_window
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+        .map(|tokens| {
+            tokens
+                .saturating_mul(LOCAL_OUTPUT_BYTES_PER_CONTEXT_TOKEN)
+                .min(LOCAL_OUTPUT_MAX_BYTES)
+        })
+        .unwrap_or(DEFAULT_MAX_CANDIDATE_BYTES)
+}
+
+pub(crate) fn local_output_stream_max_bytes(local_context_window: Option<i64>) -> usize {
+    local_context_window
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+        .map(|tokens| {
+            tokens
+                .saturating_mul(LOCAL_OUTPUT_BYTES_PER_CONTEXT_TOKEN)
+                .saturating_add(LOCAL_OUTPUT_STREAM_FIXED_OVERHEAD_BYTES)
+                .clamp(LOCAL_OUTPUT_STREAM_MIN_BYTES, LOCAL_OUTPUT_MAX_BYTES)
+        })
+        .unwrap_or(LOCAL_OUTPUT_MAX_BYTES)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn validate_local_output_with_model(
     config: &ModelOffloadValidationConfig,
@@ -130,8 +183,9 @@ pub async fn validate_local_output_with_model(
     reasoning_summary: ReasoningSummary,
     service_tier: Option<String>,
     responses_metadata: &CodexResponsesMetadata,
+    local_context_window: Option<i64>,
 ) -> CodexResult<LocalOutputValidationResult> {
-    match cheap_validate_local_output(config, kind, candidate) {
+    match cheap_validate_local_output_with_context(config, kind, candidate, local_context_window) {
         CheapValidationOutcome::Pass => {}
         CheapValidationOutcome::Reject(reason) => {
             return Ok(LocalOutputValidationResult::Rejected(format!(
@@ -141,10 +195,16 @@ pub async fn validate_local_output_with_model(
         CheapValidationOutcome::Disabled => return Ok(LocalOutputValidationResult::Disabled),
     }
 
+    if !validator_request_fits_local_context(kind, candidate, local_context_window) {
+        return Ok(LocalOutputValidationResult::ValidationUnavailable(format!(
+            "validator request would exceed local context window after reserving {VALIDATOR_CONTEXT_RESERVE_TOKENS} tokens"
+        )));
+    }
+
     let attempts = config.validator_attempts.max(1);
     let mut last_error = String::new();
     for attempt in 1..=attempts {
-        let raw_output = collect_validator_output(
+        let raw_output = match collect_validator_output(
             client_session,
             model_info,
             session_telemetry,
@@ -155,7 +215,33 @@ pub async fn validate_local_output_with_model(
             kind,
             candidate,
         )
-        .await?;
+        .await
+        {
+            Ok(raw_output) => raw_output,
+            Err(ValidatorOutputError::InvalidOutput(err)) => {
+                tracing::warn!(
+                    "local output validator produced unusable output on attempt {attempt}/{attempts}: {err}"
+                );
+                last_error = err;
+                continue;
+            }
+            Err(ValidatorOutputError::Call(err))
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::Interrupted
+                        | CodexErrorDetails::TurnAborted
+                        | CodexErrorDetails::SessionBudgetExceeded
+                ) =>
+            {
+                return Err(err);
+            }
+            Err(ValidatorOutputError::Call(err)) => {
+                tracing::warn!("local output validator call failed: {err}");
+                return Ok(LocalOutputValidationResult::ValidationUnavailable(format!(
+                    "validator call failed: {err}"
+                )));
+            }
+        };
         match parse_validator_acceptance(&raw_output) {
             Ok(true) => return Ok(LocalOutputValidationResult::Accepted),
             Ok(false) => {
@@ -172,16 +258,15 @@ pub async fn validate_local_output_with_model(
         }
     }
 
-    Ok(LocalOutputValidationResult::ValidationUnavailable(
-        if last_error.is_empty() {
-            "validator did not return a response".to_string()
-        } else {
-            format!("validator did not satisfy JSON contract: {last_error}")
-        },
-    ))
+    let reason = if last_error.is_empty() {
+        "validator did not return a response".to_string()
+    } else {
+        format!("validator unavailable after {attempts} attempts: {last_error}")
+    };
+    Ok(LocalOutputValidationResult::ValidationUnavailable(reason))
 }
 
-pub fn parse_validator_acceptance(raw_output: &str) -> std::result::Result<bool, String> {
+fn parse_validator_acceptance(raw_output: &str) -> std::result::Result<bool, String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct ValidatorResponse {
@@ -216,7 +301,7 @@ async fn collect_validator_output(
     responses_metadata: &CodexResponsesMetadata,
     kind: LocalOutputKind,
     candidate: &str,
-) -> CodexResult<String> {
+) -> std::result::Result<String, ValidatorOutputError> {
     let prompt = Prompt {
         input: vec![
             ResponseInputItem::Message {
@@ -245,19 +330,22 @@ async fn collect_validator_output(
             responses_metadata,
             &InferenceTraceContext::disabled(),
         )
-        .await?;
+        .await
+        .map_err(ValidatorOutputError::Call)?;
 
     let mut result = String::new();
     let mut completed = false;
-    while let Some(message) = stream.next().await.transpose()? {
+    let mut completed_output_items = 0usize;
+    while let Some(message) = stream.next().await {
+        let message = message.map_err(ValidatorOutputError::Call)?;
         match message {
-            ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
+            ResponseEvent::OutputTextDelta(delta) => {
+                append_validator_output(&mut result, &delta)
+                    .map_err(ValidatorOutputError::InvalidOutput)?;
+            }
             ResponseEvent::OutputItemDone(item) => {
-                if result.is_empty()
-                    && let Some(text) = output_text_from_item(&item)
-                {
-                    result.push_str(&text);
-                }
+                record_validator_output_item(&mut result, &mut completed_output_items, &item)
+                    .map_err(ValidatorOutputError::InvalidOutput)?;
             }
             ResponseEvent::Completed { .. } => {
                 completed = true;
@@ -267,11 +355,55 @@ async fn collect_validator_output(
         }
     }
     if !completed {
-        return Err(CodexErr::Stream(
+        return Err(ValidatorOutputError::Call(CodexErr::Stream(
             "local output validator stream ended before completion".to_string(),
-        ));
+        )));
     }
     Ok(result)
+}
+
+fn record_validator_output_item(
+    output: &mut String,
+    completed_output_items: &mut usize,
+    item: &ResponseItem,
+) -> std::result::Result<(), String> {
+    if *completed_output_items != 0 {
+        return Err("validator returned additional output items".to_string());
+    }
+    *completed_output_items += 1;
+    let Some(text) = output_text_from_item(item) else {
+        return Err("validator returned a non-message output item".to_string());
+    };
+    if output.is_empty() {
+        append_validator_output(output, &text)?;
+    }
+    Ok(())
+}
+
+fn append_validator_output(output: &mut String, text: &str) -> std::result::Result<(), String> {
+    if output.len().saturating_add(text.len()) > VALIDATOR_OUTPUT_MAX_BYTES {
+        return Err(format!(
+            "local output validator exceeded {VALIDATOR_OUTPUT_MAX_BYTES}-byte response limit"
+        ));
+    }
+    output.push_str(text);
+    Ok(())
+}
+
+fn validator_request_fits_local_context(
+    kind: LocalOutputKind,
+    candidate: &str,
+    local_context_window: Option<i64>,
+) -> bool {
+    let Some(context_window) = local_context_window
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > VALIDATOR_CONTEXT_RESERVE_TOKENS)
+    else {
+        return local_context_window.is_none();
+    };
+    let estimated_tokens = approx_token_count(VALIDATOR_INSTRUCTIONS)
+        .saturating_add(approx_token_count(&validator_user_message(kind, candidate)));
+    estimated_tokens <= context_window.saturating_sub(VALIDATOR_CONTEXT_RESERVE_TOKENS)
 }
 
 fn validator_user_message(kind: LocalOutputKind, candidate: &str) -> String {
@@ -308,6 +440,13 @@ fn expects_non_empty_text(kind: LocalOutputKind) -> bool {
     !matches!(kind, LocalOutputKind::ToolCalls)
 }
 
+fn is_durable_payload(kind: LocalOutputKind) -> bool {
+    matches!(
+        kind,
+        LocalOutputKind::MemoryPayload | LocalOutputKind::CompactionPayload
+    )
+}
+
 fn is_placeholder_output(trimmed: &str) -> bool {
     let lower = trimmed.to_ascii_lowercase();
     matches!(
@@ -318,10 +457,13 @@ fn is_placeholder_output(trimmed: &str) -> bool {
 
 fn contains_visible_reasoning_leak(trimmed: &str) -> bool {
     let lower = trimmed.to_ascii_lowercase();
-    lower.contains("<think>")
-        || lower.contains("</think>")
-        || lower.contains("chain of thought")
-        || lower.contains("scratchpad")
+    lower.trim_start().starts_with("<think>")
+        || lower
+            .find("<think>")
+            .is_some_and(|start| lower[start + "<think>".len()..].contains("</think>"))
+        || lower
+            .lines()
+            .any(|line| matches!(line.trim(), "<think>" | "</think>"))
 }
 
 fn has_obvious_repetition_loop(trimmed: &str) -> bool {

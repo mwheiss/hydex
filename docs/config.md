@@ -10,7 +10,7 @@ For a full configuration reference, see [this documentation](https://developers.
 
 This fork adds optional `[model_offload]` settings for route-specific local
 Responses inference while keeping OpenAI/Codex as the primary provider. See
-[Hydex local model offload](./hydex.md) for the current config shape, routing
+[Hydex](../README.md) for the current config shape, routing
 policy, tool shim, and compaction behavior.
 
 ## Lifecycle hooks

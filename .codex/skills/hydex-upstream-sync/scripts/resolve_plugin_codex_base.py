@@ -95,7 +95,7 @@ def main() -> int:
             "Rerun with --fetch-tag or fetch tags from https://github.com/openai/codex.git."
         )
 
-    sha = capture(["git", "rev-parse", tag], cwd=repo)
+    sha = capture(["git", "rev-parse", f"{tag}^{{commit}}"], cwd=repo)
     print("HYDEX_PLUGIN_CODEX_BASE")
     print(f"plugin_baseline={unpacked_baseline.name}")
     print(f"codex_package_version={version}")

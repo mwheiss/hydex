@@ -14,9 +14,10 @@ The fork's `main` is the authoritative upstream-base pointer for the current `hy
 line. It may point to an OpenAI release tag commit rather than current OpenAI `main`.
 `openai/main` is the separately fetched current OpenAI-main reference.
 
-Hydex history contains synthetic upstream sync commits, so avoid a literal
-`git rebase origin/main` from `hydex/main`. Use a patch-stack transplant from `origin/main`, then
-advance `main` to the new upstream base only after the replay passes validation.
+Use an explicit `git rebase --onto <new-base> <old-base>` in an isolated worktree. This preserves
+Hydex commit boundaries without assuming that two plugin release tags share a mainline ancestry.
+The aggregate binary-patch transplant remains available as a fallback, but it is not the normal
+workflow. Advance `main` only after the replay passes validation.
 
 For plugin releases, prefer the tag-pinned workflow: update the upstream preview VSIX first, read its bundled `codex-package.json` version, resolve the matching OpenAI tag `rust-v<version>`, replay Hydex onto that tag, then rebuild/inject the Hydex binary into the plugin. This keeps the Rust code and extension bundle on the same upstream Codex version.
 
@@ -63,13 +64,13 @@ Use this when updating the Hydex VS Code plugin.
      --plugin-dir hydex-plugin | awk -F= '/^upstream_tag=/{print $2}')
    UPSTREAM_SHA=$(git rev-parse "${UPSTREAM_TAG}^{commit}")
    SCRATCH=hydex/rebase-plugin-${UPSTREAM_TAG}
+   REPLAY_WORKTREE=/tmp/${SCRATCH//\//-}
    python3 .codex/skills/hydex-upstream-sync/scripts/prepare_hydex_upstream_sync.py \
      --base-anchor "$BASE_ANCHOR" \
      --hydex-branch hydex/main \
      --upstream "$UPSTREAM_TAG" \
      --scratch-branch "$SCRATCH" \
-     --allow-untracked \
-     --patch-out "/tmp/hydex-main-delta-${UPSTREAM_TAG}.patch"
+     --worktree "$REPLAY_WORKTREE"
    ```
 
    `origin/main` remains at the old upstream base while the scratch replay is prepared and tested.
@@ -77,7 +78,18 @@ Use this when updating the Hydex VS Code plugin.
    `git merge-base hydex/main openai/main`; a release-tag history can contain upstream commits that
    are not ancestors of the currently fetched OpenAI-main tip.
 
-4. Resolve conflicts and validate as in the validation section below.
+4. Resolve conflicts in `$REPLAY_WORKTREE` and validate as in the validation section below.
+   The helper automatically takes generated schema outputs from the new upstream base and keeps
+   the Hydex root README; regenerate schemas after source conflicts are resolved. To resume after
+   manual conflict resolution:
+
+   ```bash
+   python3 .codex/skills/hydex-upstream-sync/scripts/prepare_hydex_upstream_sync.py \
+     --base-anchor "$BASE_ANCHOR" \
+     --hydex-branch hydex/main \
+     --upstream "$UPSTREAM_TAG" \
+     --continue-worktree "$REPLAY_WORKTREE"
+   ```
 
 5. Commit and push the scratch branch. Then atomically advance `main` to the new upstream tag
    commit and `hydex/main` to the validated replay:
@@ -85,7 +97,7 @@ Use this when updating the Hydex VS Code plugin.
    ```bash
    OLD_MAIN=$(git rev-parse origin/main)
    OLD_HYDEX=$(git rev-parse origin/hydex/main)
-   NEW_HYDEX=$(git rev-parse HEAD)
+   NEW_HYDEX=$(git -C "$REPLAY_WORKTREE" rev-parse HEAD)
    git push -u origin "$SCRATCH"
    git push --atomic \
      --force-with-lease=refs/heads/main:"$OLD_MAIN" \
@@ -163,7 +175,9 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
 
    ```bash
    git fetch origin
-   git fetch https://github.com/openai/codex.git main:refs/remotes/openai/main
+   git remote get-url openai >/dev/null 2>&1 || \
+     git remote add openai https://github.com/openai/codex.git
+   git fetch openai main
    ```
 
 3. Verify that the fork's `main` still identifies the current Hydex upstream base.
@@ -195,18 +209,18 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
 
    ```bash
    SCRATCH=hydex/rebase-apply-$(date -u +%Y%m%d-openai)
+   REPLAY_WORKTREE=/tmp/${SCRATCH//\//-}
    python3 .codex/skills/hydex-upstream-sync/scripts/prepare_hydex_upstream_sync.py \
      --base-anchor "$BASE_ANCHOR" \
      --hydex-branch hydex/main \
      --upstream openai/main \
      --scratch-branch "$SCRATCH" \
-     --allow-untracked \
-     --patch-out "/tmp/hydex-main-delta-$(date -u +%Y%m%d).patch"
+     --worktree "$REPLAY_WORKTREE"
    ```
 
    If the scratch branch name already exists, use a unique suffix.
 
-7. Resolve conflicts, if any, preserving Hydex invariants:
+7. Resolve conflicts in `$REPLAY_WORKTREE`, if any, preserving Hydex invariants:
 
    - Primary/OpenAI/Codex routes keep upstream auth, account, attestation, Agent Identity, proxy, and control-plane behavior.
    - Local/offload routes never receive OpenAI/ChatGPT auth tokens, account headers, attestation, or Agent Identity headers.
@@ -223,10 +237,20 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
    git diff --check
    ```
 
+   Resume the commit-preserving replay after staging manual resolutions:
+
+   ```bash
+   python3 .codex/skills/hydex-upstream-sync/scripts/prepare_hydex_upstream_sync.py \
+     --base-anchor "$BASE_ANCHOR" \
+     --hydex-branch hydex/main \
+     --upstream openai/main \
+     --continue-worktree "$REPLAY_WORKTREE"
+   ```
+
 8. Regenerate and validate:
 
    ```bash
-   cd codex-rs
+   cd "$REPLAY_WORKTREE/codex-rs"
    PATH=/home/mheiss/.local/bin:/home/mheiss/.cargo/bin:$PATH just fmt
    PATH=/home/mheiss/.local/bin:/home/mheiss/.cargo/bin:$PATH just write-config-schema
    PATH=/home/mheiss/.local/bin:/home/mheiss/.cargo/bin:$PATH just write-app-server-schema
@@ -246,11 +270,19 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
 9. Commit and push the scratch branch:
 
    ```bash
-   git diff --cached --check
-   git add -A -- . ':!hydex-plugin'
-   git commit -m "Hydex: sync offload patch with OpenAI main"
-   git push -u origin "$SCRATCH"
+   git -C "$REPLAY_WORKTREE" status --short
+   git -C "$REPLAY_WORKTREE" add -u
+   git -C "$REPLAY_WORKTREE" add <intended-new-hydex-files>
+   git -C "$REPLAY_WORKTREE" diff --cached --check
+   git -C "$REPLAY_WORKTREE" commit -m "Hydex: refresh generated outputs for OpenAI main"
+   git -C "$REPLAY_WORKTREE" push -u origin "$SCRATCH"
    ```
+
+   Replace `<intended-new-hydex-files>` with the explicit new files shown by
+   `git status`; omit the command when there are none. Never use a broad
+   `git add -A` here: the checkout may contain local `.codex/config.toml`, skill
+   symlinks, plugin workspaces, or generated package artifacts that are not part
+   of the Hydex patch line.
 
 10. After validation passes, atomically advance `main` to the selected OpenAI-main commit and
     `hydex/main` to the replay:
@@ -259,7 +291,7 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
    OLD_MAIN=$(git rev-parse origin/main)
    OLD_HYDEX=$(git rev-parse origin/hydex/main)
    NEW_BASE=$(git rev-parse openai/main)
-   NEW_HYDEX=$(git rev-parse HEAD)
+   NEW_HYDEX=$(git -C "$REPLAY_WORKTREE" rev-parse HEAD)
    git push --atomic \
      --force-with-lease=refs/heads/main:"$OLD_MAIN" \
      --force-with-lease=refs/heads/hydex/main:"$OLD_HYDEX" \
@@ -272,6 +304,14 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
 
    Use explicit `--force-with-lease` values, never blind force push. Moving both refs atomically
    prevents the remote from exposing a mismatched Hydex tip and base pointer.
+
+11. After publication, retain a tag or remote replay branch for the previous validated tip, then
+    remove the temporary worktree and local scratch branch when they are no longer needed:
+
+   ```bash
+   git worktree remove "$REPLAY_WORKTREE"
+   git branch -d "$SCRATCH"
+   ```
 
 ## Branch Contract
 
@@ -289,5 +329,7 @@ The required invariant is:
 test "$(git merge-base origin/hydex/main origin/main)" = "$(git rev-parse origin/main)"
 ```
 
-This check proves that `origin/main` is an ancestor of the Hydex branch. Patch generation still
-uses `origin/main` directly; the merge-base is only a contract check, not anchor inference.
+This check proves that `origin/main` is an ancestor of the Hydex branch. Replay still uses
+`origin/main` directly as the old base; the merge-base is only a contract check, not anchor
+inference. New Hydex commits remain distinct across refreshes instead of being repeatedly
+collapsed into one aggregate sync commit.

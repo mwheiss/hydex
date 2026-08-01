@@ -82,6 +82,14 @@ HYDEX_CODE_MODE_HOST_SHA256="$(
 export HYDEX_LICENSE_SHA256
 HYDEX_LICENSE_SHA256="$(sha256sum "${license_file}" | cut -d' ' -f1)"
 
+# makepkg keeps renamed file:// sources in SRCDEST across builds. Remove only
+# these generated aliases so each refresh validates and packages the current
+# plugin binaries rather than a stale source-cache copy.
+rm -f \
+  "${script_dir}/codex" \
+  "${script_dir}/codex-code-mode-host" \
+  "${script_dir}/LICENSE"
+
 (
   cd "${script_dir}"
   makepkg --clean --cleanbuild --force

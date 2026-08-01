@@ -1,5 +1,6 @@
 use super::*;
 
+use super::rollout_reconstruction::reconstruct_retro_local_history_from_rollout;
 use super::tests::build_world_state_from_turn_context;
 use super::tests::make_session_and_context;
 use super::tests::raw_history_items;
@@ -1377,6 +1378,122 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
     assert_eq!(
         reconstructed.active_remote_compaction_model,
         Some("gpt-old".to_string())
+    );
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollback() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let readable_source = user_message("readable source before remote compaction");
+    let old_remote_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "old encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let new_remote_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "new encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let rolled_back_turn_id = "rolled-back-retro-local-turn".to_string();
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(readable_source.clone()),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(old_remote_history.clone()),
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-old".to_string()),
+            window_id: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: rolled_back_turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "rolled-back turn".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::ResponseItem(user_message("rolled-back readable state")),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(new_remote_history),
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-new".to_string()),
+            window_id: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id: rolled_back_turn_id,
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+        &old_remote_history,
+    )
+    .expect("surviving active checkpoint should be reconstructable");
+
+    assert_eq!(reconstructed, vec![readable_source]);
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_active_history() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let active_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "active encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: String::new(),
+        replacement_history: Some(vec![ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "newest raw but inactive state".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }]),
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        remote_compaction_model: Some("gpt-new".to_string()),
+        window_id: None,
+    })];
+
+    let err = reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+        &active_history,
+    )
+    .expect_err("raw checkpoint must not be guessed when it does not match active history");
+
+    assert!(
+        err.to_string()
+            .contains("the surviving remote compaction checkpoint does not match active history")
     );
 }
 

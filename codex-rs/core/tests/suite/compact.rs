@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_core::TurnInputRequest;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
@@ -769,6 +770,259 @@ async fn summarize_context_three_requests_and_instructions(
         "expected a Compacted entry containing the summarizer output"
     );
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_local_compaction_is_not_persisted_or_reused_by_retry() {
+    skip_if_no_network!();
+
+    const REJECTED_SUMMARY: &str = "REJECTED_LOCAL_COMPACTION_CANDIDATE";
+    const ACCEPTED_SUMMARY: &str = "ACCEPTED_LOCAL_COMPACTION_CANDIDATE";
+
+    let server = start_mock_server().await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", FIRST_REPLY),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", REJECTED_SUMMARY),
+                ev_completed("r2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m3", "not valid validator JSON"),
+                ev_completed("r3"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m4", r#"{"accept": false}"#),
+                ev_completed("r4"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m5", ACCEPTED_SUMMARY),
+                ev_completed("r5"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m6", "looping invalid validator output"),
+                ev_completed("r6"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m7", r#"{"accept": true}"#),
+                ev_completed("r7"),
+            ]),
+        ],
+    )
+    .await;
+
+    let primary_provider = non_openai_model_provider(&server);
+    let mut local_provider = primary_provider.clone();
+    local_provider.name = "Hydex local test provider".to_string();
+    local_provider.requires_openai_auth = false;
+    let mut builder = test_codex().with_config(move |config| {
+        config.model_provider = primary_provider;
+        config.model_offload.enabled = true;
+        config.model_offload.provider_id = Some("hydex-local-test".to_string());
+        config.model_offload.provider = Some(local_provider);
+        config.model_offload.model = Some("hydex-local-test-model".to_string());
+        config.model_offload.compaction_policy = ModelOffloadCompactionPolicy::Local;
+        config.model_offload.validation.generation_retries = 1;
+        config.model_auto_compact_token_limit = Some(200_000);
+        set_test_compact_prompt(config);
+    });
+    let test = builder.build(&server).await.expect("build test codex");
+    let codex = test.codex.clone();
+    let rollout_path = test.session_configured.rollout_path.expect("rollout path");
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "seed local offload state".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit local turn");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Compact).await.expect("trigger compact");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::Warning(_))).await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Shutdown).await.expect("shut down session");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
+
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 7);
+    let retry_request = requests[4].body_json().to_string();
+    assert!(!retry_request.contains(REJECTED_SUMMARY));
+    assert!(
+        requests[6]
+            .body_json()
+            .to_string()
+            .contains(ACCEPTED_SUMMARY)
+    );
+
+    let rollout = fs::read_to_string(rollout_path).expect("read rollout");
+    assert!(!rollout.contains(REJECTED_SUMMARY));
+    assert!(rollout.contains(ACCEPTED_SUMMARY));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_local_compaction_reports_validator_transport_failure() {
+    skip_if_no_network!();
+
+    const UNVALIDATED_SUMMARY: &str = "UNVALIDATED_LOCAL_COMPACTION_CANDIDATE";
+    const BROKEN_SUMMARY: &str = "<think>BROKEN_LOCAL_COMPACTION_CANDIDATE</think>";
+
+    let server = start_mock_server().await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", FIRST_REPLY),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", UNVALIDATED_SUMMARY),
+                ev_completed("r2"),
+            ]),
+            sse_failed("r3", "server_error", "validator transport failed"),
+            sse(vec![
+                ev_assistant_message("m4", BROKEN_SUMMARY),
+                ev_completed("r4"),
+            ]),
+        ],
+    )
+    .await;
+
+    let primary_provider = non_openai_model_provider(&server);
+    let mut local_provider = primary_provider.clone();
+    local_provider.name = "Hydex local test provider".to_string();
+    local_provider.requires_openai_auth = false;
+    let mut builder = test_codex().with_config(move |config| {
+        config.model_provider = primary_provider;
+        config.model_offload.enabled = true;
+        config.model_offload.provider_id = Some("hydex-local-test".to_string());
+        config.model_offload.provider = Some(local_provider);
+        config.model_offload.model = Some("hydex-local-test-model".to_string());
+        config.model_offload.compaction_policy = ModelOffloadCompactionPolicy::Local;
+        config.model_auto_compact_token_limit = Some(200_000);
+        set_test_compact_prompt(config);
+    });
+    let test = builder.build(&server).await.expect("build test codex");
+    let codex = test.codex.clone();
+    let rollout_path = test.session_configured.rollout_path.expect("rollout path");
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "seed local offload state".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit local turn");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Compact).await.expect("trigger compact");
+    let error = wait_for_event(&codex, |event| matches!(event, EventMsg::Error(_))).await;
+    let EventMsg::Error(error) = error else {
+        panic!("expected compaction validation error");
+    };
+    assert!(
+        error
+            .message
+            .contains("Local compaction output validation unavailable")
+    );
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex
+        .submit(Op::Compact)
+        .await
+        .expect("trigger compact with deterministically broken output");
+    let error = wait_for_event(&codex, |event| matches!(event, EventMsg::Error(_))).await;
+    let EventMsg::Error(error) = error else {
+        panic!("expected deterministic compaction validation error");
+    };
+    assert!(
+        error
+            .message
+            .contains("Local compaction output failed sanity validation")
+    );
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Shutdown).await.expect("shut down session");
+    wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
+
+    assert_eq!(request_log.requests().len(), 4);
+    let rollout = fs::read_to_string(rollout_path).expect("read rollout");
+    assert!(!rollout.contains(UNVALIDATED_SUMMARY));
+    assert!(!rollout.contains(BROKEN_SUMMARY));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_compaction_uses_local_provider_stream_retry_budget() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", FIRST_REPLY),
+                ev_completed("r1"),
+            ]),
+            sse_failed("r2", "server_error", "local compaction failed"),
+        ],
+    )
+    .await;
+
+    let mut primary_provider = non_openai_model_provider(&server);
+    primary_provider.stream_max_retries = Some(2);
+    let mut local_provider = primary_provider.clone();
+    local_provider.name = "Hydex local test provider".to_string();
+    local_provider.requires_openai_auth = false;
+    local_provider.stream_max_retries = Some(0);
+    let mut builder = test_codex().with_config(move |config| {
+        config.model_provider = primary_provider;
+        config.model_offload.enabled = true;
+        config.model_offload.provider_id = Some("hydex-local-test".to_string());
+        config.model_offload.provider = Some(local_provider);
+        config.model_offload.model = Some("hydex-local-test-model".to_string());
+        config.model_offload.compaction_policy = ModelOffloadCompactionPolicy::Local;
+        config.model_offload.validation.enabled = false;
+        config.model_auto_compact_token_limit = Some(200_000);
+        set_test_compact_prompt(config);
+    });
+    let test = builder.build(&server).await.expect("build test codex");
+
+    test.submit_turn("seed local offload state")
+        .await
+        .expect("submit local turn");
+    test.codex
+        .submit(Op::Compact)
+        .await
+        .expect("trigger compact");
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(
+        request_log.requests().len(),
+        2,
+        "local compaction should not inherit the primary provider's retry budget"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

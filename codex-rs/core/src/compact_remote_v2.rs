@@ -348,11 +348,14 @@ async fn run_remote_compact_task_inner_impl(
             message: String::new(),
             window_number: new_window_number,
             window_ids: new_window_ids,
-            remote_compaction_model: sess
-                .services
-                .model_client
-                .offload_ever_used()
-                .then(|| compaction_turn_context.model_info.slug.clone()),
+            remote_compaction_model: crate::compact::remote_compaction_model_provenance(
+                compaction_turn_context
+                    .config
+                    .model_offload
+                    .provider
+                    .as_ref(),
+                &compaction_turn_context.model_info.slug,
+            ),
         },
     )
     .await;

@@ -9,10 +9,12 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::ensure_local_request_fits_effective_context;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use crate::config::ModelOffloadConfig;
+use crate::config::ModelOffloadContextConfig;
 use crate::config::ModelOffloadValidationConfig;
 use crate::local_offload::transform_request_for_local_offload;
 use crate::responses_metadata::CodexResponsesMetadata;
@@ -29,6 +31,7 @@ use codex_api::ApiError;
 use codex_api::Compression;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesEndpoint;
+use codex_api::ResponsesApiRequest;
 use codex_api::TransportError;
 use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
@@ -59,6 +62,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
 use codex_protocol::config_types::ModelOffloadRuntimeOverride;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -250,6 +254,132 @@ fn test_model_client_with_local_offload_and_api_primary(
             validation: Default::default(),
         },
     )
+}
+
+#[tokio::test]
+async fn local_provider_advertised_context_overrides_configured_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "models": [{
+                "slug": "local-responses-model",
+                "context_window": 180_000,
+                "effective_context_window_percent": 95,
+                "auto_compact_token_limit": 162_000
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let local_provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        ModelOffloadConfig {
+            enabled: true,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode: ModelOffloadMemoryMode::Local,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            compaction_local_handoff_role: ModelOffloadCompactionLocalHandoffRole::AssistantState,
+            context: ModelOffloadContextConfig {
+                context_window: Some(200_000),
+                effective_context_window_percent: 90,
+                auto_compact_token_limit: Some(170_000),
+            },
+            validation: Default::default(),
+        },
+    );
+    let client_session = client.new_session();
+
+    let context = client_session
+        .effective_local_offload_context(&ModelOffloadContextConfig {
+            context_window: Some(200_000),
+            effective_context_window_percent: 90,
+            auto_compact_token_limit: Some(170_000),
+        })
+        .await;
+
+    assert_eq!(
+        context,
+        ModelOffloadContextConfig {
+            context_window: Some(180_000),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: Some(162_000),
+        }
+    );
+}
+
+#[test]
+fn local_request_guard_uses_effective_context_window() {
+    let request = ResponsesApiRequest {
+        model: "local-model".to_string(),
+        instructions: "follow the request".to_string(),
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "x".repeat(4_000),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        tools: None,
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        temperature: None,
+        reasoning: None,
+        store: false,
+        stream: true,
+        stream_options: None,
+        include: Vec::new(),
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let err = ensure_local_request_fits_effective_context(
+        &request,
+        ModelOffloadContextConfig {
+            context_window: Some(512),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+        },
+    )
+    .expect_err("oversized local request should be rejected");
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::ContextWindowExceeded
+    ));
+    assert!(
+        ensure_local_request_fits_effective_context(
+            &request,
+            ModelOffloadContextConfig {
+                context_window: Some(8_192),
+                effective_context_window_percent: 95,
+                auto_compact_token_limit: None,
+            },
+        )
+        .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -975,6 +1105,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         attempt,
         test_model_provider(),
         None,
+        /*local_output_byte_limit*/ None,
     );
 
     let observed = stream
@@ -1027,6 +1158,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
         None,
+        /*local_output_byte_limit*/ None,
     );
 
     while stream.next().await.is_some() {}
@@ -1040,6 +1172,135 @@ async fn response_stream_records_last_model_feedback_ids() {
         tags.get("last_model_response_id").map(String::as_str),
         Some("\"resp-123\"")
     );
+}
+
+#[tokio::test]
+async fn local_response_stream_enforces_aggregate_output_limit() {
+    let api_stream = futures::stream::iter([
+        Ok(ResponseEvent::OutputTextDelta("abcd".to_string())),
+        Ok(ResponseEvent::OutputTextDelta("e".to_string())),
+    ]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        /*local_tool_names*/ None,
+        Some(4),
+    );
+
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ResponseEvent::OutputTextDelta(delta))) if delta == "abcd"
+    ));
+    let error = stream
+        .next()
+        .await
+        .expect("local stream should report aggregate overflow")
+        .expect_err("aggregate overflow should fail the local stream");
+    assert!(
+        error
+            .to_string()
+            .contains("aggregate safety limit of 4 bytes"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn local_response_stream_counts_completed_only_output() {
+    let item = output_message("1", "completed-only output");
+    let item_bytes = super::serialized_response_item_bytes(&item).expect("serialize response item");
+    let api_stream = futures::stream::iter([Ok(ResponseEvent::OutputItemDone(item))]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        /*local_tool_names*/ None,
+        Some(item_bytes - 1),
+    );
+
+    let error = stream
+        .next()
+        .await
+        .expect("local stream should report completed-item overflow")
+        .expect_err("completed-item overflow should fail the local stream");
+    assert!(
+        error.to_string().contains(&format!(
+            "aggregate safety limit of {} bytes",
+            item_bytes - 1
+        )),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn local_response_stream_does_not_double_count_deltas_and_completed_items() {
+    let item = output_message("1", "abcd");
+    let item_bytes = super::serialized_response_item_bytes(&item).expect("serialize response item");
+    let api_stream = futures::stream::iter([
+        Ok(ResponseEvent::OutputTextDelta("abcd".to_string())),
+        Ok(ResponseEvent::OutputItemDone(item)),
+        Ok(ResponseEvent::Completed {
+            response_id: "response-id".to_string(),
+            token_usage: None,
+            end_turn: Some(true),
+        }),
+    ]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        /*local_tool_names*/ None,
+        Some(item_bytes),
+    );
+
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ResponseEvent::OutputTextDelta(delta))) if delta == "abcd"
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ResponseEvent::OutputItemDone(_)))
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ResponseEvent::Completed { .. }))
+    ));
+}
+
+#[tokio::test]
+async fn response_stream_without_local_limit_preserves_primary_behavior() {
+    let api_stream = futures::stream::iter([
+        Ok(ResponseEvent::OutputTextDelta("abcde".to_string())),
+        Ok(ResponseEvent::Completed {
+            response_id: "response-id".to_string(),
+            token_usage: None,
+            end_turn: Some(true),
+        }),
+    ]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        /*local_tool_names*/ None,
+        /*local_output_byte_limit*/ None,
+    );
+
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ResponseEvent::OutputTextDelta(delta))) if delta == "abcde"
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ResponseEvent::Completed { .. }))
+    ));
 }
 
 #[tokio::test]
@@ -1212,6 +1473,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         attempt,
         test_model_provider(),
         None,
+        /*local_output_byte_limit*/ None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -1846,6 +2108,13 @@ fn memory_mode_primary_keeps_memory_consolidation_primary() {
                 .route_for_responses_request(&responses_metadata)
                 .is_local_offload()
         );
+        let session = client.new_session();
+        let route = session.route_for_responses_request(&responses_metadata);
+        assert_eq!(
+            session.local_helper_temperature_for_request(route, &responses_metadata),
+            None
+        );
+        assert!(!session.validates_completed_output_for(&responses_metadata));
     }
 }
 
@@ -1884,6 +2153,18 @@ fn memory_mode_local_routes_memory_requests_and_consolidation_local() {
     assert!(
         consolidation_client
             .route_for_responses_request(&turn_metadata)
+            .is_local_offload()
+    );
+    let prewarm_metadata = test_responses_metadata_for_client(
+        &consolidation_client,
+        Some("turn-1"),
+        format!("{}:prewarm", consolidation_client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::Prewarm,
+    );
+    assert!(
+        !consolidation_client
+            .route_for_responses_request(&prewarm_metadata)
             .is_local_offload()
     );
 
@@ -2007,6 +2288,105 @@ fn local_helper_temperature_defaults_to_zero_for_first_pass_helpers() {
             &validation_metadata,
         ),
         Some(0.0)
+    );
+}
+
+#[tokio::test]
+async fn local_memory_consolidation_turn_uses_memory_temperature() {
+    for session_source in [
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        SessionSource::SubAgent(SubAgentSource::MemoryConsolidation),
+    ] {
+        let client = test_model_client_with_local_offload_config_memory_mode_and_validation(
+            session_source,
+            ModelOffloadCompactionPolicy::Local,
+            ModelOffloadMemoryMode::Local,
+            ModelOffloadValidationConfig {
+                memory_temperature: Some(0.03),
+                ..Default::default()
+            },
+        );
+        let responses_metadata = test_responses_metadata_for_client(
+            &client,
+            Some("turn-1"),
+            format!("{}:0", client.state.thread_id),
+            None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+        let session = client.new_session();
+        let route = session.route_for_responses_request(&responses_metadata);
+        let client_setup = client
+            .current_client_setup_for_request(route, Some(&responses_metadata))
+            .await
+            .expect("client setup resolves");
+
+        let request = client
+            .build_responses_request(
+                &client_setup.api_provider,
+                client_setup.model_provider.info(),
+                client_setup.model_override.as_deref(),
+                &Prompt::default(),
+                &test_model_info(),
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::Auto,
+                /*service_tier*/ None,
+                &responses_metadata,
+                !route.is_local_offload(),
+                session.local_helper_temperature_for_request(route, &responses_metadata),
+            )
+            .expect("responses request builds");
+
+        assert!(route.is_local_offload());
+        assert_eq!(request.temperature, Some(0.03));
+    }
+}
+
+#[test]
+fn completed_output_validation_follows_memory_consolidation_route() {
+    for session_source in [
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        SessionSource::SubAgent(SubAgentSource::MemoryConsolidation),
+    ] {
+        let client = test_model_client_with_local_offload_config_and_memory_mode(
+            session_source,
+            ModelOffloadCompactionPolicy::Local,
+            ModelOffloadMemoryMode::Local,
+        );
+        let responses_metadata = test_responses_metadata_for_client(
+            &client,
+            Some("turn-1"),
+            format!("{}:0", client.state.thread_id),
+            None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+        let session = client.new_session();
+
+        assert!(session.validates_completed_output_for(&responses_metadata));
+        session.force_primary_for_responses_requests();
+        assert!(!session.validates_completed_output_for(&responses_metadata));
+    }
+
+    let validator_client = test_model_client_with_local_offload_config_and_memory_mode(
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+        ModelOffloadCompactionPolicy::Local,
+        ModelOffloadMemoryMode::Local,
+    );
+    let validator_metadata = test_responses_metadata_for_client(
+        &validator_client,
+        None,
+        format!("{}:validation", validator_client.state.thread_id),
+        None,
+        TestCodexResponsesRequestKind::LocalOutputValidation,
+    );
+    let validator_session = validator_client.new_session();
+
+    assert!(
+        validator_session.is_local_offload_route_for(&validator_metadata),
+        "validator calls should use the local provider"
+    );
+    assert!(
+        !validator_session.validates_completed_output_for(&validator_metadata),
+        "validator calls must not recursively validate themselves"
     );
 }
 

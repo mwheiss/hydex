@@ -263,6 +263,9 @@ model = "local-model"
 [model_offload.compaction]
 policy = "primary"
 
+[model_offload.context]
+context_window = 100000
+
 [model_providers.primary_provider]
 name = "Primary provider for test"
 base_url = "{primary_uri}/v1"

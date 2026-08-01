@@ -9,10 +9,12 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+#[cfg(test)]
 use crate::local_output_validation::CheapValidationOutcome;
 use crate::local_output_validation::LocalOutputKind;
 use crate::local_output_validation::LocalOutputValidationResult;
-use crate::local_output_validation::cheap_validate_local_output;
+#[cfg(test)]
+use crate::local_output_validation::cheap_validate_local_output_with_context;
 use crate::local_output_validation::validate_local_output_with_model;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
@@ -116,6 +118,13 @@ pub(crate) async fn build_compaction_initial_context(
 
 pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
     provider.supports_remote_compaction()
+}
+
+pub(crate) fn remote_compaction_model_provenance(
+    local_offload_provider: Option<&ModelProviderInfo>,
+    model_slug: &str,
+) -> Option<String> {
+    local_offload_provider.map(|_| model_slug.to_string())
 }
 
 pub(crate) fn should_use_remote_compact_task_with_offload_policy(
@@ -297,7 +306,6 @@ async fn run_compact_task_inner_impl(
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
-    let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
     let mut client_session = sess.services.model_client.new_session();
     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
@@ -309,6 +317,7 @@ async fn run_compact_task_inner_impl(
         window_id.clone(),
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
+    let max_retries = client_session.stream_max_retries_for(&responses_metadata);
     let compaction_routes_local = client_session.is_local_offload_route_for(&responses_metadata);
     let local_handoff_role = compaction_handoff_role(&turn_context, compaction_routes_local);
     let input = vec![UserInput::Text {
@@ -335,8 +344,8 @@ async fn run_compact_task_inner_impl(
         .validation
         .generation_retries;
     let mut generation_attempts = 0;
-    let (history_snapshot, summary_suffix, summary_text) = loop {
-        loop {
+    let (summary_suffix, summary_text) = loop {
+        let response_items = loop {
             // Clone is required because of the loop
             let turn_input = history
                 .clone()
@@ -364,9 +373,7 @@ async fn run_compact_task_inner_impl(
             .await;
 
             match attempt_result {
-                Ok(()) => {
-                    break;
-                }
+                Ok(response_items) => break response_items,
                 Err(err)
                     if matches!(
                         err.details(),
@@ -417,12 +424,10 @@ async fn run_compact_task_inner_impl(
                     }
                 }
             }
-        }
+        };
 
-        let history_snapshot = sess.clone_history().await;
-        let history_items = history_snapshot.raw_items();
         let summary_suffix =
-            get_last_assistant_message_from_turn(history_items).unwrap_or_default();
+            get_last_assistant_message_from_turn(&response_items).unwrap_or_default();
         let summary_text = local_compaction_summary_text(&summary_suffix, local_handoff_role);
         match validate_local_compaction_payload_with_model(
             turn_context.as_ref(),
@@ -434,7 +439,7 @@ async fn run_compact_task_inner_impl(
         .await?
         {
             LocalOutputValidationResult::Accepted | LocalOutputValidationResult::Disabled => {
-                break (history_snapshot, summary_suffix, summary_text);
+                break (summary_suffix, summary_text);
             }
             LocalOutputValidationResult::Rejected(reason)
                 if generation_attempts < generation_retries =>
@@ -445,17 +450,24 @@ async fn run_compact_task_inner_impl(
                 );
             }
             LocalOutputValidationResult::Rejected(reason) => {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "Local compaction output failed sanity validation: {reason}"
-                )));
+                return Err(report_local_compaction_validation_error(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    format!("Local compaction output failed sanity validation: {reason}"),
+                )
+                .await);
             }
             LocalOutputValidationResult::ValidationUnavailable(reason) => {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "Local compaction output validation unavailable: {reason}"
-                )));
+                return Err(report_local_compaction_validation_error(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    format!("Local compaction output validation unavailable: {reason}"),
+                )
+                .await);
             }
         }
     };
+    let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
     let user_messages = collect_user_messages(history_items);
 
@@ -507,14 +519,31 @@ async fn run_compact_task_inner_impl(
     Ok(summary_suffix)
 }
 
+async fn report_local_compaction_validation_error(
+    sess: &Session,
+    turn_context: &TurnContext,
+    message: String,
+) -> CodexErr {
+    let err = CodexErr::InvalidRequest(message);
+    sess.track_turn_codex_error(turn_context, &err);
+    sess.send_event(
+        turn_context,
+        EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+    )
+    .await;
+    err
+}
+
+#[cfg(test)]
 fn validate_local_compaction_payload(
     turn_context: &TurnContext,
     summary_text: &str,
 ) -> CodexResult<()> {
-    match cheap_validate_local_output(
+    match cheap_validate_local_output_with_context(
         &turn_context.config.model_offload.validation,
         LocalOutputKind::CompactionPayload,
         summary_text,
+        turn_context.config.model_offload.context.context_window,
     ) {
         CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => {}
         CheapValidationOutcome::Reject(reason) => {
@@ -536,7 +565,6 @@ async fn validate_local_compaction_payload_with_model(
     if !compaction_routes_local {
         return Ok(LocalOutputValidationResult::Disabled);
     }
-    validate_local_compaction_payload(turn_context, summary_text)?;
     validate_local_output_with_model(
         &turn_context.config.model_offload.validation,
         LocalOutputKind::CompactionPayload,
@@ -548,6 +576,7 @@ async fn validate_local_compaction_payload_with_model(
         turn_context.reasoning_summary,
         turn_context.config.service_tier.clone(),
         responses_metadata,
+        client_session.local_offload_context_window(),
     )
     .await
 }
@@ -886,7 +915,7 @@ async fn drain_to_completed(
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
-) -> CodexResult<()> {
+) -> CodexResult<Vec<ResponseItem>> {
     let mut stream = client_session
         .stream(
             prompt,
@@ -901,6 +930,7 @@ async fn drain_to_completed(
             &InferenceTraceContext::disabled(),
         )
         .await?;
+    let mut output_items = Vec::new();
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -910,8 +940,7 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
-                sess.record_conversation_items(turn_context, std::slice::from_ref(&item))
-                    .await;
+                output_items.push(item);
             }
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
                 sess.set_server_reasoning_included(included).await;
@@ -934,7 +963,7 @@ async fn drain_to_completed(
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await?;
-                return Ok(());
+                return Ok(output_items);
             }
             Ok(_) => continue,
             Err(e) => return Err(e),

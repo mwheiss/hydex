@@ -12,8 +12,7 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
-use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
-use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCache;
 use crate::context_manager::ContextManager;
 use crate::context_manager::HistoryReplacement;
 use crate::session::PreviousTurnSettings;
@@ -55,8 +54,7 @@ pub(crate) struct SessionState {
     pub(crate) current_time_reminder: CurrentTimeReminderState,
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
-    pub(crate) remote_compaction_recovery_cache:
-        HashMap<RemoteCompactionRecoveryCacheKey, RemoteCompactionRecoveryCacheEntry>,
+    pub(crate) remote_compaction_recovery_cache: RemoteCompactionRecoveryCache,
     active_remote_compaction_model: Option<String>,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
@@ -93,7 +91,7 @@ impl SessionState {
             current_time_reminder: CurrentTimeReminderState::default(),
             active_connector_selection: HashSet::new(),
             pending_session_start_sources: VecDeque::new(),
-            remote_compaction_recovery_cache: HashMap::new(),
+            remote_compaction_recovery_cache: RemoteCompactionRecoveryCache::default(),
             active_remote_compaction_model: None,
             granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,

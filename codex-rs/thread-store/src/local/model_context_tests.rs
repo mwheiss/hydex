@@ -751,6 +751,7 @@ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
         cyber_access_program: None,
         effort: None,
         summary: ReasoningSummary::Auto,
+        offload_ever_used: false,
     })
 }
 

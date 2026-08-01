@@ -24,6 +24,7 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -96,6 +97,7 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
 use codex_tools::create_tools_json_for_responses_lite;
 use codex_tools::create_tools_raw_json_for_responses_api;
+use codex_utils_output_truncation::approx_token_count;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -110,6 +112,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 use tracing::trace;
@@ -122,9 +125,13 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::config::ModelOffloadConfig;
+use crate::config::ModelOffloadContextConfig;
 use crate::feedback_tags;
 use crate::local_offload::LocalOffloadToolNameMap;
 use crate::local_offload::transform_request_for_local_offload;
+use crate::local_offload_context::AdvertisedLocalOffloadContext;
+use crate::local_offload_context::discover_local_offload_context;
+use crate::local_output_validation::local_output_stream_max_bytes;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::subagent_header_value;
@@ -176,6 +183,7 @@ const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
+const MISSING_LOCAL_CONTEXT_WINDOW_ERROR: &str = "Cannot use model offload: the local endpoint did not advertise a context window and model_offload.context.context_window is not configured.";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -224,6 +232,7 @@ struct ModelClientState {
     offload_memory_temperature: Option<f64>,
     offload_compaction_temperature: Option<f64>,
     offload_validator_temperature: Option<f64>,
+    offload_context: ModelOffloadContextConfig,
     offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -368,6 +377,7 @@ pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
     force_primary_for_responses_requests: Arc<AtomicBool>,
+    local_offload_context: OnceLock<ModelOffloadContextConfig>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -566,6 +576,7 @@ impl ModelClient {
                 offload_memory_temperature: model_offload.validation.memory_temperature,
                 offload_compaction_temperature: model_offload.validation.compaction_temperature,
                 offload_validator_temperature: model_offload.validation.validator_temperature,
+                offload_context: model_offload.context,
                 offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
@@ -610,6 +621,7 @@ impl ModelClient {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
             force_primary_for_responses_requests: Arc::new(AtomicBool::new(false)),
+            local_offload_context: OnceLock::new(),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -1202,6 +1214,48 @@ impl ModelClient {
         self.current_client_setup().await.map(|_| ())
     }
 
+    async fn discover_local_offload_context(&self) -> Option<AdvertisedLocalOffloadContext> {
+        let client_setup = match self
+            .current_client_setup_for_route(ModelRequestRoute::LocalOffload)
+            .await
+        {
+            Ok(client_setup) => client_setup,
+            Err(err) => {
+                debug!(error = %err, "local offload context discovery could not resolve provider");
+                return None;
+            }
+        };
+        let transport = match self.build_api_transport(&client_setup.api_provider, "models") {
+            Ok(transport) => transport,
+            Err(err) => {
+                debug!(error = %err, "local offload context discovery could not build client");
+                return None;
+            }
+        };
+        match discover_local_offload_context(
+            &client_setup.api_provider,
+            client_setup.api_auth.as_ref(),
+            &transport,
+            self.state.offload_model.as_deref(),
+        )
+        .await
+        {
+            Ok(advertised) => {
+                debug!(
+                    context_window = ?advertised.context_window,
+                    effective_context_window_percent = ?advertised.effective_context_window_percent,
+                    auto_compact_token_limit = ?advertised.auto_compact_token_limit,
+                    "using local provider advertised context metadata"
+                );
+                Some(advertised)
+            }
+            Err(err) => {
+                debug!(error = %err, "local provider context metadata unavailable");
+                None
+            }
+        }
+    }
+
     async fn current_client_setup_for_route(
         &self,
         route: ModelRequestRoute,
@@ -1338,11 +1392,19 @@ impl ModelClient {
             && (matches!(
                 responses_metadata.request_kind,
                 Some(CodexResponsesRequestKind::Memory)
-            ) || matches!(
-                self.state.session_source,
-                SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
-                    | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
-            ))
+            ) || (self.is_memory_consolidation_session()
+                && matches!(
+                    responses_metadata.request_kind,
+                    Some(CodexResponsesRequestKind::Turn)
+                )))
+    }
+
+    fn is_memory_consolidation_session(&self) -> bool {
+        matches!(
+            self.state.session_source,
+            SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
+                | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
+        )
     }
 
     fn local_output_validation_request_should_route_local(
@@ -1535,6 +1597,47 @@ impl ModelClientSession {
             && self.client.local_offload_enabled_for_turns()
     }
 
+    pub(crate) async fn effective_local_offload_context(
+        &self,
+        configured_fallback: &ModelOffloadContextConfig,
+    ) -> ModelOffloadContextConfig {
+        if let Some(context) = self.local_offload_context.get() {
+            return *context;
+        }
+        let context = self
+            .client
+            .discover_local_offload_context()
+            .await
+            .map(|advertised| advertised.apply_over(*configured_fallback))
+            .unwrap_or(*configured_fallback);
+        let _ = self.local_offload_context.set(context);
+        self.local_offload_context.get().copied().unwrap_or(context)
+    }
+
+    pub(crate) async fn require_local_offload_context(
+        &self,
+        configured_fallback: &ModelOffloadContextConfig,
+    ) -> CodexResult<ModelOffloadContextConfig> {
+        let context = self
+            .effective_local_offload_context(configured_fallback)
+            .await;
+        if context.context_window.is_none() {
+            return Err(CodexErr::InvalidRequest(
+                MISSING_LOCAL_CONTEXT_WINDOW_ERROR.to_string(),
+            ));
+        }
+        Ok(context)
+    }
+
+    /// Returns the endpoint-resolved local context window, or the configured fallback before a
+    /// local request has populated endpoint metadata for this client session.
+    pub fn local_offload_context_window(&self) -> Option<i64> {
+        self.local_offload_context
+            .get()
+            .and_then(|context| context.context_window)
+            .or(self.client.state.offload_context.context_window)
+    }
+
     pub(crate) fn effective_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
         if self.local_offload_enabled_for_turns() && self.client.offload_ever_used() {
             self.client.requested_model_offload_compaction_policy()
@@ -1589,6 +1692,17 @@ impl ModelClientSession {
             .is_local_offload()
     }
 
+    pub(crate) fn validates_completed_output_for(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.is_local_offload_route_for(responses_metadata)
+            && !matches!(
+                responses_metadata.request_kind,
+                Some(CodexResponsesRequestKind::LocalOutputValidation)
+            )
+    }
+
     fn local_helper_temperature_for_request(
         &self,
         route: ModelRequestRoute,
@@ -1605,6 +1719,11 @@ impl ModelClientSession {
                 self.client.state.offload_validator_temperature
             }
             Some(CodexResponsesRequestKind::Memory) => self.client.state.offload_memory_temperature,
+            Some(CodexResponsesRequestKind::Turn)
+                if self.client.is_memory_consolidation_session() =>
+            {
+                self.client.state.offload_memory_temperature
+            }
             Some(CodexResponsesRequestKind::Turn | CodexResponsesRequestKind::Prewarm)
             | Some(CodexResponsesRequestKind::CompactionRecovery)
             | None => None,
@@ -1895,6 +2014,19 @@ impl ModelClientSession {
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
         let route = self.route_for_responses_request(responses_metadata);
+        // Keep this at the shared local HTTP boundary: normal turns have richer compaction
+        // preflight, but detached memory, local compaction, and validator calls must use the same
+        // endpoint-resolved context before they can send a request.
+        let local_context = if route.is_local_offload() {
+            Some(
+                self.require_local_offload_context(&self.client.state.offload_context)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let local_stream_max_bytes =
+            local_context.map(|context| local_output_stream_max_bytes(context.context_window));
         self.client.mark_offload_used_if_local_route(route);
         let auth_manager = if route.is_local_offload() {
             None
@@ -1976,6 +2108,9 @@ impl ModelClientSession {
             } else {
                 None
             };
+            if let Some(local_context) = local_context {
+                ensure_local_request_fits_effective_context(&request, local_context)?;
+            }
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
@@ -1995,6 +2130,7 @@ impl ModelClientSession {
                         inference_trace_attempt,
                         Arc::clone(&client_setup.model_provider),
                         local_tool_names,
+                        local_stream_max_bytes,
                     );
                     return Ok(stream);
                 }
@@ -2022,7 +2158,7 @@ impl ModelClientSession {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let err = client_setup.model_provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
@@ -2234,6 +2370,7 @@ impl ModelClientSession {
                 inference_trace_attempt,
                 Arc::clone(&client_setup.model_provider),
                 None,
+                /*local_output_byte_limit*/ None,
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -2419,6 +2556,26 @@ impl ModelClientSession {
     }
 }
 
+fn ensure_local_request_fits_effective_context(
+    request: &ResponsesApiRequest,
+    local_context: ModelOffloadContextConfig,
+) -> CodexResult<()> {
+    let Some(effective_context_window) = local_context.effective_context_window() else {
+        return Ok(());
+    };
+    let serialized = serde_json::to_string(request)?;
+    let estimated_tokens = i64::try_from(approx_token_count(&serialized)).unwrap_or(i64::MAX);
+    if estimated_tokens > effective_context_window {
+        warn!(
+            estimated_tokens,
+            effective_context_window,
+            "refusing local request that exceeds the endpoint-resolved effective context window"
+        );
+        return Err(CodexErr::ContextWindowExceeded);
+    }
+    Ok(())
+}
+
 /// Stamp a ResponsesWsRequest with the current time.
 ///
 /// Meant to be called just before sending the request over the socket, to capture realistic
@@ -2478,6 +2635,7 @@ fn map_response_stream(
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
     local_tool_names: Option<LocalOffloadToolNameMap>,
+    local_output_byte_limit: Option<usize>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     let codex_api::ResponseStream {
         rx_event,
@@ -2494,6 +2652,7 @@ fn map_response_stream(
         inference_trace_attempt,
         provider,
         local_tool_names,
+        local_output_byte_limit,
     )
 }
 
@@ -2504,6 +2663,7 @@ fn map_response_events<S>(
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
     local_tool_names: Option<LocalOffloadToolNameMap>,
+    local_output_byte_limit: Option<usize>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2521,6 +2681,8 @@ where
         let mut logged_error = false;
         let mut tx_last_response = Some(tx_last_response);
         let mut items_added: Vec<ResponseItem> = Vec::new();
+        let mut local_delta_output_bytes = 0usize;
+        let mut local_completed_output_bytes = 0usize;
         let (request_start, mut ttft_ms) = (Instant::now(), None);
         let mut api_stream = api_stream;
         let upstream_request_id = upstream_request_id.as_deref();
@@ -2542,6 +2704,42 @@ where
             let Some(event) = event else {
                 break;
             };
+            if let (Ok(event), Some(output_byte_limit)) = (&event, local_output_byte_limit) {
+                local_delta_output_bytes = local_delta_output_bytes
+                    .saturating_add(incremental_response_event_output_bytes(event));
+                if let ResponseEvent::OutputItemDone(item) = event {
+                    match serialized_response_item_bytes(item) {
+                        Ok(item_bytes) => {
+                            local_completed_output_bytes =
+                                local_completed_output_bytes.saturating_add(item_bytes);
+                        }
+                        Err(err) => {
+                            let err = CodexErr::from(err);
+                            inference_trace_attempt.record_failed(
+                                &err,
+                                upstream_request_id,
+                                &items_added,
+                            );
+                            if !logged_error {
+                                session_telemetry.see_event_completed_failed(&err);
+                            }
+                            let _ = tx_event.send(Err(err)).await;
+                            return;
+                        }
+                    }
+                }
+                if local_delta_output_bytes.max(local_completed_output_bytes) > output_byte_limit {
+                    let err = CodexErr::Stream(format!(
+                        "local model response exceeded aggregate safety limit of {output_byte_limit} bytes"
+                    ));
+                    inference_trace_attempt.record_failed(&err, upstream_request_id, &items_added);
+                    if !logged_error {
+                        session_telemetry.see_event_completed_failed(&err);
+                    }
+                    let _ = tx_event.send(Err(err)).await;
+                    return;
+                }
+            }
             match event {
                 Ok(ResponseEvent::OutputItemDone(item)) => {
                     let item = local_tool_names
@@ -2655,6 +2853,38 @@ where
         },
         rx_last_response,
     )
+}
+
+fn incremental_response_event_output_bytes(event: &ResponseEvent) -> usize {
+    match event {
+        ResponseEvent::OutputTextDelta(delta)
+        | ResponseEvent::ReasoningContentDelta { delta, .. }
+        | ResponseEvent::ReasoningSummaryDelta { delta, .. }
+        | ResponseEvent::ToolCallInputDelta { delta, .. } => delta.len(),
+        _ => 0,
+    }
+}
+
+fn serialized_response_item_bytes(item: &ResponseItem) -> serde_json::Result<usize> {
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, item)?;
+    Ok(writer.bytes)
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: usize,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Handles a 401 response by optionally refreshing ChatGPT tokens once.

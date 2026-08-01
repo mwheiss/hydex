@@ -3417,7 +3417,7 @@ impl Session {
         key: &RemoteCompactionRecoveryCacheKey,
     ) -> Option<RemoteCompactionRecoveryCacheEntry> {
         let state = self.state.lock().await;
-        state.remote_compaction_recovery_cache.get(key).cloned()
+        state.remote_compaction_recovery_cache.get(key)
     }
 
     pub(crate) async fn remote_compaction_recovery_cache_insert(

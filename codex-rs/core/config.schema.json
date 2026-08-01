@@ -1795,7 +1795,7 @@
           "type": "integer"
         },
         "context_window": {
-          "description": "Size of the local offload model context window, in tokens.",
+          "description": "Fallback size of the local offload model context window, in tokens.",
           "format": "int64",
           "type": "integer"
         },
@@ -1864,7 +1864,7 @@
             "context_window": null,
             "effective_context_window_percent": 95
           },
-          "description": "Local offload context-window settings used for auto-compaction pressure."
+          "description": "Fallback local context-window settings used when the offload provider does not advertise usable runtime context metadata."
         },
         "enabled": {
           "default": false,

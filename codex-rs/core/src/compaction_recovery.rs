@@ -22,22 +22,34 @@ pub(crate) const REMOTE_COMPACTION_RECOVERY_SCAFFOLD: &str =
 pub(crate) const REMOTE_COMPACTION_RECOVERY_PROMPT: &str =
     "Do not add anything before or after the payload.";
 
+// Recovery can legitimately expand an opaque checkpoint substantially. This ceiling is only a
+// runaway-allocation guard; local token pressure is handled after promotion.
+const RECOVERY_OUTPUT_MIN_BYTES: usize = 4 * 1024 * 1024;
+const RECOVERY_OUTPUT_MAX_BYTES: usize = 64 * 1024 * 1024;
+const RECOVERY_OUTPUT_FIXED_OVERHEAD_BYTES: usize = 1024 * 1024;
+const RECOVERY_OUTPUT_EXPANSION_FACTOR: usize = 32;
+
 pub(crate) fn build_remote_compaction_recovery_prompt(
     active_history: &[ResponseItem],
 ) -> CodexResult<Prompt> {
-    let mut input = active_history
+    let compaction_item_count = active_history
         .iter()
         .filter(|item| is_remote_compaction_item(item))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    if input.is_empty() {
+        .count();
+    let Some(compaction_item) = suffix_most_remote_compaction_item(active_history) else {
         return Err(CodexErr::InvalidRequest(
             "Cannot recover remote compaction for local continuation: no encrypted compaction item is active."
                 .to_string(),
         ));
+    };
+    if compaction_item_count > 1 {
+        tracing::warn!(
+            compaction_item_count,
+            "remote compaction recovery found multiple active encrypted compaction items; recovering only the newest one"
+        );
     }
 
+    let mut input = vec![compaction_item.clone()];
     input.push(user_message(REMOTE_COMPACTION_RECOVERY_SCAFFOLD));
     input.push(user_message(REMOTE_COMPACTION_RECOVERY_PROMPT));
 
@@ -172,10 +184,11 @@ pub(crate) async fn recover_remote_compaction_payload(
         )
         .await?;
 
-    collect_recovered_text(&mut stream).await
+    let output_byte_limit = remote_compaction_recovery_output_byte_limit(active_history);
+    collect_recovered_text(&mut stream, output_byte_limit).await
 }
 
-fn is_remote_compaction_item(item: &ResponseItem) -> bool {
+pub(crate) fn is_remote_compaction_item(item: &ResponseItem) -> bool {
     matches!(
         item,
         ResponseItem::Compaction { .. }
@@ -184,6 +197,15 @@ fn is_remote_compaction_item(item: &ResponseItem) -> bool {
                 ..
             }
     )
+}
+
+pub(crate) fn suffix_most_remote_compaction_item(
+    active_history: &[ResponseItem],
+) -> Option<&ResponseItem> {
+    active_history
+        .iter()
+        .rev()
+        .find(|item| is_remote_compaction_item(item))
 }
 
 fn projected_recovery_message(
@@ -221,8 +243,35 @@ fn user_message(text: &str) -> ResponseItem {
     }
 }
 
-async fn collect_recovered_text(stream: &mut crate::ResponseStream) -> CodexResult<String> {
-    let mut output_items_text = Vec::new();
+fn remote_compaction_recovery_output_byte_limit(active_history: &[ResponseItem]) -> usize {
+    let encoded_len = suffix_most_remote_compaction_item(active_history)
+        .and_then(|item| match item {
+            ResponseItem::Compaction {
+                encrypted_content, ..
+            } => Some(encrypted_content.len()),
+            ResponseItem::ContextCompaction {
+                encrypted_content: Some(encrypted_content),
+                ..
+            } => Some(encrypted_content.len()),
+            _ => None,
+        })
+        .unwrap_or(0);
+    recovery_output_byte_limit_for_encoded_len(encoded_len)
+}
+
+fn recovery_output_byte_limit_for_encoded_len(encoded_len: usize) -> usize {
+    let estimated_blob_bytes = encoded_len.saturating_mul(3).checked_div(4).unwrap_or(0);
+    estimated_blob_bytes
+        .saturating_mul(RECOVERY_OUTPUT_EXPANSION_FACTOR)
+        .saturating_add(RECOVERY_OUTPUT_FIXED_OVERHEAD_BYTES)
+        .clamp(RECOVERY_OUTPUT_MIN_BYTES, RECOVERY_OUTPUT_MAX_BYTES)
+}
+
+async fn collect_recovered_text(
+    stream: &mut crate::ResponseStream,
+    output_byte_limit: usize,
+) -> CodexResult<String> {
+    let mut output_items_text = String::new();
     let mut output_delta_text = String::new();
     loop {
         let Some(event) = stream.next().await else {
@@ -234,23 +283,41 @@ async fn collect_recovered_text(stream: &mut crate::ResponseStream) -> CodexResu
             Ok(ResponseEvent::OutputItemDone(ResponseItem::Message { role, content, .. }))
                 if role == "assistant" =>
             {
-                let text = content
-                    .iter()
-                    .filter_map(content_item_text)
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                // The completed item supersedes streamed deltas. Release our duplicate buffer
+                // before assembling it so Hydex retains at most one bounded recovery copy.
+                output_delta_text.clear();
+                let mut text = String::new();
+                for content_text in content.iter().filter_map(content_item_text) {
+                    if !text.is_empty() {
+                        append_recovered_text(&mut text, "\n", output_byte_limit)?;
+                    }
+                    append_recovered_text(&mut text, content_text, output_byte_limit)?;
+                }
                 if !text.trim().is_empty() {
-                    output_items_text.push(text);
+                    if !output_items_text.is_empty() {
+                        append_recovered_text(&mut output_items_text, "\n", output_byte_limit)?;
+                    }
+                    append_recovered_text(
+                        &mut output_items_text,
+                        text.as_str(),
+                        output_byte_limit,
+                    )?;
                 }
             }
             Ok(ResponseEvent::OutputTextDelta(delta)) => {
-                output_delta_text.push_str(delta.as_str());
+                if output_items_text.is_empty() {
+                    append_recovered_text(
+                        &mut output_delta_text,
+                        delta.as_str(),
+                        output_byte_limit,
+                    )?;
+                }
             }
             Ok(ResponseEvent::Completed { .. }) => {
                 let recovered = if output_items_text.is_empty() {
                     output_delta_text
                 } else {
-                    output_items_text.join("\n")
+                    output_items_text
                 };
                 if recovered.trim().is_empty() {
                     return Err(CodexErr::Stream(
@@ -265,9 +332,23 @@ async fn collect_recovered_text(stream: &mut crate::ResponseStream) -> CodexResu
     }
 }
 
-fn content_item_text(content: &ContentItem) -> Option<String> {
+fn append_recovered_text(
+    output: &mut String,
+    text: &str,
+    output_byte_limit: usize,
+) -> CodexResult<()> {
+    if output.len().saturating_add(text.len()) > output_byte_limit {
+        return Err(CodexErr::Stream(format!(
+            "remote compaction recovery output exceeded safety limit of {output_byte_limit} bytes"
+        )));
+    }
+    output.push_str(text);
+    Ok(())
+}
+
+fn content_item_text(content: &ContentItem) -> Option<&str> {
     match content {
-        ContentItem::InputText { text } | ContentItem::OutputText { text } => Some(text.clone()),
+        ContentItem::InputText { text } | ContentItem::OutputText { text } => Some(text.as_str()),
         ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => None,
     }
 }

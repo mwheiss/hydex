@@ -35,7 +35,7 @@ use crate::hook_runtime::run_pending_session_start_hooks;
 use crate::hook_runtime::run_turn_stop_hooks;
 use crate::local_output_validation::CheapValidationOutcome;
 use crate::local_output_validation::LocalOutputKind;
-use crate::local_output_validation::cheap_validate_local_output;
+use crate::local_output_validation::cheap_validate_local_output_with_context;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::collect_explicit_app_ids;
@@ -181,6 +181,22 @@ pub(crate) async fn run_turn(
 
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    if client_session.local_offload_enabled_for_turns()
+        && let Err(err) = client_session
+            .require_local_offload_context(&turn_context.config.model_offload.context)
+            .await
+    {
+        let error = err.to_codex_protocol_error();
+        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+            .await;
+        sess.track_turn_codex_error(turn_context.as_ref(), &err);
+        sess.send_event(
+            &turn_context,
+            EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+        )
+        .await;
+        return Ok(None);
+    }
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
@@ -474,7 +490,7 @@ pub(crate) async fn run_turn(
                     let token_status = auto_compact_token_status(
                         sess.as_ref(),
                         turn_context.as_ref(),
-                        client_session.local_offload_enabled_for_turns(),
+                        &client_session,
                     )
                     .await;
                     (has_pending_input, token_status)
@@ -1085,16 +1101,10 @@ fn model_auto_compact_thresholds(turn_context: &TurnContext) -> AutoCompactThres
 }
 
 fn local_offload_context_applies_to_auto_compaction(
-    turn_context: &TurnContext,
+    local_context: &ModelOffloadContextConfig,
     local_offload_enabled_for_turns: bool,
 ) -> bool {
-    turn_context
-        .config
-        .model_offload
-        .context
-        .context_window
-        .is_some()
-        && local_offload_enabled_for_turns
+    local_context.context_window.is_some() && local_offload_enabled_for_turns
 }
 
 fn local_offload_auto_compact_thresholds(
@@ -1120,13 +1130,14 @@ fn select_auto_compact_thresholds(
 
 fn auto_compact_thresholds(
     turn_context: &TurnContext,
+    local_context: &ModelOffloadContextConfig,
     local_offload_enabled_for_turns: bool,
 ) -> AutoCompactThresholds {
     select_auto_compact_thresholds(
         turn_context,
-        &turn_context.config.model_offload.context,
+        local_context,
         local_offload_context_applies_to_auto_compaction(
-            turn_context,
+            local_context,
             local_offload_enabled_for_turns,
         ),
     )
@@ -1135,13 +1146,25 @@ fn auto_compact_thresholds(
 async fn auto_compact_token_status(
     sess: &Session,
     turn_context: &TurnContext,
-    local_offload_enabled_for_turns: bool,
+    client_session: &ModelClientSession,
 ) -> AutoCompactTokenStatus {
+    let local_offload_enabled_for_turns = client_session.local_offload_enabled_for_turns();
+    let local_context = if local_offload_enabled_for_turns {
+        client_session
+            .effective_local_offload_context(&turn_context.config.model_offload.context)
+            .await
+    } else {
+        turn_context.config.model_offload.context
+    };
     let use_local_thresholds = local_offload_context_applies_to_auto_compaction(
-        turn_context,
+        &local_context,
         local_offload_enabled_for_turns,
     );
-    let thresholds = auto_compact_thresholds(turn_context, local_offload_enabled_for_turns);
+    let thresholds = auto_compact_thresholds(
+        turn_context,
+        &local_context,
+        local_offload_enabled_for_turns,
+    );
     let auto_compact_scope_limit = match turn_context.config.model_auto_compact_token_limit_scope {
         AutoCompactTokenLimitScope::Total => thresholds.auto_compact_token_limit,
         AutoCompactTokenLimitScope::BodyAfterPrefix => {
@@ -1171,14 +1194,15 @@ async fn run_pre_sampling_compact(
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
+    if client_session.local_offload_enabled_for_turns() {
+        let _ = client_session
+            .effective_local_offload_context(&turn_context.config.model_offload.context)
+            .await;
+    }
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
-    let token_status = auto_compact_token_status(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        client_session.local_offload_enabled_for_turns(),
-    )
-    .await;
+    let token_status =
+        auto_compact_token_status(sess.as_ref(), turn_context.as_ref(), client_session).await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
     if token_status.token_limit_reached {
         let route = if client_session.local_offload_enabled_for_turns()
@@ -1394,23 +1418,19 @@ async fn maybe_compact_before_local_sampling(
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
-    if !client_session.local_offload_enabled_for_turns()
-        || turn_context
-            .config
-            .model_offload
-            .context
-            .context_window
-            .is_none()
-    {
+    if !client_session.local_offload_enabled_for_turns() {
         return Ok(false);
     }
 
-    let token_status = auto_compact_token_status(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        client_session.local_offload_enabled_for_turns(),
-    )
-    .await;
+    let local_context = client_session
+        .effective_local_offload_context(&turn_context.config.model_offload.context)
+        .await;
+    if local_context.context_window.is_none() {
+        return Ok(false);
+    }
+
+    let token_status =
+        auto_compact_token_status(sess.as_ref(), turn_context.as_ref(), client_session).await;
     let Some(route) = local_reentry_compaction_route(&token_status) else {
         return Ok(false);
     };
@@ -1447,12 +1467,8 @@ async fn maybe_compact_before_local_sampling(
     )
     .await?;
 
-    let token_status = auto_compact_token_status(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        client_session.local_offload_enabled_for_turns(),
-    )
-    .await;
+    let token_status =
+        auto_compact_token_status(sess.as_ref(), turn_context.as_ref(), client_session).await;
     if token_status.full_context_window_limit_reached {
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)
@@ -1537,12 +1553,8 @@ async fn ensure_local_effective_context_after_remote_reentry(
     turn_context: &Arc<TurnContext>,
     client_session: &ModelClientSession,
 ) -> CodexResult<()> {
-    let token_status = auto_compact_token_status(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        client_session.local_offload_enabled_for_turns(),
-    )
-    .await;
+    let token_status =
+        auto_compact_token_status(sess.as_ref(), turn_context.as_ref(), client_session).await;
     if token_status.full_context_window_limit_reached {
         return Err(CodexErr::ContextWindowExceeded);
     }
@@ -1631,11 +1643,23 @@ async fn maybe_run_previous_model_inline_compact(
     }
 
     let local_offload_enabled_for_turns = client_session.local_offload_enabled_for_turns();
+    let local_context = if local_offload_enabled_for_turns {
+        client_session
+            .effective_local_offload_context(&turn_context.config.model_offload.context)
+            .await
+    } else {
+        turn_context.config.model_offload.context
+    };
     let old_thresholds = auto_compact_thresholds(
         &previous_model_turn_context,
+        &local_context,
         local_offload_enabled_for_turns,
     );
-    let new_thresholds = auto_compact_thresholds(turn_context, local_offload_enabled_for_turns);
+    let new_thresholds = auto_compact_thresholds(
+        turn_context,
+        &local_context,
+        local_offload_enabled_for_turns,
+    );
     let Some(old_context_window) = old_thresholds.effective_context_window else {
         return Ok(());
     };
@@ -3050,6 +3074,16 @@ async fn try_run_sampling_request(
                     )
                     .await;
                 }
+
+                if client_session.validates_completed_output_for(responses_metadata) {
+                    validate_completed_local_sampling_item(
+                        &turn_context,
+                        prompt,
+                        &item,
+                        client_session.local_offload_context_window(),
+                    )?;
+                }
+
                 if let Some(state) = plan_mode_state.as_mut()
                     && handle_assistant_item_done_in_plan_mode(
                         &sess,
@@ -3063,10 +3097,6 @@ async fn try_run_sampling_request(
                     .await
                 {
                     continue;
-                }
-
-                if client_session.local_offload_enabled_for_turns() {
-                    validate_completed_local_sampling_item(&turn_context, prompt, &item)?;
                 }
 
                 let mut ctx = HandleOutputCtx {
@@ -3498,14 +3528,16 @@ fn validate_completed_local_sampling_item(
     turn_context: &TurnContext,
     prompt: &Prompt,
     item: &ResponseItem,
+    local_context_window: Option<i64>,
 ) -> CodexResult<()> {
     let Some((kind, candidate)) = local_sampling_validation_candidate(prompt, item) else {
         return Ok(());
     };
-    match cheap_validate_local_output(
+    match cheap_validate_local_output_with_context(
         &turn_context.config.model_offload.validation,
         kind,
         &candidate,
+        local_context_window,
     ) {
         CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => Ok(()),
         CheapValidationOutcome::Reject(reason) => Err(CodexErr::InvalidRequest(format!(

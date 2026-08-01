@@ -12,7 +12,7 @@ use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_core::local_output_validation::CheapValidationOutcome;
 use codex_core::local_output_validation::LocalOutputKind;
-use codex_core::local_output_validation::cheap_validate_local_output;
+use codex_core::local_output_validation::cheap_validate_local_output_with_context;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -315,7 +315,7 @@ mod job {
         prompt.output_schema = Some(output_schema());
         prompt.output_schema_strict = true;
 
-        let (result, token_usage) = context
+        let (result, token_usage, local_context_window) = context
             .stream_stage_one_prompt(config, &prompt, stage_one_context)
             .await?;
 
@@ -325,10 +325,11 @@ mod job {
         output.rollout_slug = output.rollout_slug.map(redact_secrets);
         if config.model_offload.memory_mode == ModelOffloadMemoryMode::Local {
             let validation_text = format!("{}\n{}", output.rollout_summary, output.raw_memory);
-            match cheap_validate_local_output(
+            match cheap_validate_local_output_with_context(
                 &config.model_offload.validation,
                 LocalOutputKind::MemoryPayload,
                 &validation_text,
+                local_context_window,
             ) {
                 CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => {}
                 CheapValidationOutcome::Reject(reason) => {

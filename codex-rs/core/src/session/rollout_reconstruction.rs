@@ -200,6 +200,12 @@ struct ActiveRemoteCompactionCheckpoint {
     surviving_suffix: Vec<RolloutItem>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteCompactionFingerprint<'a> {
+    Compaction(&'a str),
+    ContextCompaction(&'a str),
+}
+
 enum CheckpointSegmentOutcome {
     Found(ActiveRemoteCompactionCheckpoint),
     NotFound,
@@ -372,27 +378,36 @@ fn active_remote_compaction_checkpoint(
     })
 }
 
-fn newest_raw_remote_compaction_checkpoint(
+fn suffix_most_remote_compaction_fingerprint(
+    history: &[ResponseItem],
+) -> Option<RemoteCompactionFingerprint<'_>> {
+    history.iter().rev().find_map(|item| match item {
+        ResponseItem::Compaction {
+            encrypted_content, ..
+        } => Some(RemoteCompactionFingerprint::Compaction(encrypted_content)),
+        ResponseItem::ContextCompaction {
+            encrypted_content: Some(encrypted_content),
+            ..
+        } => Some(RemoteCompactionFingerprint::ContextCompaction(
+            encrypted_content,
+        )),
+        _ => None,
+    })
+}
+
+fn checkpoint_matches_active_remote_compaction(
     rollout_items: &[RolloutItem],
-) -> Option<ActiveRemoteCompactionCheckpoint> {
-    rollout_items
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, item)| match item {
-            RolloutItem::Compacted(compacted)
-                if compacted
-                    .replacement_history
-                    .as_deref()
-                    .is_some_and(active_history_has_remote_compaction) =>
-            {
-                Some(ActiveRemoteCompactionCheckpoint {
-                    index,
-                    surviving_suffix: rollout_items[index.saturating_add(1)..].to_vec(),
-                })
-            }
-            _ => None,
-        })
+    checkpoint: &ActiveRemoteCompactionCheckpoint,
+    active_fingerprint: &RemoteCompactionFingerprint<'_>,
+) -> bool {
+    let Some(RolloutItem::Compacted(compacted)) = rollout_items.get(checkpoint.index) else {
+        return false;
+    };
+    compacted
+        .replacement_history
+        .as_deref()
+        .and_then(suffix_most_remote_compaction_fingerprint)
+        .is_some_and(|fingerprint| fingerprint == *active_fingerprint)
 }
 
 fn materialize_rollout_items(
@@ -453,15 +468,30 @@ fn materialize_rollout_items(
 pub(super) fn reconstruct_retro_local_history_from_rollout(
     turn_context: &TurnContext,
     rollout_items: &[RolloutItem],
+    active_history: &[ResponseItem],
 ) -> CodexResult<Vec<ResponseItem>> {
-    let Some(remote_checkpoint) = active_remote_compaction_checkpoint(rollout_items)
-        .or_else(|| newest_raw_remote_compaction_checkpoint(rollout_items))
-    else {
+    let Some(active_fingerprint) = suffix_most_remote_compaction_fingerprint(active_history) else {
         return Err(CodexErr::InvalidRequest(
-            "Cannot run retro-local fallback: no remote compaction checkpoint with replacement history is available."
+            "Cannot run retro-local fallback: active history has no encrypted remote compaction item."
                 .to_string(),
         ));
     };
+    let Some(remote_checkpoint) = active_remote_compaction_checkpoint(rollout_items) else {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: no surviving remote compaction checkpoint with replacement history is available."
+                .to_string(),
+        ));
+    };
+    if !checkpoint_matches_active_remote_compaction(
+        rollout_items,
+        &remote_checkpoint,
+        &active_fingerprint,
+    ) {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: the surviving remote compaction checkpoint does not match active history."
+                .to_string(),
+        ));
+    }
     let remote_checkpoint_index = remote_checkpoint.index;
 
     let prefix = materialize_rollout_items(
@@ -497,6 +527,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
     ) -> CodexResult<Vec<ResponseItem>> {
+        let active_history = self.clone_history().await.into_raw_items();
         let Some(live_thread) = self.live_thread() else {
             return Err(CodexErr::InvalidRequest(
                 "Cannot run retro-local fallback: persisted thread history is unavailable."
@@ -513,7 +544,7 @@ impl Session {
                 "Cannot run retro-local fallback: failed to load persisted thread history: {err}"
             ))
         })?;
-        reconstruct_retro_local_history_from_rollout(turn_context, &history.items)
+        reconstruct_retro_local_history_from_rollout(turn_context, &history.items, &active_history)
     }
 
     pub(super) async fn reconstruct_history_from_rollout(

@@ -657,6 +657,8 @@ mod tests {
                             developer_instructions: None,
                         },
                     },
+                    model_offload_override: None,
+                    model_offload_compaction_override: None,
                 },
             },
         ));

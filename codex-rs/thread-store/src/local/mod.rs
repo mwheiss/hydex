@@ -937,6 +937,7 @@ mod tests {
                 realtime_active: None,
                 effort: None,
                 summary: ReasoningSummary::Auto,
+                offload_ever_used: false,
             })
         };
 

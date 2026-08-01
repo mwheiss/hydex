@@ -5,6 +5,7 @@ use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
@@ -524,6 +525,20 @@ fn should_use_remote_compact_task_for_azure_provider() {
     };
 
     assert!(should_use_remote_compact_task(&provider));
+}
+
+#[test]
+fn remote_compaction_model_provenance_requires_configured_local_provider() {
+    let provider = create_oss_provider(8020, WireApi::Responses);
+
+    assert_eq!(
+        remote_compaction_model_provenance(Some(&provider), "gpt-producing"),
+        Some("gpt-producing".to_string())
+    );
+    assert_eq!(
+        remote_compaction_model_provenance(None, "gpt-producing"),
+        None
+    );
 }
 
 #[test]

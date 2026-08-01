@@ -10,6 +10,7 @@ use crate::state::TaskKind;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::EventMsg;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Default)]
@@ -44,7 +45,23 @@ impl SessionTask for CompactTask {
             client_session.local_offload_enabled_for_turns(),
             client_session.effective_model_offload_compaction_policy(),
         );
-        if !use_remote {
+        let uses_local_offload = !use_remote
+            && client_session.effective_model_offload_compaction_policy()
+                == codex_config::config_toml::ModelOffloadCompactionPolicy::Local;
+        if uses_local_offload {
+            if let Err(err) = client_session
+                .require_local_offload_context(&ctx.config.model_offload.context)
+                .await
+            {
+                session.track_turn_codex_error(ctx.as_ref(), &err);
+                session
+                    .send_event(
+                        &ctx,
+                        EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+                    )
+                    .await;
+                return Ok(None);
+            }
             if let Err(err) = crate::session::turn::maybe_recover_remote_compaction_for_local_route(
                 &session,
                 &ctx,

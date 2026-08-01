@@ -1,7 +1,10 @@
 use super::*;
 use codex_api::ResponsesApiRequest;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
+use codex_protocol::error::Result as CodexResult;
 use pretty_assertions::assert_eq;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 fn user_text(text: &str) -> ResponseItem {
     ResponseItem::Message {
@@ -27,8 +30,30 @@ fn assistant_text(text: &str) -> ResponseItem {
     }
 }
 
+fn response_stream(events: Vec<CodexResult<ResponseEvent>>) -> crate::ResponseStream {
+    let (tx_event, rx_event) = mpsc::channel(events.len().max(1));
+    for event in events {
+        tx_event
+            .try_send(event)
+            .expect("response stream test channel should have capacity");
+    }
+    drop(tx_event);
+    crate::ResponseStream {
+        rx_event,
+        consumer_dropped: CancellationToken::new(),
+    }
+}
+
+fn completed_event() -> ResponseEvent {
+    ResponseEvent::Completed {
+        response_id: "response-id".to_string(),
+        token_usage: None,
+        end_turn: Some(true),
+    }
+}
+
 #[test]
-fn recovery_prompt_keeps_encrypted_compaction_and_strips_cleartext_history() {
+fn recovery_prompt_keeps_only_suffix_most_encrypted_compaction_and_strips_cleartext_history() {
     let history = vec![
         user_text("old cleartext user message"),
         ResponseItem::Compaction {
@@ -49,11 +74,6 @@ fn recovery_prompt_keeps_encrypted_compaction_and_strips_cleartext_history() {
     assert_eq!(
         prompt.input,
         vec![
-            ResponseItem::Compaction {
-                id: None,
-                encrypted_content: "encrypted-v2-state".to_string(),
-                internal_chat_message_metadata_passthrough: None,
-            },
             ResponseItem::ContextCompaction {
                 id: None,
                 encrypted_content: Some("encrypted-v1-state".to_string()),
@@ -66,6 +86,27 @@ fn recovery_prompt_keeps_encrypted_compaction_and_strips_cleartext_history() {
 }
 
 #[test]
+fn recovery_output_limit_uses_only_suffix_most_encrypted_compaction() {
+    let history = vec![
+        ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "x".repeat(1024 * 1024),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::ContextCompaction {
+            id: None,
+            encrypted_content: Some("new".to_string()),
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+
+    assert_eq!(
+        remote_compaction_recovery_output_byte_limit(&history),
+        RECOVERY_OUTPUT_MIN_BYTES
+    );
+}
+
+#[test]
 fn recovery_prompt_rejects_history_without_encrypted_compaction() {
     let err = build_remote_compaction_recovery_prompt(&[user_text("plain")])
         .expect_err("missing encrypted compaction should fail");
@@ -74,6 +115,91 @@ fn recovery_prompt_rejects_history_without_encrypted_compaction() {
         err.to_string()
             .contains("no encrypted compaction item is active"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn recovery_output_limit_has_generous_floor_and_absolute_ceiling() {
+    assert_eq!(
+        recovery_output_byte_limit_for_encoded_len(0),
+        RECOVERY_OUTPUT_MIN_BYTES
+    );
+    assert_eq!(
+        recovery_output_byte_limit_for_encoded_len(1024 * 1024),
+        25 * 1024 * 1024
+    );
+    assert_eq!(
+        recovery_output_byte_limit_for_encoded_len(usize::MAX),
+        RECOVERY_OUTPUT_MAX_BYTES
+    );
+}
+
+#[tokio::test]
+async fn recovery_output_accepts_exact_byte_limit() {
+    let mut stream = response_stream(vec![
+        Ok(ResponseEvent::OutputTextDelta("abcd".to_string())),
+        Ok(completed_event()),
+    ]);
+
+    assert_eq!(
+        collect_recovered_text(&mut stream, 4)
+            .await
+            .expect("recovery at byte limit should succeed"),
+        "abcd"
+    );
+}
+
+#[tokio::test]
+async fn recovery_output_rejects_delta_beyond_byte_limit() {
+    let mut stream = response_stream(vec![
+        Ok(ResponseEvent::OutputTextDelta("abcde".to_string())),
+        Ok(completed_event()),
+    ]);
+
+    let error = collect_recovered_text(&mut stream, 4)
+        .await
+        .expect_err("oversized recovery delta should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("exceeded safety limit of 4 bytes"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn completed_output_item_replaces_redundant_deltas_within_limit() {
+    let mut stream = response_stream(vec![
+        Ok(ResponseEvent::OutputTextDelta("abcd".to_string())),
+        Ok(ResponseEvent::OutputItemDone(assistant_text("abcd"))),
+        Ok(completed_event()),
+    ]);
+
+    assert_eq!(
+        collect_recovered_text(&mut stream, 4)
+            .await
+            .expect("completed item should replace duplicate deltas"),
+        "abcd"
+    );
+}
+
+#[tokio::test]
+async fn recovery_output_rejects_completed_item_beyond_byte_limit() {
+    let mut stream = response_stream(vec![
+        Ok(ResponseEvent::OutputItemDone(assistant_text("abcde"))),
+        Ok(completed_event()),
+    ]);
+
+    let error = collect_recovered_text(&mut stream, 4)
+        .await
+        .expect_err("oversized completed recovery item should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("exceeded safety limit of 4 bytes"),
+        "unexpected error: {error}"
     );
 }
 

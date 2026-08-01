@@ -547,7 +547,8 @@ pub struct ModelOffloadToml {
     /// Policy used for compaction after offload has actually been used.
     #[serde(default)]
     pub compaction: ModelOffloadCompactionToml,
-    /// Local offload context-window settings used for auto-compaction pressure.
+    /// Fallback local context-window settings used when the offload provider does not advertise
+    /// usable runtime context metadata.
     #[serde(default)]
     pub context: ModelOffloadContextToml,
     /// Shallow sanity validation for completed local/offloaded model outputs.
@@ -642,7 +643,7 @@ fn default_model_offload_effective_context_window_percent() -> i64 {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelOffloadContextToml {
-    /// Size of the local offload model context window, in tokens.
+    /// Fallback size of the local offload model context window, in tokens.
     pub context_window: Option<i64>,
     /// Percentage of the raw context window used as the effective context limit.
     #[serde(default = "default_model_offload_effective_context_window_percent")]

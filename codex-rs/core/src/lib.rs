@@ -73,6 +73,7 @@ mod hook_runtime;
 mod image_preparation;
 mod installation_id;
 mod local_offload;
+mod local_offload_context;
 pub mod local_output_validation;
 pub(crate) mod mcp;
 mod mcp_skill_dependencies;

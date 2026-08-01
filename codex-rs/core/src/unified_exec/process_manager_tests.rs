@@ -306,8 +306,7 @@ fn initial_exec_yield_time_has_no_platform_floor() {
 
 #[tokio::test]
 async fn output_collection_stays_bounded_across_repeated_drains() {
-    let chunks: [&[u8]; 4] = [b"01234567", b"89ABCDEF", b"ghijklmnopq", b"rs"];
-    let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::<10>::default()));
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
     let output_notify = Arc::new(Notify::new());
     let output_closed = Arc::new(AtomicBool::new(false));
     let output_closed_notify = Arc::new(Notify::new());
@@ -326,8 +325,10 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         Instant::now() + Duration::from_secs(5),
     );
     let produce = async {
-        for chunk in chunks {
-            output_buffer.lock().await.push_chunk(chunk);
+        for byte in *b"abc" {
+            output_buffer.lock().await.push_chunk(
+                vec![byte; crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES],
+            );
             output_notify.notify_one();
             tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
@@ -348,9 +349,12 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     };
 
     let (collected, ()) = tokio::join!(collect, produce);
-    let mut expected = HeadTailBuffer::<10>::default();
-    for chunk in chunks {
-        expected.push_chunk(chunk);
+    let mut expected = HeadTailBuffer::default();
+    for byte in *b"abc" {
+        expected.push_chunk(vec![
+            byte;
+            crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES
+        ]);
     }
     assert_eq!(collected, expected);
 }

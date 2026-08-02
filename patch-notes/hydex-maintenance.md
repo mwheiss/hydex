@@ -112,6 +112,10 @@ broad:
 - Missing local context metadata fails before history promotion, offload-marker
   persistence, or inference.
 - Detached local memory requires terminal `response.completed` before commit.
+- Hydex-owned stream retries perturb only explicitly greedy local calls from
+  `0.0` to the configured low retry temperature as a pragmatic escape from
+  generation loops reported as transport failures. Omitted/nonzero local
+  temperatures and primary retry behavior remain unchanged.
 - Local namespace collision ownership is independent of tool and history order.
 
 ## Verification Contract

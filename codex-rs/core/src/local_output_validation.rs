@@ -66,6 +66,13 @@ pub enum LocalOutputValidationResult {
     Disabled,
 }
 
+pub(crate) fn retry_temperature_after_greedy_local_call(
+    initial_temperature: Option<f64>,
+    retry_temperature: f64,
+) -> Option<f64> {
+    (initial_temperature == Some(0.0)).then_some(retry_temperature)
+}
+
 enum ValidatorOutputError {
     Call(CodexErr),
     InvalidOutput(String),
@@ -214,6 +221,14 @@ pub async fn validate_local_output_with_model(
             responses_metadata,
             kind,
             candidate,
+            (attempt > 1)
+                .then(|| {
+                    retry_temperature_after_greedy_local_call(
+                        config.validator_temperature,
+                        config.retry_temperature,
+                    )
+                })
+                .flatten(),
         )
         .await
         {
@@ -236,10 +251,11 @@ pub async fn validate_local_output_with_model(
                 return Err(err);
             }
             Err(ValidatorOutputError::Call(err)) => {
-                tracing::warn!("local output validator call failed: {err}");
-                return Ok(LocalOutputValidationResult::ValidationUnavailable(format!(
-                    "validator call failed: {err}"
-                )));
+                tracing::warn!(
+                    "local output validator call failed on attempt {attempt}/{attempts}: {err}"
+                );
+                last_error = format!("validator call failed: {err}");
+                continue;
             }
         };
         match parse_validator_acceptance(&raw_output) {
@@ -301,6 +317,7 @@ async fn collect_validator_output(
     responses_metadata: &CodexResponsesMetadata,
     kind: LocalOutputKind,
     candidate: &str,
+    temperature: Option<f64>,
 ) -> std::result::Result<String, ValidatorOutputError> {
     let prompt = Prompt {
         input: vec![
@@ -317,6 +334,7 @@ async fn collect_validator_output(
             text: VALIDATOR_INSTRUCTIONS.to_string(),
             provenance: None,
         },
+        temperature,
         ..Default::default()
     };
     let mut stream = client_session

@@ -17,6 +17,7 @@ use crate::local_output_validation::LocalOutputKind;
 use crate::local_output_validation::LocalOutputValidationResult;
 #[cfg(test)]
 use crate::local_output_validation::cheap_validate_local_output_with_context;
+use crate::local_output_validation::retry_temperature_after_greedy_local_call;
 use crate::local_output_validation::validate_local_output_with_model;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
@@ -364,15 +365,40 @@ async fn run_compact_task_inner_impl(
                 .clone()
                 .for_prompt(&turn_context.model_info().input_modalities);
             let turn_input_len = turn_input.len();
+            let transport_retry_temperature = (retries > 0)
+                .then(|| {
+                    retry_temperature_after_greedy_local_call(
+                        turn_context
+                            .config
+                            .model_offload
+                            .validation
+                            .compaction_temperature,
+                        turn_context
+                            .config
+                            .model_offload
+                            .validation
+                            .retry_temperature,
+                    )
+                })
+                .flatten();
             let prompt = Prompt {
                 input: turn_input,
-                temperature: (generation_attempts > 0).then_some(
-                    turn_context
-                        .config
-                        .model_offload
-                        .validation
-                        .retry_temperature,
-                ),
+                // Local stream failures sometimes represent deterministic generation loops rather
+                // than network loss. Only explicitly greedy transport retries are perturbed;
+                // validation-triggered regeneration keeps its existing retry-temperature policy.
+                temperature: if compaction_routes_local && generation_attempts > 0 {
+                    Some(
+                        turn_context
+                            .config
+                            .model_offload
+                            .validation
+                            .retry_temperature,
+                    )
+                } else if compaction_routes_local {
+                    transport_retry_temperature
+                } else {
+                    None
+                },
                 base_instructions: sess.get_prompt_base_instructions().await,
                 ..Default::default()
             };

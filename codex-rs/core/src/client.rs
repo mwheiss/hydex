@@ -318,7 +318,7 @@ impl RequestRouteTelemetry {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelRequestRoute {
+pub(crate) enum ModelRequestRoute {
     Primary,
     LocalOffload,
 }
@@ -1811,7 +1811,7 @@ impl ModelClientSession {
             )
     }
 
-    fn local_helper_temperature_for_request(
+    pub(crate) fn local_helper_temperature_for_request(
         &self,
         route: ModelRequestRoute,
         responses_metadata: &CodexResponsesMetadata,

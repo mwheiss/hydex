@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use crate::SkillInjections;
 use crate::build_skill_injections;
 use crate::client::ModelClientSession;
+use crate::client::ModelRequestRoute;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::collect_explicit_skill_mentions;
@@ -41,6 +42,7 @@ use crate::injection::tool_kind_for_path;
 use crate::local_output_validation::CheapValidationOutcome;
 use crate::local_output_validation::LocalOutputKind;
 use crate::local_output_validation::cheap_validate_local_output_with_context;
+use crate::local_output_validation::retry_temperature_after_greedy_local_call;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
@@ -2015,12 +2017,30 @@ async fn run_sampling_request(
         {
             codex_protocol::models::bound_executed_tool_calls_for_prompt(&mut prompt_input);
         }
-        let prompt = build_prompt(
+        let mut prompt = build_prompt(
             prompt_input,
             router.as_ref(),
             turn_context.as_ref(),
             base_instructions.clone(),
         );
+        if retries > 0 && client_session.is_local_offload_route_for(responses_metadata) {
+            // Local servers can surface generation loops or malformed framing as retryable stream
+            // failures. Perturb only explicitly greedy calls: applying a near-zero temperature to
+            // an omitted-temperature request would replace the endpoint's normal sampling default.
+            prompt.temperature = retry_temperature_after_greedy_local_call(
+                prompt.temperature.or_else(|| {
+                    client_session.local_helper_temperature_for_request(
+                        ModelRequestRoute::LocalOffload,
+                        responses_metadata,
+                    )
+                }),
+                turn_context
+                    .config
+                    .model_offload
+                    .validation
+                    .retry_temperature,
+            );
+        }
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),

@@ -146,6 +146,13 @@ local request is not sent.
 
 ## Future Work
 
+### Codex Desktop Linux offload control
+
+The cross-repository plan for an opt-in Auto/On/Off composer control is tracked
+in [Hydex Offload Control for Codex Desktop Linux](./codex-desktop-linux-offload-plan.md).
+The Hydex app-server contract is already present; remaining work belongs in the
+desktop wrapper's `linux-features/` webview patch boundary.
+
 ### Compaction prompt evaluation
 
 Continue measuring the shipped assistant-state prompt against the explicit

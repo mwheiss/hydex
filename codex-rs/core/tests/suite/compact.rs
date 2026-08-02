@@ -858,6 +858,21 @@ async fn rejected_local_compaction_is_not_persisted_or_reused_by_retry() {
 
     let requests = request_log.requests();
     assert_eq!(requests.len(), 7);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json()["temperature"].as_f64())
+            .collect::<Vec<_>>(),
+        vec![
+            None,
+            Some(0.0),
+            Some(0.0),
+            Some(0.01),
+            Some(0.01),
+            Some(0.0),
+            Some(0.01),
+        ]
+    );
     let retry_request = requests[4].body_json().to_string();
     assert!(!retry_request.contains(REJECTED_SUMMARY));
     assert!(
@@ -963,7 +978,10 @@ async fn manual_local_compaction_reports_validator_transport_failure() {
     codex.submit(Op::Shutdown).await.expect("shut down session");
     wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
 
-    assert_eq!(request_log.requests().len(), 4);
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[2].body_json()["temperature"], 0.0);
+    assert_eq!(requests[3].body_json()["temperature"], 0.01);
     let rollout = fs::read_to_string(rollout_path).expect("read rollout");
     assert!(!rollout.contains(UNVALIDATED_SUMMARY));
     assert!(!rollout.contains(BROKEN_SUMMARY));
@@ -982,6 +1000,7 @@ async fn local_compaction_uses_local_provider_stream_retry_budget() {
                 ev_completed("r1"),
             ]),
             sse_failed("r2", "server_error", "local compaction failed"),
+            sse_failed("r3", "server_error", "local compaction retry failed"),
         ],
     )
     .await;
@@ -991,7 +1010,7 @@ async fn local_compaction_uses_local_provider_stream_retry_budget() {
     let mut local_provider = primary_provider.clone();
     local_provider.name = "Hydex local test provider".to_string();
     local_provider.requires_openai_auth = false;
-    local_provider.stream_max_retries = Some(0);
+    local_provider.stream_max_retries = Some(1);
     let mut builder = test_codex().with_config(move |config| {
         config.model_provider = primary_provider;
         config.model_offload.enabled = true;
@@ -1018,11 +1037,10 @@ async fn local_compaction_uses_local_provider_stream_retry_budget() {
     })
     .await;
 
-    assert_eq!(
-        request_log.requests().len(),
-        2,
-        "local compaction should not inherit the primary provider's retry budget"
-    );
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].body_json()["temperature"], 0.0);
+    assert_eq!(requests[2].body_json()["temperature"], 0.01);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

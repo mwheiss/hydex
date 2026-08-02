@@ -2,6 +2,19 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn transport_retry_temperature_only_perturbs_explicitly_greedy_calls() {
+    assert_eq!(
+        retry_temperature_after_greedy_local_call(Some(0.0), 0.01),
+        Some(0.01)
+    );
+    assert_eq!(retry_temperature_after_greedy_local_call(None, 0.01), None);
+    assert_eq!(
+        retry_temperature_after_greedy_local_call(Some(0.7), 0.01),
+        None
+    );
+}
+
+#[test]
 fn validation_can_be_disabled_per_kind() {
     let config = ModelOffloadValidationConfig {
         compaction: false,

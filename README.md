@@ -234,15 +234,24 @@ must return exactly one of:
 {"accept": false}
 ```
 
-Malformed validator output consumes the bounded `validator_attempts` budget.
-Transport failure is tracked separately from rejection. Rejection reruns the
-original memory or compaction generation up to `generation_retries`; it does
-not critique, rewrite, rank, or sample multiple candidates.
+Malformed validator output and validator transport failures consume the bounded
+`validator_attempts` budget. Validator attempts after the first use
+`retry_temperature`. Rejection reruns the original memory or compaction
+generation up to `generation_retries`; it does not critique, rewrite, rank, or
+sample multiple candidates.
 
 Ordinary user turns omit temperature unless explicitly configured elsewhere.
 The first local memory, compaction, and validator calls default to temperature
 `0.0`. Their optional config fields replace that default. A rejected memory or
 compaction generation retry uses `retry_temperature`, which defaults to `0.01`.
+When Hydex itself retries an explicitly greedy (`temperature = 0.0`) local
+sampling request after a retryable stream failure, the new attempt uses
+`retry_temperature`. This is an intentional local-server workaround: generation
+loops and malformed framing can surface as transport-style failures, and a tiny
+perturbation may avoid repeating them. Calls that omit temperature, including
+ordinary local turns using the endpoint default, continue to omit it on retry.
+Nonzero temperatures are likewise not replaced. Primary/OpenAI retries are
+unchanged.
 
 ## Compaction
 

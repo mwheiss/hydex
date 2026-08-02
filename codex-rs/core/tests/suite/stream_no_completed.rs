@@ -1,10 +1,13 @@
 //! Verifies that the agent retries when the SSE stream terminates before
 //! delivering a `response.completed` event.
 
+use codex_core::config::ModelOffloadConfig;
+use codex_core::config::ModelOffloadContextConfig;
 use codex_core::TurnInputRequest;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
@@ -21,6 +24,13 @@ fn sse_incomplete() -> String {
     responses::sse(vec![serde_json::json!({
         "type": "response.output_item.done",
     })])
+}
+
+fn parse_request_bodies(requests: &[Vec<u8>]) -> Vec<serde_json::Value> {
+    requests
+        .iter()
+        .map(|request| serde_json::from_slice::<serde_json::Value>(request).unwrap())
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -95,6 +105,91 @@ async fn retries_on_early_close() {
         2,
         "expected retry after incomplete SSE stream"
     );
+    assert_eq!(
+        parse_request_bodies(&requests)
+            .iter()
+            .map(|body| body["temperature"].clone())
+            .collect::<Vec<_>>(),
+        vec![serde_json::Value::Null, serde_json::Value::Null]
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_retry_preserves_omitted_temperature_after_early_close() {
+    skip_if_no_network!();
+
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: sse_incomplete(),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse_completed("resp_ok"),
+        }],
+    ])
+    .await;
+
+    let local_provider = ModelProviderInfo {
+        name: "hydex-local".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(1),
+        stream_idle_timeout_ms: Some(2000),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        supports_standalone_web_search: false,
+    };
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_offload = ModelOffloadConfig {
+                enabled: true,
+                provider_id: Some("hydex-local".to_string()),
+                provider: Some(local_provider),
+                model: Some("hydex-local-model".to_string()),
+                context: ModelOffloadContextConfig {
+                    context_window: Some(200_000),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .unwrap();
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    let request_bodies = parse_request_bodies(&requests);
+    assert_eq!(request_bodies[0]["temperature"], serde_json::Value::Null);
+    assert_eq!(request_bodies[1]["temperature"], serde_json::Value::Null);
 
     server.shutdown().await;
 }

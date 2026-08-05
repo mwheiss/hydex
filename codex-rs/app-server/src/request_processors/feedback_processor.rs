@@ -714,6 +714,7 @@ mod tests {
                     realtime_active: None,
                     effort: effort.clone(),
                     summary: ReasoningSummary::Auto,
+                    offload_ever_used: false,
                 }),
             }
         }));

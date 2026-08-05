@@ -264,6 +264,7 @@ fn validator_collector_rejects_additional_or_non_message_output_items() {
         arguments: "{}".to_string(),
         call_id: "call-1".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
     };
     let mut output = String::new();
     let mut completed_output_items = 0;

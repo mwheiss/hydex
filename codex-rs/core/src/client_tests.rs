@@ -1386,6 +1386,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             arguments: "{\"search_query\":[{\"q\":\"codex\"}]}".to_string(),
             call_id: "call_web".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }],
         tools: vec![
             test_web_run_namespace_tool(),
@@ -1443,6 +1444,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
             arguments: "{\"search_query\":[{\"q\":\"codex\"}]}".to_string(),
             call_id: "call_web".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }]
     );
     assert!(options.session_id.is_none());

@@ -68,6 +68,7 @@ fn function_call_item() -> ResponseItem {
         arguments: "{}".to_string(),
         call_id: "call-1".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
     }
 }
 

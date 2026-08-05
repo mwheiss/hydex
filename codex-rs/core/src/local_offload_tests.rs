@@ -66,6 +66,7 @@ fn flattens_namespace_tools_for_local_wire_only() {
         arguments: "{}".to_string(),
         call_id: "call_1".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: Some(vec!["local-encrypted-args".to_string()]),
     };
     assert_eq!(
         names.unflatten_response_item(item),
@@ -76,6 +77,7 @@ fn flattens_namespace_tools_for_local_wire_only() {
             arguments: "{}".to_string(),
             call_id: "call_1".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }
     );
 
@@ -86,6 +88,7 @@ fn flattens_namespace_tools_for_local_wire_only() {
         arguments: "{}".to_string(),
         call_id: "call_2".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: Some(vec!["primary-encrypted-args".to_string()]),
     };
     assert_eq!(
         names.flatten_response_item(canonical_item),
@@ -96,6 +99,7 @@ fn flattens_namespace_tools_for_local_wire_only() {
             arguments: "{}".to_string(),
             call_id: "call_2".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }
     );
 }
@@ -124,6 +128,7 @@ fn flattens_mcp_namespace_without_delimiter_decoding() {
             arguments: "{}".to_string(),
             call_id: "call_mcp".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }),
         ResponseItem::FunctionCall {
             id: None,
@@ -132,6 +137,7 @@ fn flattens_mcp_namespace_without_delimiter_decoding() {
             arguments: "{}".to_string(),
             call_id: "call_mcp".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }
     );
 }
@@ -178,6 +184,7 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
             arguments: "{}".to_string(),
             call_id: "call_namespace".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }),
         ResponseItem::FunctionCall {
             id: None,
@@ -186,6 +193,7 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
             arguments: "{}".to_string(),
             call_id: "call_namespace".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }
     );
     assert_eq!(
@@ -196,6 +204,7 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
             arguments: "{}".to_string(),
             call_id: "call_ordinary".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }),
         ResponseItem::FunctionCall {
             id: None,
@@ -204,6 +213,7 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
             arguments: "{}".to_string(),
             call_id: "call_ordinary".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }
     );
 }
@@ -254,6 +264,7 @@ fn flattens_historical_namespace_call_when_tool_is_not_currently_advertised() {
         arguments: "{}".to_string(),
         call_id: "call_historical".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
     };
     let mut request = request_with_input(vec![canonical_call.clone()]);
 
@@ -269,6 +280,7 @@ fn flattens_historical_namespace_call_when_tool_is_not_currently_advertised() {
             arguments: "{}".to_string(),
             call_id: "call_historical".to_string(),
             internal_chat_message_metadata_passthrough: None,
+            encrypted_function_args: None,
         }]
     );
     assert_eq!(
@@ -291,6 +303,7 @@ fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening
         arguments: "{}".to_string(),
         call_id: "call_ordinary_history".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
     };
     let canonical_namespace_call = ResponseItem::FunctionCall {
         id: None,
@@ -299,6 +312,7 @@ fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening
         arguments: "{}".to_string(),
         call_id: "call_namespace_history".to_string(),
         internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
     };
     let mut request = request_with_input(vec![
         ordinary_call.clone(),
@@ -319,6 +333,7 @@ fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening
                 arguments: "{}".to_string(),
                 call_id: "call_namespace_history".to_string(),
                 internal_chat_message_metadata_passthrough: None,
+                encrypted_function_args: None,
             },
         ]
     );

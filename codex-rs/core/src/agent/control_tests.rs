@@ -2065,6 +2065,7 @@ async fn spawn_agent_full_fork_restores_instructions_after_compaction_discards_p
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                remote_compaction_model: None,
             }),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
@@ -2218,6 +2219,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                remote_compaction_model: None,
             }),
         ];
         if let Some(instructions) = parent_developer_instructions {

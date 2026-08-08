@@ -58,9 +58,9 @@ use crate::tools::registry::RegisteredTool;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
+use crate::tools::spec_plan::ToolWireTarget;
 use crate::tools::spec_plan::append_source_tools;
 use crate::tools::spec_plan::build_core_tool_registry;
-use crate::tools::spec_plan::ToolWireTarget;
 
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
@@ -1001,7 +1001,7 @@ async fn environment_tools_follow_the_step_context() {
             /*tool_suggest_candidates*/ None,
             /*wait_for_environment_tool_config*/ None,
         ),
-        super::hosted_model_tool_specs(turn.as_ref(), &[]),
+        super::hosted_model_tool_specs(turn.as_ref(), ToolWireTarget::Primary, &[]),
         &Default::default(),
     ));
 
@@ -1813,7 +1813,11 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
     let first_router = ToolRouter::from_registry(
         first_step_context.turn.as_ref(),
         first_registry,
-        super::hosted_model_tool_specs(first_step_context.turn.as_ref(), &[]),
+        super::hosted_model_tool_specs(
+            first_step_context.turn.as_ref(),
+            ToolWireTarget::Primary,
+            &[],
+        ),
         &cache,
     );
     let first_plan = ToolPlanProbe::from_router(first_router);
@@ -1834,7 +1838,11 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
     let second_router = ToolRouter::from_registry(
         second_step_context.turn.as_ref(),
         second_registry,
-        super::hosted_model_tool_specs(second_step_context.turn.as_ref(), &[]),
+        super::hosted_model_tool_specs(
+            second_step_context.turn.as_ref(),
+            ToolWireTarget::Primary,
+            &[],
+        ),
         &cache,
     );
     let second_plan = ToolPlanProbe::from_router(second_router);
@@ -1891,7 +1899,11 @@ async fn tool_search_cache_rebuilds_when_deferred_world_state_changes() {
         let router = ToolRouter::from_registry(
             step_context.turn.as_ref(),
             registry,
-            super::hosted_model_tool_specs(step_context.turn.as_ref(), &[]),
+            super::hosted_model_tool_specs(
+                step_context.turn.as_ref(),
+                ToolWireTarget::Primary,
+                &[],
+            ),
             &cache,
         );
         let plan = ToolPlanProbe::from_router(router);

@@ -62,9 +62,9 @@ use crate::tools::registry::RegisteredTool;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
+use crate::tools::spec_plan::ToolWireTarget;
 use crate::tools::spec_plan::append_source_tools;
 use crate::tools::spec_plan::build_core_tool_registry;
-use crate::tools::spec_plan::ToolWireTarget;
 
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
@@ -1258,7 +1258,12 @@ async fn environment_tools_follow_the_step_context() {
             /*tool_suggest_candidates*/ None,
             /*wait_for_environment_tool_config*/ None,
         ),
-        super::hosted_model_tool_specs(turn.as_ref(), turn.model_info(), &[]),
+        super::hosted_model_tool_specs(
+            turn.as_ref(),
+            turn.model_info(),
+            ToolWireTarget::Primary,
+            &[],
+        ),
         &Default::default(),
     ));
 
@@ -2169,6 +2174,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
         super::hosted_model_tool_specs(
             first_step_context.turn.as_ref(),
             first_step_context.turn.model_info(),
+            ToolWireTarget::Primary,
             &[],
         ),
         &cache,
@@ -2198,6 +2204,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
         super::hosted_model_tool_specs(
             second_step_context.turn.as_ref(),
             second_step_context.turn.model_info(),
+            ToolWireTarget::Primary,
             &[],
         ),
         &cache,
@@ -2263,6 +2270,7 @@ async fn tool_search_cache_rebuilds_when_deferred_world_state_changes() {
             super::hosted_model_tool_specs(
                 step_context.turn.as_ref(),
                 step_context.turn.model_info(),
+                ToolWireTarget::Primary,
                 &[],
             ),
             &cache,

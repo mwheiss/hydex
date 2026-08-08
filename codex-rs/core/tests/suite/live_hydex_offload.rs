@@ -9,6 +9,7 @@ use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::config::ModelOffloadConfig;
+use codex_http_client::HttpClientBuilder;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -45,11 +46,13 @@ async fn discover_llama_server_model(base_url: &str) -> String {
     }
 
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .unwrap_or_else(|err| panic!("failed to query local llama-server models at {url}: {err}"));
+    let client = HttpClientBuilder::new()
+        .build_direct()
+        .expect("build direct localhost client");
+    let response =
+        client.get(&url).send().await.unwrap_or_else(|err| {
+            panic!("failed to query local llama-server models at {url}: {err}")
+        });
     assert!(
         response.status().is_success(),
         "local llama-server models query failed: {}",

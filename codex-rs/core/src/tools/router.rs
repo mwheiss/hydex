@@ -98,24 +98,6 @@ impl ToolRouter {
         )
     }
 
-    pub(crate) fn from_context_for_wire(
-        turn_context: &TurnContext,
-        environments: &TurnEnvironmentSnapshot,
-        mcp: &codex_mcp::McpBinding,
-        params: ToolRouterParams<'_>,
-        tool_search_handler_cache: &ToolSearchHandlerCache,
-        wire_target: ToolWireTarget,
-    ) -> Self {
-        build_tool_router_for_wire(
-            turn_context,
-            environments,
-            mcp,
-            params,
-            tool_search_handler_cache,
-            wire_target,
-        )
-    }
-
     pub(crate) fn from_parts(registry: ToolRegistry, model_visible_specs: Vec<ToolSpec>) -> Self {
         Self {
             registry,

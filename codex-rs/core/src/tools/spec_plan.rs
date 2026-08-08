@@ -836,10 +836,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
     add_collaboration_tools(context, registry);
 }
 
-fn standalone_web_search_enabled(
-    turn_context: &TurnContext,
-    wire_target: ToolWireTarget,
-) -> bool {
+fn standalone_web_search_enabled(turn_context: &TurnContext, wire_target: ToolWireTarget) -> bool {
     namespace_tools_enabled(turn_context)
         && turn_context.provider.capabilities().web_search
         && (turn_context.model_info.use_responses_lite

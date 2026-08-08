@@ -801,6 +801,7 @@ pub(crate) fn tool_registry_for_test_step(
         Vec::new(),
         Vec::new(),
         &step_context.turn.dynamic_tools,
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     );
     (registry, hosted_specs)
 }

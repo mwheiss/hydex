@@ -130,7 +130,9 @@ fn create_tools_json_for_local_offload_with_input(
     for tool in tools {
         if let ToolSpec::Namespace(namespace) = tool {
             for namespace_tool in &namespace.tools {
-                let ResponsesApiNamespaceTool::Function(function) = namespace_tool;
+                let ResponsesApiNamespaceTool::Function(function) = namespace_tool else {
+                    continue;
+                };
                 canonical_namespace_names.insert((namespace.name.clone(), function.name.clone()));
             }
         }
@@ -161,7 +163,9 @@ fn create_tools_json_for_local_offload_with_input(
             }
             ToolSpec::Namespace(namespace) => {
                 for namespace_tool in &namespace.tools {
-                    let ResponsesApiNamespaceTool::Function(function) = namespace_tool;
+                    let ResponsesApiNamespaceTool::Function(function) = namespace_tool else {
+                        continue;
+                    };
                     let flattened_name = register_namespaced_tool_name(
                         &namespace.name,
                         &function.name,

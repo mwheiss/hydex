@@ -105,7 +105,7 @@ pub async fn detached_local_output_validation_responses_metadata(
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct TurnMetadataState {
     cwd: AbsolutePathBuf,
     repo_root: Option<String>,

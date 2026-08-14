@@ -82,6 +82,8 @@ mod persisted_resume_approval_policy_tests {
                             developer_instructions: None,
                         },
                     },
+                    model_offload_override: None,
+                    model_offload_compaction_override: None,
                 },
             },
         ))
@@ -119,6 +121,7 @@ mod persisted_resume_approval_policy_tests {
             realtime_active: None,
             effort: None,
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            offload_ever_used: false,
         })
     }
 

@@ -9789,7 +9789,8 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
 
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("context update should be recorded");
     let window_id = session.current_window_id().await;
     let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
         session.installation_id.clone(),

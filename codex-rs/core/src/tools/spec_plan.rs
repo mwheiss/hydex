@@ -145,6 +145,7 @@ pub(crate) fn build_tool_router(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn build_tool_router_for_wire(
     session: &Session,

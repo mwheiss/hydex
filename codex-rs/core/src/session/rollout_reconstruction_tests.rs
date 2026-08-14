@@ -1168,14 +1168,14 @@ async fn reconstruct_history_prefers_compacted_window_over_session_meta() {
 #[tokio::test]
 async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
     let (session, turn_context) = make_session_and_context().await;
-    let remote_history = vec![
+    let remote_history = annotated(vec![
         user_message("retained user"),
         ResponseItem::Compaction {
             id: None,
             encrypted_content: "encrypted remote state".to_string(),
             internal_chat_message_metadata_passthrough: None,
         },
-    ];
+    ]);
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
@@ -1186,7 +1186,7 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
             remote_compaction_model: Some("gpt-5.4".to_string()),
             window_id: None,
         }),
-        RolloutItem::ResponseItem(user_message("primary continuation")),
+        RolloutItem::ResponseItem(user_message("primary continuation").into()),
     ];
 
     let reconstructed = session
@@ -1194,7 +1194,7 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
         .await;
 
     let mut expected = remote_history;
-    expected.push(user_message("primary continuation"));
+    expected.push(user_message("primary continuation").into());
     assert_eq!(reconstructed.history, expected);
     assert_eq!(
         reconstructed.active_remote_compaction_model,
@@ -1219,7 +1219,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
-            replacement_history: Some(old_remote_history.clone()),
+            replacement_history: Some(annotated(old_remote_history.clone())),
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1247,7 +1247,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         )),
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
-            replacement_history: Some(new_remote_history),
+            replacement_history: Some(annotated(new_remote_history)),
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1274,7 +1274,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         .reconstruct_history_from_rollout(&turn_context, &rollout_items)
         .await;
 
-    assert_eq!(reconstructed.history, old_remote_history);
+    assert_eq!(reconstructed.history, annotated(old_remote_history));
     assert_eq!(
         reconstructed.active_remote_compaction_model,
         Some("gpt-old".to_string())
@@ -1297,10 +1297,10 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
     }];
     let rolled_back_turn_id = "rolled-back-retro-local-turn".to_string();
     let rollout_items = vec![
-        RolloutItem::ResponseItem(readable_source.clone()),
+        RolloutItem::ResponseItem(readable_source.clone().into()),
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
-            replacement_history: Some(old_remote_history.clone()),
+            replacement_history: Some(annotated(old_remote_history.clone())),
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1326,10 +1326,10 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
                 ..Default::default()
             },
         )),
-        RolloutItem::ResponseItem(user_message("rolled-back readable state")),
+        RolloutItem::ResponseItem(user_message("rolled-back readable state").into()),
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
-            replacement_history: Some(new_remote_history),
+            replacement_history: Some(annotated(new_remote_history)),
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1372,11 +1372,11 @@ async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_activ
     }];
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: String::new(),
-        replacement_history: Some(vec![ResponseItem::Compaction {
+        replacement_history: Some(annotated(vec![ResponseItem::Compaction {
             id: None,
             encrypted_content: "newest raw but inactive state".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }]),
+        }])),
         window_number: None,
         first_window_id: None,
         previous_window_id: None,

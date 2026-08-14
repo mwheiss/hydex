@@ -77,7 +77,7 @@ fn flattens_namespace_tools_for_local_wire_only() {
             arguments: "{}".to_string(),
             call_id: "call_1".to_string(),
             internal_chat_message_metadata_passthrough: None,
-            encrypted_function_args: None,
+            encrypted_function_args: Some(vec!["local-encrypted-args".to_string()]),
         }
     );
 
@@ -99,7 +99,7 @@ fn flattens_namespace_tools_for_local_wire_only() {
             arguments: "{}".to_string(),
             call_id: "call_2".to_string(),
             internal_chat_message_metadata_passthrough: None,
-            encrypted_function_args: None,
+            encrypted_function_args: Some(vec!["primary-encrypted-args".to_string()]),
         }
     );
 }

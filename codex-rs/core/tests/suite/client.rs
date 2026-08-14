@@ -1,5 +1,4 @@
 use codex_config::test_support::CloudConfigBundleFixture;
-use codex_config::ConfigLayerStack;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ModelClient;

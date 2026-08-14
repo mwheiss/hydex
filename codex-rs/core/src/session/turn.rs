@@ -91,9 +91,9 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
-use codex_history::ResponseItemEnvelope;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
+use codex_history::ResponseItemEnvelope;
 use codex_login::CodexAuth;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::ResponseItemId;
@@ -2055,6 +2055,7 @@ async fn run_sampling_request(
     );
     let max_retries = client_session.stream_max_retries_for(responses_metadata);
     let mut retry_state = ResponsesStreamRetryState::default();
+    let mut is_retry = false;
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
@@ -2079,7 +2080,7 @@ async fn run_sampling_request(
             turn_context.as_ref(),
             base_instructions.clone(),
         );
-        if retries > 0 && client_session.is_local_offload_route_for(responses_metadata) {
+        if is_retry && client_session.is_local_offload_route_for(responses_metadata) {
             // Local servers can surface generation loops or malformed framing as retryable stream
             // failures. Perturb only explicitly greedy calls: applying a near-zero temperature to
             // an omitted-temperature request would replace the endpoint's normal sampling default.
@@ -2147,6 +2148,7 @@ async fn run_sampling_request(
             ResponsesStreamRequest::Sampling,
         )
         .await?;
+        is_retry = true;
         turn_context.turn_timing_state.record_sampling_retry();
     }
 }

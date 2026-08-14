@@ -1399,7 +1399,8 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
                 search_content_types: None,
                 indexed_web_access: None,
             },
-        ],
+        ]
+        .into(),
         ..Prompt::default()
     };
     let options = client_session
@@ -1412,7 +1413,6 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         .await;
     let request = client
         .build_responses_request(
-            &client_setup.api_provider,
             client_setup.model_provider.info(),
             client_setup.model_override.as_deref(),
             &prompt,
@@ -1803,7 +1803,6 @@ async fn request_model_for_metadata(
         .expect("client setup resolves");
     client
         .build_responses_request(
-            &client_setup.api_provider,
             client_setup.model_provider.info(),
             client_setup.model_override.as_deref(),
             &Prompt::default(),
@@ -1902,7 +1901,6 @@ async fn local_memory_consolidation_turn_uses_memory_temperature() {
 
         let request = client
             .build_responses_request(
-                &client_setup.api_provider,
                 client_setup.model_provider.info(),
                 client_setup.model_override.as_deref(),
                 &Prompt::default(),
@@ -2084,7 +2082,6 @@ async fn prompt_temperature_override_takes_precedence_over_helper_temperature() 
 
     let request = client
         .build_responses_request(
-            &client_setup.api_provider,
             client_setup.model_provider.info(),
             client_setup.model_override.as_deref(),
             &prompt,

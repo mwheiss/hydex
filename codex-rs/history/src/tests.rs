@@ -183,6 +183,7 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
+        remote_compaction_model: None,
     };
 
     let serialized = serde_json::to_value(item)?;
@@ -277,6 +278,7 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
+        remote_compaction_model: None,
     }))?;
 
     let LegacyRolloutItem::Compacted(legacy) =
@@ -409,6 +411,7 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         first_window_id: Some("019b3f6e-0000-7000-8000-000000000001".to_string()),
         previous_window_id: Some("019b3f6e-0000-7000-8000-000000000002".to_string()),
         window_id: Some("019b3f6e-7a10-7cc3-8b6e-1d09e2f7a001".to_string()),
+        remote_compaction_model: None,
     };
 
     assert_eq!(
@@ -441,6 +444,7 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            remote_compaction_model: None,
         }
     );
     Ok(())

@@ -415,9 +415,7 @@ fn checkpoint_matches_active_remote_compaction(
         .replacement_history
         .as_deref()
         .and_then(|history| {
-            suffix_most_remote_compaction_fingerprint(
-                history.iter().map(|envelope| &envelope.item),
-            )
+            suffix_most_remote_compaction_fingerprint(history.iter().map(|envelope| &envelope.item))
         })
         .is_some_and(|fingerprint| fingerprint == *active_fingerprint)
 }
@@ -483,8 +481,7 @@ pub(super) fn reconstruct_retro_local_history_from_rollout(
     rollout_items: &[RolloutItem],
     active_history: &[ResponseItem],
 ) -> CodexResult<Vec<ResponseItem>> {
-    let Some(active_fingerprint) =
-        suffix_most_remote_compaction_fingerprint(active_history.iter())
+    let Some(active_fingerprint) = suffix_most_remote_compaction_fingerprint(active_history.iter())
     else {
         return Err(CodexErr::InvalidRequest(
             "Cannot run retro-local fallback: active history has no encrypted remote compaction item."

@@ -224,6 +224,7 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
+        remote_compaction_model: None,
     })
 }
 
@@ -1367,6 +1368,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                remote_compaction_model: None,
             }),
             RolloutItem::Compacted(CompactedItem {
                 message: "latest checkpoint".to_string(),
@@ -1386,6 +1388,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                remote_compaction_model: None,
             }),
             started("child-turn"),
             RolloutItem::TurnContext(TurnContextItem {
@@ -1409,6 +1412,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 realtime_active: None,
                 effort: None,
                 summary: ReasoningSummary::Auto,
+                offload_ever_used: false,
             }),
             user_message("child question"),
             agent_message("child answer"),

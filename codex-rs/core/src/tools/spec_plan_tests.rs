@@ -1314,6 +1314,7 @@ async fn strict_namespace_ownership_requires_tool_namespace_inventory_opt_in() {
             runtimes,
             Vec::new(),
             &[],
+            ToolWireTarget::Primary,
         );
         let result = super::finalize_tool_router(
             step_context.turn.as_ref(),
@@ -1552,6 +1553,7 @@ async fn strict_tool_collisions_reject_external_and_synthetic_duplicates() {
             inputs.tool_runtimes,
             inputs.extension_tool_executors,
             &inputs.dynamic_tools,
+            ToolWireTarget::Primary,
         );
 
         let error = super::finalize_tool_router(

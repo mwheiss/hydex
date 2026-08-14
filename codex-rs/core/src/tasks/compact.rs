@@ -86,12 +86,12 @@ impl SessionTask for CompactTask {
                 RemoteCompactionSupport::V2
                     if ctx.config.features.enabled(Feature::RemoteCompactionV2) =>
                 {
-                emit_compact_metric(
-                    &session.services.session_telemetry,
-                    "remote_v2",
-                    /*manual*/ true,
-                );
-                crate::compact_remote_v2::run_remote_compact_task(session.clone(), ctx).await
+                    emit_compact_metric(
+                        &session.services.session_telemetry,
+                        "remote_v2",
+                        /*manual*/ true,
+                    );
+                    crate::compact_remote_v2::run_remote_compact_task(session.clone(), ctx).await
                 }
                 RemoteCompactionSupport::V2 => {
                     emit_compact_metric(

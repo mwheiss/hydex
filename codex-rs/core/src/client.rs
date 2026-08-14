@@ -1150,6 +1150,7 @@ impl ModelClient {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_responses_request(
         &self,
         provider_info: &ModelProviderInfo,

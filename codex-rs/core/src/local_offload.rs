@@ -29,7 +29,6 @@ impl LocalOffloadToolNameMap {
                 call_id,
                 encrypted_function_args,
                 internal_chat_message_metadata_passthrough,
-                encrypted_function_args: _,
             } => {
                 let canonical = ToolName::new(namespace.clone(), name.clone());
                 if let Some(flattened) = self.canonical_to_flattened.get(&canonical) {
@@ -41,7 +40,6 @@ impl LocalOffloadToolNameMap {
                         call_id,
                         encrypted_function_args,
                         internal_chat_message_metadata_passthrough,
-                        encrypted_function_args: None,
                     }
                 } else {
                     ResponseItem::FunctionCall {
@@ -52,7 +50,6 @@ impl LocalOffloadToolNameMap {
                         call_id,
                         encrypted_function_args,
                         internal_chat_message_metadata_passthrough,
-                        encrypted_function_args: None,
                     }
                 }
             }
@@ -70,7 +67,6 @@ impl LocalOffloadToolNameMap {
                 call_id,
                 encrypted_function_args,
                 internal_chat_message_metadata_passthrough,
-                encrypted_function_args: _,
             } if namespace.is_none() => {
                 if let Some(canonical) = self.flattened_to_canonical.get(&name) {
                     ResponseItem::FunctionCall {
@@ -81,7 +77,6 @@ impl LocalOffloadToolNameMap {
                         call_id,
                         encrypted_function_args,
                         internal_chat_message_metadata_passthrough,
-                        encrypted_function_args: None,
                     }
                 } else {
                     ResponseItem::FunctionCall {
@@ -92,7 +87,6 @@ impl LocalOffloadToolNameMap {
                         call_id,
                         encrypted_function_args,
                         internal_chat_message_metadata_passthrough,
-                        encrypted_function_args: None,
                     }
                 }
             }

@@ -29,7 +29,10 @@ fn sse_incomplete() -> String {
 fn parse_request_bodies(requests: &[Vec<u8>]) -> Vec<serde_json::Value> {
     requests
         .iter()
-        .map(|request| serde_json::from_slice::<serde_json::Value>(request).unwrap())
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(request)
+                .expect("captured request body should be valid JSON")
+        })
         .collect()
 }
 

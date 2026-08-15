@@ -153,11 +153,12 @@ fn flattened_name_collision_suffix_is_deterministic() {
         }),
     ];
 
-    let (wire_tools, _) =
+    let (wire_tools, names) =
         create_tools_json_for_local_offload(&tools).expect("local tools serialize");
 
     assert_eq!(wire_tools[0]["name"], "ns__web__run");
     assert_eq!(wire_tools[1]["name"], "ns__web__run__2");
+    assert_eq!(names.request_metrics.collision_renamed_tools, 1);
 }
 
 #[test]
@@ -363,9 +364,66 @@ fn drops_hosted_tool_specs_for_local_wire() {
         },
     ];
 
-    let (wire_tools, _) =
+    let (wire_tools, names) =
         create_tools_json_for_local_offload(&tools).expect("local tools serialize");
 
     assert_eq!(wire_tools.len(), 1);
     assert_eq!(wire_tools[0]["name"], "plain");
+    assert_eq!(
+        names.request_metrics,
+        LocalOffloadRequestToolMetrics {
+            ordinary_direct_tools: 1,
+            namespace_tools_before_flattening: 0,
+            flattened_functions: 1,
+            special_hosted_specs_removed_locally: 2,
+            collision_renamed_tools: 0,
+        }
+    );
+}
+
+#[test]
+fn records_unknown_and_malformed_local_tool_calls() {
+    let (_, names) = create_tools_json_for_local_offload(&[ToolSpec::Function(function("known"))])
+        .expect("local tools serialize");
+    let known = ResponseItem::FunctionCall {
+        id: None,
+        name: "known".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call_known".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
+    };
+    let unknown_malformed = ResponseItem::FunctionCall {
+        id: None,
+        name: "missing".to_string(),
+        namespace: None,
+        arguments: "{".to_string(),
+        call_id: "call_unknown".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
+    };
+
+    assert_eq!(
+        names.unflatten_response_item_with_telemetry(known.clone()),
+        known
+    );
+    assert_eq!(
+        names.unflatten_response_item_with_telemetry(unknown_malformed.clone()),
+        unknown_malformed
+    );
+    assert_eq!(
+        names
+            .call_metrics
+            .unknown_tool_calls
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        names
+            .call_metrics
+            .malformed_argument_calls
+            .load(Ordering::Relaxed),
+        1
+    );
 }

@@ -2914,7 +2914,7 @@ where
                     let item = local_tool_names
                         .as_ref()
                         .map_or(item.clone(), |tool_names| {
-                            tool_names.unflatten_response_item(item)
+                            tool_names.unflatten_response_item_with_telemetry(item)
                         });
                     items_added.push(item.clone());
                     if tx_event
@@ -2936,6 +2936,9 @@ where
                     usage_metadata,
                     end_turn,
                 }) => {
+                    if let Some(tool_names) = local_tool_names.as_ref() {
+                        tool_names.trace_response_call_summary();
+                    }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);

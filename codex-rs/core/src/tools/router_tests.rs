@@ -145,6 +145,7 @@ fn test_tool_router(
         step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
         /*wait_for_environment_tool_config*/ None,
+        ToolWireTarget::Primary,
     );
     let hosted_specs = append_source_tools(
         step_context.turn.as_ref(),
@@ -161,6 +162,7 @@ fn test_tool_router(
         registry,
         hosted_specs,
         &Default::default(),
+        ToolWireTarget::Primary,
     )
 }
 

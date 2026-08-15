@@ -822,6 +822,7 @@ pub(crate) fn tool_registry_for_test_step(
         step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
         /*wait_for_environment_tool_config*/ None,
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     );
     let hosted_specs = crate::tools::spec_plan::append_source_tools(
         step_context.turn.as_ref(),
@@ -842,6 +843,7 @@ fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> T
         registry,
         hosted_specs,
         &Default::default(),
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     ));
     let step_context = step_context.with_tool_router_for_test(router);
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -11118,6 +11120,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
         registry,
         hosted_specs,
         &Default::default(),
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     );
     let item = ResponseItem::CustomToolCall {
         id: None,

@@ -13,7 +13,9 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
 #[cfg(test)]
-use crate::tools::spec_plan::finalize_tool_router;
+use crate::tools::spec_plan::ToolWireTarget;
+#[cfg(test)]
+use crate::tools::spec_plan::finalize_tool_router_for_wire;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 use codex_tools::DiscoverableTool;
@@ -89,12 +91,14 @@ impl ToolRouter {
         registry: ToolRegistry,
         hosted_specs: Vec<ToolSpec>,
         tool_search_handler_cache: &ToolSearchHandlerCache,
+        wire_target: ToolWireTarget,
     ) -> Self {
-        finalize_tool_router(
+        finalize_tool_router_for_wire(
             turn_context,
             registry,
             hosted_specs,
             tool_search_handler_cache,
+            wire_target,
         )
         .expect("test tool registry should not contain duplicate tools")
     }

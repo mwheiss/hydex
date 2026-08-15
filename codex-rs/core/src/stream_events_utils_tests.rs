@@ -284,6 +284,7 @@ async fn handle_output_item_done_returns_contributed_last_agent_message() {
         registry,
         hosted_specs,
         &Default::default(),
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     ));
     let step_context = step_context.with_tool_router_for_test(router);
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));

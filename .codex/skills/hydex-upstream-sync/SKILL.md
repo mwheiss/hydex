@@ -19,7 +19,11 @@ Hydex commit boundaries without assuming that two plugin release tags share a ma
 The aggregate binary-patch transplant remains available as a fallback, but it is not the normal
 workflow. Advance `main` only after the replay passes validation.
 
-For plugin releases, prefer the tag-pinned workflow: update the upstream preview VSIX first, read its bundled `codex-package.json` version, resolve the matching OpenAI tag `rust-v<version>`, replay Hydex onto that tag, then rebuild/inject the Hydex binary into the plugin. This keeps the Rust code and extension bundle on the same upstream Codex version.
+For plugin releases, prefer the tag-pinned workflow: update the upstream preview VSIX first, read
+its bundled `codex-package.json` version, resolve the matching OpenAI tag `rust-v<version>`, and
+replay Hydex only when that tag advances the underlying checkout. Reuse the existing matching
+Hydex binary for a plugin-only refresh. This keeps the Rust code and extension bundle on the same
+upstream Codex version without rebuilding unrelated packages.
 
 ## Plugin-Pinned Workflow
 
@@ -28,6 +32,7 @@ Use this when updating the Hydex VS Code plugin.
 1. Refresh the plugin repo with the newest upstream preview VSIX:
 
    ```bash
+   HYDEX_COMMIT_BEFORE=$(git rev-parse hydex/main)
    cd hydex-plugin
    python3 scripts/update_upstream_vsix.py
    git status --short --branch
@@ -53,6 +58,11 @@ Use this when updating the Hydex VS Code plugin.
 
    and resolves `version = "X.Y.Z"` to `rust-vX.Y.Z`. Do not guess the tag from
    OpenAI `main`.
+
+   Compare the peeled resolved tag commit with the current Hydex base pointer. If it is already
+   the current base and no Hydex replay is required, set `hydex_checkout_updated=false`, skip steps
+   3 through 5, and use the plugin-only path in step 6. A new extension version or VSIX digest is
+   not an underlying Hydex checkout update.
 
 3. Verify the current base-pointer contract and replay Hydex onto the new tag:
 
@@ -112,7 +122,13 @@ Use this when updating the Hydex VS Code plugin.
    Use the peeled tag commit from `git rev-parse "${UPSTREAM_TAG}^{commit}"`, not the annotated
    tag object. The explicit leases prevent overwriting concurrent remote updates.
 
-6. Rebuild and patch the plugin from the resulting Hydex commit:
+   Set `hydex_checkout_updated=true` only after the validated replay advances `hydex/main` from
+   `HYDEX_COMMIT_BEFORE` to a different commit. Record that resulting commit for the report.
+
+6. Refresh the plugin according to whether the underlying Hydex checkout changed.
+
+   When `hydex_checkout_updated=true`, rebuild and patch from the resulting Hydex commit, then
+   build both matching system packages:
 
    ```bash
    cd hydex-plugin
@@ -123,24 +139,40 @@ Use this when updating the Hydex VS Code plugin.
    git push
    cd ..
    ./packaging/arch/build-local-package.sh
+   ./packaging/rpm/build-rhel10-package.sh
    ```
 
    The plugin refresh script stamps the Hydex workspace version to the bundled
    `codex-package.json` version before building, then verifies that the bundled Hydex
-   `codex --version` matches. The local package helper then builds the matching pacman-managed
-   `hydex-bin` package from that refreshed baseline.
+   `codex --version` matches. The package helpers then build the matching pacman and RHEL 10
+   packages from that refreshed Hydex source.
 
-   Always include the generated package path and SHA-256 in the final report, followed by the exact
-   update command:
+   When `hydex_checkout_updated=false`, patch and validate the new VSIX with the existing matching
+   release binary, and do not build either package:
+
+   ```bash
+   cd hydex-plugin
+   .codex/skills/hydex-plugin-refresh/scripts/refresh_hydex_plugin.py --repo .. --skip-build
+   ```
+
+   Report `hydex_checkout_updated=false` and that both packages were skipped. Omit all install and
+   update instructions in this case, including pacman, dnf, local VS Code, and Remote-SSH
+   instructions. Do not report stale package artifacts from an earlier refresh.
+
+   Only when `hydex_checkout_updated=true`, or when the user explicitly requests package rebuilding,
+   include the generated package paths and SHA-256 values followed by the exact update commands:
 
    ```bash
    sudo pacman -U /absolute/path/to/hydex-bin-<version>-1-x86_64.pkg.tar.zst
+   sudo dnf install /absolute/path/to/hydex-<version>-1.el10.x86_64.rpm
+   sudo dnf upgrade /absolute/path/to/hydex-<version>-1.el10.x86_64.rpm
    ```
 
    Do not run the sudo command automatically unless the user explicitly asks for installation.
    Pacman replaces the conflicting `openai-codex-bin` package; no separate removal is needed.
 
-   Always include the concrete VSIX path and these extension update reminders too:
+   In that same updated-checkout case, include the concrete VSIX path and these extension update
+   reminders too:
 
    - Local Linux x64 VS Code:
 

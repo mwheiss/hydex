@@ -835,16 +835,10 @@ async fn rejected_local_compaction_is_not_persisted_or_reused_by_retry() {
     let rollout_path = test.session_configured.rollout_path.expect("rollout path");
 
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "seed local offload state".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "seed local offload state".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await
         .expect("submit local turn");
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -934,16 +928,10 @@ async fn manual_local_compaction_reports_validator_transport_failure() {
     let rollout_path = test.session_configured.rollout_path.expect("rollout path");
 
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "seed local offload state".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "seed local offload state".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await
         .expect("submit local turn");
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;

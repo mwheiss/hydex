@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use codex_config::config_toml::ModelOffloadMemoryMode;
+use codex_core::TurnInputRequest;
 use codex_core::config::ModelOffloadConfig;
 use codex_core::config::ModelOffloadContextConfig;
 use codex_history::InitialHistory;
@@ -183,16 +184,10 @@ async fn local_turn_without_discovered_or_configured_context_window_fails_before
         .await?;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "this must not reach an unknown local context".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "this must not reach an unknown local context".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
     let EventMsg::Error(error) = error else {
@@ -357,16 +352,10 @@ async fn local_memory_consolidation_uses_memory_sampling_and_completed_output_ga
         .await?;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "consolidate memory".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "consolidate memory".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;

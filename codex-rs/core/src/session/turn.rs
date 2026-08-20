@@ -2054,6 +2054,22 @@ async fn run_sampling_request(
             .await??
         }
     };
+    let step_context = Arc::new(StepContext {
+        turn: Arc::clone(&step_context.turn),
+        model_info: Arc::clone(&step_context.model_info),
+        reasoning_effort: step_context.reasoning_effort.clone(),
+        reasoning_summary: step_context.reasoning_summary,
+        service_tier: step_context.service_tier.clone(),
+        approval_policy: step_context.approval_policy,
+        approvals_reviewer: step_context.approvals_reviewer,
+        session_telemetry: step_context.session_telemetry.clone(),
+        environments: step_context.environments.clone(),
+        selected_capability_roots: step_context.selected_capability_roots.clone(),
+        executor_capability_discovery: step_context.executor_capability_discovery.clone(),
+        mcp: Arc::clone(&step_context.mcp),
+        tool_router: router,
+        loaded_agents_md: step_context.loaded_agents_md.clone(),
+    });
 
     let base_instructions = sess.get_base_instructions().await;
 

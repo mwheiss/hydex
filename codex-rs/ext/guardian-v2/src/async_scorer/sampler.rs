@@ -526,6 +526,7 @@ impl LunaSampler {
             tools: None,
             tool_choice: "none".to_owned(),
             parallel_tool_calls: false,
+            temperature: None,
             reasoning: Some(Reasoning {
                 effort: Some(request.reasoning_effort),
                 summary: None,

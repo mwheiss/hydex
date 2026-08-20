@@ -1261,13 +1261,17 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
         ..ToolPlanInputs::default()
     };
 
-    let primary = probe_with(|turn| turn.model_info.supports_search_tool = true, inputs()).await;
+    let primary = probe_with(
+        |turn| Arc::make_mut(&mut turn.model_info).supports_search_tool = true,
+        inputs(),
+    )
+    .await;
     primary.assert_visible_contains(&["tool_search"]);
     primary.assert_visible_lacks(&["mcp__searchable", "mcp__model_only", "dynamic"]);
 
     let local = probe_with_wire_target(
         |turn| {
-            turn.model_info.supports_search_tool = true;
+            Arc::make_mut(&mut turn.model_info).supports_search_tool = true;
             set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
         },
         inputs(),
@@ -2633,7 +2637,7 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 async fn local_offload_exposes_v1_multi_agent_tools_directly() {
     let plan = probe_with_wire_target(
         |turn| {
-            turn.model_info.supports_search_tool = true;
+            Arc::make_mut(&mut turn.model_info).supports_search_tool = true;
             set_feature(turn, Feature::Collab, /*enabled*/ true);
             set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
         },

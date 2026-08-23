@@ -1,2 +1,3 @@
 /.rpmbuild/
+/.rpmbuild-el*/
 /*.rpm

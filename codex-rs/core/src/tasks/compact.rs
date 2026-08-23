@@ -11,7 +11,6 @@ use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Default)]
@@ -107,17 +106,7 @@ impl SessionTask for CompactTask {
                         "local",
                         /*manual*/ true,
                     );
-                    let input = vec![UserInput::Text {
-                        text: ctx
-                            .config
-                            .compact_prompt
-                            .as_deref()
-                            .unwrap_or(crate::compact::SUMMARIZATION_PROMPT)
-                            .to_string(),
-                        // Compaction prompt is synthesized; no UI element ranges to preserve.
-                        text_elements: Vec::new(),
-                    }];
-                    crate::compact::run_compact_task(session.clone(), ctx, input).await
+                    crate::compact::run_compact_task(session.clone(), ctx).await
                 }
             }
         } else {
@@ -126,17 +115,7 @@ impl SessionTask for CompactTask {
                 "local",
                 /*manual*/ true,
             );
-            let input = vec![UserInput::Text {
-                text: ctx
-                    .config
-                    .compact_prompt
-                    .as_deref()
-                    .unwrap_or(crate::compact::SUMMARIZATION_PROMPT)
-                    .to_string(),
-                // Compaction prompt is synthesized; no UI element ranges to preserve.
-                text_elements: Vec::new(),
-            }];
-            crate::compact::run_compact_task(session.clone(), ctx, input).await
+            crate::compact::run_compact_task(session.clone(), ctx).await
         };
         if let Err(err) = result
             && matches!(err.details(), CodexErrorDetails::TurnAborted)

@@ -1190,6 +1190,7 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(remote_history.clone()),
+            mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1230,6 +1231,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(old_remote_history.clone())),
+            mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1258,6 +1260,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(new_remote_history)),
+            mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1311,6 +1314,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(old_remote_history.clone())),
+            mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1340,6 +1344,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(new_remote_history)),
+            mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -1387,6 +1392,7 @@ async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_activ
             encrypted_content: "newest raw but inactive state".to_string(),
             internal_chat_message_metadata_passthrough: None,
         }])),
+        mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,

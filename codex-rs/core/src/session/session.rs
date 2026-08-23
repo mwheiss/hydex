@@ -277,6 +277,14 @@ impl SessionConfiguration {
             reasoning_summary: self.model_reasoning_summary,
             personality: self.personality,
             collaboration_mode: self.collaboration_mode.clone(),
+            model_offload_override: self
+                .original_config_do_not_use
+                .model_offload
+                .runtime_override,
+            model_offload_compaction_override: self
+                .original_config_do_not_use
+                .model_offload
+                .compaction_runtime_override,
         }
     }
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "Hydex Upstream Sync"
-  short_description: "Replay Hydex onto an exact OpenAI base"
-  default_prompt: "Use $hydex-upstream-sync to replay hydex/main only when the plugin Codex base advances, then refresh the VSIX and conditionally rebuild system packages."
+  short_description: "Replay, publish, and finalize Hydex refs"
+  default_prompt: "Use $hydex-upstream-sync to replay hydex/main when its OpenAI base advances and, when authorized, publish atomically, align local refs, preserve provenance, and clean up superseded worktrees."

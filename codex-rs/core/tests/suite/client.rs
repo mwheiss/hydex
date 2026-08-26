@@ -1,5 +1,5 @@
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::test_support::CloudConfigBundleFixture;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ModelClient;
 use codex_core::NewThread;
@@ -1542,6 +1542,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         SessionSource::Exec,
         "test_originator".to_string(),
         config.model_verbosity,
+        config.features.enabled(Feature::ContentItemKinds),
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,

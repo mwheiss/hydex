@@ -1,6 +1,6 @@
 ---
 name: hydex-upstream-sync
-description: Sync the fork main branch with current openai/codex main or a Codex release tag bundled by the Hydex VS Code plugin, then replay hydex/main onto that upstream base while preserving Hydex local-offload behavior. Use when asked to rebase, replay, refresh, or bring Hydex in line with OpenAI/Codex main or a plugin-bundled Codex version.
+description: Sync the fork main branch with current openai/codex main or a Codex release tag bundled by the Hydex VS Code plugin, replay hydex/main while preserving Hydex local-offload behavior, and when authorized publish, align, preserve, and clean up replay refs and worktrees. Use when asked to rebase, replay, refresh, publish, or finalize Hydex against OpenAI/Codex main or a plugin-bundled Codex version.
 ---
 
 # Hydex Upstream Sync
@@ -101,8 +101,13 @@ Use this when updating the Hydex VS Code plugin.
      --continue-worktree "$REPLAY_WORKTREE"
    ```
 
-5. Commit and push the scratch branch. Then atomically advance `main` to the new upstream tag
-   commit and `hydex/main` to the validated replay:
+5. Commit and publish the scratch branch only when root publication is explicitly authorized. Put
+   every intended root source, schema, or packaging-workflow change on the validated replay tip
+   first. Stage explicit paths, run `git diff --cached --check`, and create a focused commit; do
+   not create the commit on the stale pre-replay `hydex/main` checkout.
+
+   Push the versioned scratch branch, then atomically advance `main` to the new upstream tag commit
+   and `hydex/main` to the validated replay:
 
    ```bash
    OLD_MAIN=$(git rev-parse origin/main)
@@ -125,27 +130,27 @@ Use this when updating the Hydex VS Code plugin.
    Set `hydex_checkout_updated=true` only after the validated replay advances `hydex/main` from
    `HYDEX_COMMIT_BEFORE` to a different commit. Record that resulting commit for the report.
 
+   When root publication is not authorized, leave the validated replay local and report the exact
+   refs that would be pushed. Do not infer root publication permission from plugin-only permission.
+
 6. Refresh the plugin according to whether the underlying Hydex checkout changed.
 
    When `hydex_checkout_updated=true`, rebuild and patch from the resulting Hydex commit, then
-   build both matching system packages:
+   build all matching system packages:
 
    ```bash
    cd hydex-plugin
    .codex/skills/hydex-plugin-refresh/scripts/refresh_hydex_plugin.py --repo ..
-   git status --short --branch
-   git add vendor metadata .codex/skills scripts README.md analysis
-   git commit -m "Refresh Hydex plugin for Codex <version>"
-   git push
    cd ..
    ./packaging/arch/build-local-package.sh
+   ./packaging/rpm/build-rhel7-package.sh
    ./packaging/rpm/build-rhel10-package.sh
    ```
 
    The plugin refresh script stamps the Hydex workspace version to the bundled
    `codex-package.json` version before building, then verifies that the bundled Hydex
-   `codex --version` matches. The package helpers then build the matching pacman and RHEL 10
-   packages from that refreshed Hydex source.
+   `codex --version` matches. The package helpers then build the matching pacman, RHEL 7, and
+   RHEL 10 packages from that refreshed Hydex source.
 
    When `hydex_checkout_updated=false`, patch and validate the new VSIX with the existing matching
    release binary, and do not build either package:
@@ -155,7 +160,7 @@ Use this when updating the Hydex VS Code plugin.
    .codex/skills/hydex-plugin-refresh/scripts/refresh_hydex_plugin.py --repo .. --skip-build
    ```
 
-   Report `hydex_checkout_updated=false` and that both packages were skipped. Omit all install and
+   Report `hydex_checkout_updated=false` and that all system packages were skipped. Omit all install and
    update instructions in this case, including pacman, dnf, local VS Code, and Remote-SSH
    instructions. Do not report stale package artifacts from an earlier refresh.
 
@@ -164,6 +169,8 @@ Use this when updating the Hydex VS Code plugin.
 
    ```bash
    sudo pacman -U /absolute/path/to/hydex-bin-<version>-1-x86_64.pkg.tar.zst
+   sudo yum install /absolute/path/to/hydex-<version>-1.el7.x86_64.rpm
+   sudo yum update /absolute/path/to/hydex-<version>-1.el7.x86_64.rpm
    sudo dnf install /absolute/path/to/hydex-<version>-1.el10.x86_64.rpm
    sudo dnf upgrade /absolute/path/to/hydex-<version>-1.el10.x86_64.rpm
    ```
@@ -188,6 +195,11 @@ Use this when updating the Hydex VS Code plugin.
    State explicitly that local and Remote-SSH extension hosts are separate and every SSH host must
    be updated independently. Do not present the ordinary local `code --install-extension` command
    as updating a remote extension host.
+
+7. When plugin publication is explicitly authorized, return to the `$hydex-plugin-refresh`
+   repository-separated commit step. Commit durable plugin source, tests, skills, metadata, and the
+   versioned Git-LFS vendor VSIX in the plugin repository only; keep generated/ignored artifacts
+   local. Push plugin `master`, fetch it back, and then run the post-publication finalization below.
 
 ## Mainline Workflow
 
@@ -299,7 +311,7 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
 
    Run app-server integration tests outside the sandbox when wiremock needs to bind local ports.
 
-9. Commit and push the scratch branch:
+9. When root publication is explicitly authorized, commit and push the scratch branch:
 
    ```bash
    git -C "$REPLAY_WORKTREE" status --short
@@ -316,8 +328,8 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
    symlinks, plugin workspaces, or generated package artifacts that are not part
    of the Hydex patch line.
 
-10. After validation passes, atomically advance `main` to the selected OpenAI-main commit and
-    `hydex/main` to the replay:
+10. After validation passes and root publication is authorized, atomically advance `main` to the
+    selected OpenAI-main commit and `hydex/main` to the replay:
 
    ```bash
    OLD_MAIN=$(git rev-parse origin/main)
@@ -337,13 +349,61 @@ Use this when intentionally syncing Hydex to current OpenAI `main`, independent 
    Use explicit `--force-with-lease` values, never blind force push. Moving both refs atomically
    prevents the remote from exposing a mismatched Hydex tip and base pointer.
 
-11. After publication, retain a tag or remote replay branch for the previous validated tip, then
-    remove the temporary worktree and local scratch branch when they are no longer needed:
+11. Run the post-publication finalization below.
+
+## Post-Publication Finalization
+
+Run this phase after either workflow whenever root publication is authorized. Do not report a
+finished sync merely because `git push` exited successfully.
+
+1. Set `EXPECTED_BASE` to the peeled plugin tag commit for the plugin-pinned workflow or the exact
+   selected `openai/main` commit for the mainline workflow. Fetch the root and plugin remotes and
+   verify exact published identities:
 
    ```bash
-   git worktree remove "$REPLAY_WORKTREE"
-   git branch -d "$SCRATCH"
+   git fetch origin
+   test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+   test "$(git rev-parse origin/hydex/main)" = "$NEW_HYDEX"
+   test "$(git merge-base origin/hydex/main origin/main)" = "$(git rev-parse origin/main)"
+   test "$(git rev-parse origin/$SCRATCH)" = "$NEW_HYDEX"
+   git -C hydex-plugin fetch origin
+   test "$(git -C hydex-plugin rev-parse HEAD)" = \
+     "$(git -C hydex-plugin rev-parse origin/master)"
    ```
+
+2. Align local root refs only after the root worktree is clean. If the root worktree is on
+   `hydex/main`, use `git reset --keep origin/hydex/main`; otherwise force-update that local branch
+   only when `git worktree list --porcelain` proves it is not checked out elsewhere. Align local
+   `main` to `origin/main` under the same rule. Never use `git reset --hard` for this cleanup.
+
+3. Preserve replay provenance before deleting anything. A versioned remote replay branch or an
+   annotated final tag is sufficient. For plugin-pinned releases, retain the current versioned
+   replay branch and active replay worktree; they are the durable, inspectable release replay.
+   Keep the previous versioned remote replay branch even after its local worktree becomes
+   superseded unless the user explicitly authorizes remote provenance deletion.
+
+4. When cleanup is authorized, remove only superseded, clean local replay worktrees whose `HEAD`
+   exactly matches a retained remote replay ref or tag. Verify those facts first, then run
+   `git worktree remove <exact-path>` and delete only the corresponding local branch. Rebased
+   histories are not reliably classified by ordinary merged-branch output, so compare exact refs.
+   If container-created files block worktree removal, repair ownership only inside that exact
+   stale path and move any orphaned directory to Trash; never use a broad recursive deletion.
+
+5. Finish with live readback in the root, current replay, and plugin checkouts:
+
+   ```bash
+   git status --short --branch
+   git rev-list --left-right --count HEAD...origin/hydex/main
+   git -C "$REPLAY_WORKTREE" status --short --branch
+   git -C "$REPLAY_WORKTREE" rev-list --left-right --count HEAD..."origin/$SCRATCH"
+   git -C hydex-plugin status --short --branch
+   git -C hydex-plugin rev-list --left-right --count HEAD...origin/master
+   git worktree list --porcelain
+   ```
+
+   Require clean intended worktrees, `0 0` ahead/behind counts, the branch ancestry contract, and
+   an explicit report of retained remote replay refs, ignored local artifacts, or any intentionally
+   uncommitted files.
 
 ## Branch Contract
 

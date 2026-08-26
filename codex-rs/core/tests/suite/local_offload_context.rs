@@ -43,7 +43,7 @@ fn model_offload_config(local_server: &MockServer, enabled: bool) -> ModelOffloa
     provider.name = "local-test-provider".to_string();
     provider.http_headers = Some(HashMap::from([(
         "x-local-test-token".to_string(),
-        "local-only".to_string(),
+        "local-only".into(),
     )]));
     provider.request_max_retries = Some(0);
     provider.stream_max_retries = Some(0);

@@ -170,6 +170,7 @@ async fn live_local_offload_responses_turn_completes() {
         SessionSource::Exec,
         "hydex_live_offload".to_string(),
         config.model_verbosity,
+        /*content_item_kinds_enabled*/ false,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,

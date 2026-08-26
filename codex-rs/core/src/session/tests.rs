@@ -10732,6 +10732,10 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
         turn_context
             .config
             .features
+            .enabled(Feature::ContentItemKinds),
+        turn_context
+            .config
+            .features
             .enabled(Feature::EnableRequestCompression),
         turn_context
             .config

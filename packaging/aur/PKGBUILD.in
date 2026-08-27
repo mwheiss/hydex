@@ -1,0 +1,78 @@
+# Maintainer: Michael W. Heiss <mheiss at users dot noreply dot github dot com>
+
+pkgname=hydex-bin
+pkgver=@PKGVER@
+pkgrel=@PKGREL@
+pkgdesc="Codex CLI with Hydex local model offload"
+arch=('x86_64')
+url="https://github.com/mwheiss/hydex"
+license=('Apache-2.0' 'LGPL-2.0-or-later' 'MIT' 'Unlicense')
+provides=("codex=${pkgver}" "openai-codex=${pkgver}")
+conflicts=('openai-codex' 'openai-codex-bin' 'openai-codex-autoup-bin')
+optdepends=(
+  'git: working with Git repositories'
+)
+options=('!debug' '!strip')
+
+_runtime_version=@RUNTIME_VERSION@
+_runtime_release=@PKGREL@
+_runtime_target="${CARCH}-unknown-linux-musl"
+_runtime_root="hydex-runtime-${_runtime_version}-r${_runtime_release}-${_runtime_target}"
+_runtime_archive="${_runtime_root}.tar.gz"
+_runtime_tag=@RELEASE_TAG@
+
+source_x86_64=(
+  "${_runtime_archive}::https://github.com/mwheiss/hydex/releases/download/${_runtime_tag}/${_runtime_archive}"
+)
+sha256sums_x86_64=('@ARCHIVE_SHA256@')
+
+package() {
+  local runtime="${srcdir}/${_runtime_root}"
+
+  install -Dm755 "${runtime}/bin/codex" \
+    "${pkgdir}/usr/lib/hydex/bin/codex"
+  install -Dm755 "${runtime}/bin/codex-code-mode-host" \
+    "${pkgdir}/usr/lib/hydex/bin/codex-code-mode-host"
+  install -Dm755 "${runtime}/codex-path/rg" \
+    "${pkgdir}/usr/lib/hydex/codex-path/rg"
+  install -Dm755 "${runtime}/codex-resources/bwrap" \
+    "${pkgdir}/usr/lib/hydex/codex-resources/bwrap"
+  install -Dm644 "${runtime}/codex-package.json" \
+    "${pkgdir}/usr/lib/hydex/codex-package.json"
+
+  install -d "${pkgdir}/usr/bin"
+  ln -s ../lib/hydex/bin/codex "${pkgdir}/usr/bin/codex"
+  ln -s ../lib/hydex/bin/codex-code-mode-host \
+    "${pkgdir}/usr/bin/codex-code-mode-host"
+
+  install -Dm644 "${runtime}/LICENSES/Hydex-Apache-2.0.txt" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/Hydex-Apache-2.0.txt"
+  install -Dm644 "${runtime}/LICENSES/bubblewrap-LGPL-2.0-or-later.txt" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/bubblewrap-LGPL-2.0-or-later.txt"
+  install -Dm644 "${runtime}/LICENSES/ripgrep-MIT.txt" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/ripgrep-MIT.txt"
+  install -Dm644 "${runtime}/LICENSES/ripgrep-UNLICENSE.txt" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/ripgrep-UNLICENSE.txt"
+  install -Dm644 "${runtime}/manifest.json" \
+    "${pkgdir}/usr/share/hydex/runtime-manifest.json"
+  install -Dm644 "${runtime}/SHA256SUMS" \
+    "${pkgdir}/usr/share/hydex/runtime-SHA256SUMS"
+
+  install -d \
+    "${pkgdir}/usr/share/bash-completion/completions" \
+    "${pkgdir}/usr/share/elvish/lib" \
+    "${pkgdir}/usr/share/fish/vendor_completions.d" \
+    "${pkgdir}/usr/share/powershell/Completions" \
+    "${pkgdir}/usr/share/zsh/site-functions"
+
+  "${runtime}/bin/codex" completion bash \
+    > "${pkgdir}/usr/share/bash-completion/completions/codex"
+  "${runtime}/bin/codex" completion elvish \
+    > "${pkgdir}/usr/share/elvish/lib/codex.elv"
+  "${runtime}/bin/codex" completion fish \
+    > "${pkgdir}/usr/share/fish/vendor_completions.d/codex.fish"
+  "${runtime}/bin/codex" completion powershell \
+    > "${pkgdir}/usr/share/powershell/Completions/codex.ps1"
+  "${runtime}/bin/codex" completion zsh \
+    > "${pkgdir}/usr/share/zsh/site-functions/_codex"
+}

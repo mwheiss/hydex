@@ -1,0 +1,102 @@
+%if 0%{?rhel} == 7
+%global _rpmformat 4
+%global _binary_payload w9.gzdio
+%global _source_payload w9.gzdio
+%endif
+
+%global debug_package %{nil}
+%global __strip /bin/true
+
+Name:           hydex
+Version:        @RPM_VERSION@
+Release:        @RPM_RELEASE@%{?dist}
+Summary:        Codex CLI with Hydex local model offload
+License:        Apache-2.0 AND LGPL-2.0-or-later AND (MIT OR Unlicense)
+URL:            https://github.com/mwheiss/hydex
+Source0:        @ARCHIVE_NAME@
+BuildArch:      x86_64
+
+Provides:       codex = %{version}-%{release}
+Provides:       openai-codex = %{version}-%{release}
+Conflicts:      openai-codex
+Conflicts:      openai-codex-bin
+
+%description
+Hydex is a patch line for Codex CLI that retains OpenAI/Codex as the primary
+control plane while optionally routing eligible inference to a local
+Responses-compatible model endpoint.
+
+This package installs the validated static Linux x86_64 Hydex runtime from the
+immutable @RELEASE_TAG@ public release. It does not build Rust in COPR.
+
+%prep
+%setup -q -n @RUNTIME_ROOT@
+
+%build
+
+%install
+install -d \
+  %{buildroot}%{_libexecdir}/hydex/bin \
+  %{buildroot}%{_libexecdir}/hydex/codex-path \
+  %{buildroot}%{_libexecdir}/hydex/codex-resources \
+  %{buildroot}%{_bindir} \
+  %{buildroot}%{_datadir}/bash-completion/completions \
+  %{buildroot}%{_datadir}/elvish/lib \
+  %{buildroot}%{_datadir}/fish/vendor_completions.d \
+  %{buildroot}%{_datadir}/powershell/Completions \
+  %{buildroot}%{_datadir}/zsh/site-functions \
+  %{buildroot}%{_datadir}/hydex \
+  %{buildroot}%{_licensedir}/%{name}
+
+install -m 0755 bin/codex %{buildroot}%{_libexecdir}/hydex/bin/codex
+install -m 0755 bin/codex-code-mode-host \
+  %{buildroot}%{_libexecdir}/hydex/bin/codex-code-mode-host
+install -m 0755 codex-path/rg %{buildroot}%{_libexecdir}/hydex/codex-path/rg
+install -m 0755 codex-resources/bwrap \
+  %{buildroot}%{_libexecdir}/hydex/codex-resources/bwrap
+install -m 0644 codex-package.json \
+  %{buildroot}%{_libexecdir}/hydex/codex-package.json
+
+ln -s ../libexec/hydex/bin/codex %{buildroot}%{_bindir}/codex
+ln -s ../libexec/hydex/bin/codex-code-mode-host \
+  %{buildroot}%{_bindir}/codex-code-mode-host
+
+install -m 0644 LICENSES/Hydex-Apache-2.0.txt \
+  %{buildroot}%{_licensedir}/%{name}/Hydex-Apache-2.0.txt
+install -m 0644 LICENSES/bubblewrap-LGPL-2.0-or-later.txt \
+  %{buildroot}%{_licensedir}/%{name}/bubblewrap-LGPL-2.0-or-later.txt
+install -m 0644 LICENSES/ripgrep-MIT.txt \
+  %{buildroot}%{_licensedir}/%{name}/ripgrep-MIT.txt
+install -m 0644 LICENSES/ripgrep-UNLICENSE.txt \
+  %{buildroot}%{_licensedir}/%{name}/ripgrep-UNLICENSE.txt
+install -m 0644 manifest.json %{buildroot}%{_datadir}/hydex/runtime-manifest.json
+install -m 0644 SHA256SUMS %{buildroot}%{_datadir}/hydex/runtime-SHA256SUMS
+
+bin/codex completion bash \
+  > %{buildroot}%{_datadir}/bash-completion/completions/codex
+bin/codex completion elvish > %{buildroot}%{_datadir}/elvish/lib/codex.elv
+bin/codex completion fish \
+  > %{buildroot}%{_datadir}/fish/vendor_completions.d/codex.fish
+bin/codex completion powershell \
+  > %{buildroot}%{_datadir}/powershell/Completions/codex.ps1
+bin/codex completion zsh > %{buildroot}%{_datadir}/zsh/site-functions/_codex
+
+%files
+%license %{_licensedir}/%{name}/Hydex-Apache-2.0.txt
+%license %{_licensedir}/%{name}/bubblewrap-LGPL-2.0-or-later.txt
+%license %{_licensedir}/%{name}/ripgrep-MIT.txt
+%license %{_licensedir}/%{name}/ripgrep-UNLICENSE.txt
+%{_bindir}/codex
+%{_bindir}/codex-code-mode-host
+%{_libexecdir}/hydex/
+%{_datadir}/bash-completion/completions/codex
+%{_datadir}/elvish/lib/codex.elv
+%{_datadir}/fish/vendor_completions.d/codex.fish
+%{_datadir}/powershell/Completions/codex.ps1
+%{_datadir}/zsh/site-functions/_codex
+%{_datadir}/hydex/runtime-manifest.json
+%{_datadir}/hydex/runtime-SHA256SUMS
+
+%changelog
+* Thu Aug 27 2026 Michael W. Heiss <mheiss@users.noreply.github.com> - @RPM_VERSION@-@RPM_RELEASE@
+- Package the immutable Hydex runtime for COPR

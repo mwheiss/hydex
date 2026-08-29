@@ -364,6 +364,7 @@ fn active_remote_compaction_checkpoint(
                 active_segment.counts_as_user_turn = true;
             }
             RolloutItem::EventMsg(_)
+            | RolloutItem::RealtimeItem(_)
             | RolloutItem::SessionMeta(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. } => {
@@ -435,14 +436,14 @@ fn materialize_rollout_items(
             RolloutItem::ResponseItem(response_item) => {
                 history.record_annotated_items(
                     std::slice::from_ref(response_item),
-                    turn_context.model_info.truncation_policy.into(),
+                    turn_context.model_info().truncation_policy.into(),
                 );
             }
             RolloutItem::InterAgentCommunication(communication) => {
                 let response_item = communication.to_model_input_item();
                 history.record_items(
                     std::iter::once(&response_item),
-                    turn_context.model_info.truncation_policy.into(),
+                    turn_context.model_info().truncation_policy.into(),
                 );
             }
             RolloutItem::Compacted(compacted) => {
@@ -465,6 +466,7 @@ fn materialize_rollout_items(
             }
             RolloutItem::EventMsg(_)
             | RolloutItem::TurnContext(_)
+            | RolloutItem::RealtimeItem(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }

@@ -143,10 +143,10 @@ pub(crate) async fn recover_remote_compaction_payload(
 
     let recovery_model = resolve_remote_compaction_recovery_model(
         &turn_context.config.model_offload.compaction_recovery.model,
-        turn_context.model_info.slug.as_str(),
+        turn_context.model_info().slug.as_str(),
         producing_model,
     );
-    let recovery_turn_context = if recovery_model == turn_context.model_info.slug {
+    let recovery_turn_context = if recovery_model == turn_context.model_info().slug {
         Arc::clone(turn_context)
     } else {
         Arc::new(
@@ -167,7 +167,7 @@ pub(crate) async fn recover_remote_compaction_payload(
     let mut stream = client_session
         .stream(
             &prompt,
-            &recovery_turn_context.model_info,
+            recovery_turn_context.model_info().as_ref(),
             &recovery_turn_context.session_telemetry,
             Some(
                 recovery_turn_context
@@ -177,7 +177,7 @@ pub(crate) async fn recover_remote_compaction_payload(
                     .reasoning_effort
                     .clone(),
             ),
-            recovery_turn_context.reasoning_summary,
+            recovery_turn_context.reasoning_summary(),
             recovery_turn_context.config.service_tier.clone(),
             &responses_metadata,
             &InferenceTraceContext::disabled(),

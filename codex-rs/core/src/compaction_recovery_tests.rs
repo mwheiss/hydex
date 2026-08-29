@@ -48,6 +48,7 @@ fn completed_event() -> ResponseEvent {
     ResponseEvent::Completed {
         response_id: "response-id".to_string(),
         token_usage: None,
+        usage_metadata: None,
         end_turn: Some(true),
     }
 }
@@ -441,6 +442,7 @@ fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
         prompt_cache_key: None,
         text: None,
         client_metadata: None,
+        access_programs: None,
     };
 
     crate::local_offload::transform_request_for_local_offload(&mut request, &[])

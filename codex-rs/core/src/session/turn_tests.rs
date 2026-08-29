@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::ModelOffloadContextConfig;
+use crate::session::tests::update_turn_settings_for_test;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::ResponseItemId;
@@ -163,7 +164,9 @@ async fn local_sampling_validation_rejects_broken_final_text() {
 #[tokio::test]
 async fn offload_context_window_200000_derives_auto_compact_thresholds() {
     let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
-    turn_context.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    });
     Arc::make_mut(&mut turn_context.config)
         .model_offload
         .context = ModelOffloadContextConfig {
@@ -184,7 +187,9 @@ async fn offload_context_window_200000_derives_auto_compact_thresholds() {
 #[tokio::test]
 async fn offload_explicit_auto_compact_limit_is_clamped_to_local_90_percent() {
     let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
-    turn_context.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    });
     Arc::make_mut(&mut turn_context.config)
         .model_offload
         .context = ModelOffloadContextConfig {
@@ -206,7 +211,9 @@ async fn offload_explicit_auto_compact_limit_is_clamped_to_local_90_percent() {
 #[tokio::test]
 async fn offload_threshold_selector_preserves_no_offload_model_behavior() {
     let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
-    turn_context.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    });
     let config = Arc::make_mut(&mut turn_context.config);
     config.model_context_window = None;
     config.model_offload.context = ModelOffloadContextConfig {
@@ -294,7 +301,9 @@ async fn turn_forced_primary_uses_primary_auto_compact_thresholds() {
 #[tokio::test]
 async fn offload_threshold_selector_does_not_require_global_model_context_window() {
     let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
-    turn_context.model_info = Arc::new(test_model_info_with_context_window(None));
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(None));
+    });
     let config = Arc::make_mut(&mut turn_context.config);
     config.model_context_window = None;
     config.model_offload.context = ModelOffloadContextConfig {

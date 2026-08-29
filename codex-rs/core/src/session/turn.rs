@@ -1118,7 +1118,7 @@ struct AutoCompactThresholds {
 
 fn model_auto_compact_thresholds(turn_context: &TurnContext) -> AutoCompactThresholds {
     AutoCompactThresholds {
-        auto_compact_token_limit: turn_context.model_info.auto_compact_token_limit(),
+        auto_compact_token_limit: turn_context.model_info().auto_compact_token_limit(),
         effective_context_window: turn_context.model_context_window(),
     }
 }
@@ -1277,7 +1277,7 @@ pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
     let producing_model = sess.active_remote_compaction_model().await;
     let recovery_model = resolve_remote_compaction_recovery_model(
         &turn_context.config.model_offload.compaction_recovery.model,
-        &turn_context.model_info.slug,
+        &turn_context.model_info().slug,
         producing_model.as_deref(),
     );
     let recovery_reasoning_effort = turn_context
@@ -2068,6 +2068,7 @@ async fn run_sampling_request(
             built_tools_for_wire(
                 sess.as_ref(),
                 turn_context.as_ref(),
+                step_context.settings.model_info.as_ref(),
                 &step_context.environments,
                 &step_context.mcp,
                 turn_store.as_ref(),
@@ -2080,12 +2081,8 @@ async fn run_sampling_request(
     };
     let step_context = Arc::new(StepContext {
         turn: Arc::clone(&step_context.turn),
-        model_info: Arc::clone(&step_context.model_info),
-        reasoning_effort: step_context.reasoning_effort.clone(),
-        reasoning_summary: step_context.reasoning_summary,
-        service_tier: step_context.service_tier.clone(),
-        approval_policy: step_context.approval_policy,
-        approvals_reviewer: step_context.approvals_reviewer,
+        settings: Arc::clone(&step_context.settings),
+        token_budget: step_context.token_budget.clone(),
         session_telemetry: step_context.session_telemetry.clone(),
         environments: step_context.environments.clone(),
         selected_capability_roots: step_context.selected_capability_roots.clone(),
@@ -2270,6 +2267,7 @@ pub(crate) async fn built_tools(
     built_tools_for_wire(
         sess,
         turn_context,
+        model_info,
         environments,
         mcp,
         step_store,
@@ -2279,9 +2277,11 @@ pub(crate) async fn built_tools(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn built_tools_for_wire(
     sess: &Session,
     turn_context: &TurnContext,
+    model_info: &codex_protocol::openai_models::ModelInfo,
     environments: &TurnEnvironmentSnapshot,
     mcp: &Arc<codex_mcp::McpBinding>,
     step_store: &ExtensionData,

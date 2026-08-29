@@ -712,13 +712,8 @@ fn build_model_visible_specs(
         }
 
         let tool_name = tool.runtime.tool_name();
-        if is_hidden_by_code_mode_only(
-            turn_context,
-            model_info,
-            &tool_name,
-            exposure,
-            wire_target,
-        ) {
+        if is_hidden_by_code_mode_only(turn_context, model_info, &tool_name, exposure, wire_target)
+        {
             continue;
         }
 
@@ -784,7 +779,7 @@ fn hosted_model_tool_specs(
     let mut specs = Vec::new();
     let standalone_web_search_available =
         standalone_web_search_enabled(turn_context, model_info, wire_target)
-        && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
+            && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
     let web_search_mode = (!standalone_web_search_available

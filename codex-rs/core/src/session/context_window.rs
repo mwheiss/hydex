@@ -25,11 +25,11 @@ pub(crate) async fn context_window_token_status(
     turn_context: &TurnContext,
 ) -> ContextWindowTokenStatus {
     let auto_compact_scope_limit = match turn_context.config.model_auto_compact_token_limit_scope {
-        AutoCompactTokenLimitScope::Total => turn_context.model_info.auto_compact_token_limit(),
+        AutoCompactTokenLimitScope::Total => turn_context.model_info().auto_compact_token_limit(),
         AutoCompactTokenLimitScope::BodyAfterPrefix => turn_context
             .config
             .model_auto_compact_token_limit
-            .or_else(|| turn_context.model_info.auto_compact_token_limit()),
+            .or_else(|| turn_context.model_info().auto_compact_token_limit()),
     };
     context_window_token_status_with_thresholds(
         sess,

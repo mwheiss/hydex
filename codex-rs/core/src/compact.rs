@@ -344,7 +344,7 @@ async fn run_compact_task_inner_impl(
     let mut history = sess.clone_history().await;
     history.record_items(
         &[initial_input_for_turn.into()],
-        turn_context.model_info.truncation_policy.into(),
+        turn_context.model_info().truncation_policy.into(),
     );
 
     let validation_metadata = turn_context.turn_metadata_state.to_responses_metadata(
@@ -363,7 +363,7 @@ async fn run_compact_task_inner_impl(
             // Clone is required because of the loop
             let turn_input = history
                 .clone()
-                .for_prompt(&turn_context.model_info.input_modalities);
+                .for_prompt(&turn_context.model_info().input_modalities);
             let turn_input_len = turn_input.len();
             let transport_retry_temperature = (retries > 0)
                 .then(|| {
@@ -608,10 +608,10 @@ async fn validate_local_compaction_payload_with_model(
         LocalOutputKind::CompactionPayload,
         summary_text,
         client_session,
-        &turn_context.model_info,
+        turn_context.model_info().as_ref(),
         &turn_context.session_telemetry,
-        turn_context.reasoning_effort.clone(),
-        turn_context.reasoning_summary,
+        turn_context.reasoning_effort().cloned(),
+        turn_context.reasoning_summary(),
         turn_context.config.service_tier.clone(),
         responses_metadata,
         client_session.local_offload_context_window(),

@@ -30,8 +30,8 @@ use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::Compression;
 use codex_api::ResponseEvent;
-use codex_api::ResponsesEndpoint;
 use codex_api::ResponsesApiRequest;
+use codex_api::ResponsesEndpoint;
 use codex_api::TransportError;
 use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
@@ -357,6 +357,7 @@ fn local_request_guard_uses_effective_context_window() {
         prompt_cache_key: None,
         text: None,
         client_metadata: None,
+        access_programs: None,
     };
 
     let err = ensure_local_request_fits_effective_context(
@@ -586,6 +587,8 @@ fn responses_lite_prefix_ids_track_thread_and_payload() -> anyhow::Result<()> {
     };
     let build = |client: &ModelClient, prompt: &Prompt| {
         client.build_responses_request(
+            client.state.provider.info(),
+            /*model_override*/ None,
             prompt,
             &model,
             /*effort*/ None,
@@ -598,6 +601,8 @@ fn responses_lite_prefix_ids_track_thread_and_payload() -> anyhow::Result<()> {
                 /*parent_thread_id*/ None,
                 TestCodexResponsesRequestKind::Turn,
             ),
+            /*include_codex_metadata*/ true,
+            /*temperature*/ None,
         )
     };
 
@@ -684,6 +689,8 @@ fn reasoning_effort_in_request(
     let client = test_model_client(session_source);
     client
         .build_responses_request(
+            client.state.provider.info(),
+            /*model_override*/ None,
             &Prompt::default(),
             model_info,
             Some(effort),
@@ -696,6 +703,8 @@ fn reasoning_effort_in_request(
                 /*parent_thread_id*/ None,
                 TestCodexResponsesRequestKind::Turn,
             ),
+            /*include_codex_metadata*/ true,
+            /*temperature*/ None,
         )
         .expect("build responses request")
         .reasoning
@@ -1249,6 +1258,7 @@ async fn local_response_stream_does_not_double_count_deltas_and_completed_items(
         Ok(ResponseEvent::Completed {
             response_id: "response-id".to_string(),
             token_usage: None,
+            usage_metadata: None,
             end_turn: Some(true),
         }),
     ]);
@@ -1283,6 +1293,7 @@ async fn response_stream_without_local_limit_preserves_primary_behavior() {
         Ok(ResponseEvent::Completed {
             response_id: "response-id".to_string(),
             token_usage: None,
+            usage_metadata: None,
             end_turn: Some(true),
         }),
     ]);

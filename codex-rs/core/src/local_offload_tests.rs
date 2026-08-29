@@ -34,6 +34,7 @@ fn request_with_input(input: Vec<ResponseItem>) -> ResponsesApiRequest {
         prompt_cache_key: None,
         text: None,
         client_metadata: None,
+        access_programs: None,
     }
 }
 

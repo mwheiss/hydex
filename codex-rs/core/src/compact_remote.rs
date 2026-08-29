@@ -307,7 +307,7 @@ async fn run_remote_compact_task_inner_impl(
                     .model_offload
                     .provider
                     .as_ref(),
-                &compaction_turn_context.model_info.slug,
+                &compaction_turn_context.model_info().slug,
             ),
         },
     )

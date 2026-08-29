@@ -1559,7 +1559,11 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
     };
 
     let primary = probe_with(
-        |turn| Arc::make_mut(&mut turn.model_info).supports_search_tool = true,
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+        },
         inputs(),
     )
     .await;
@@ -1568,7 +1572,9 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
 
     let local = probe_with_wire_target(
         |turn| {
-            Arc::make_mut(&mut turn.model_info).supports_search_tool = true;
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
             set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
         },
         inputs(),
@@ -3061,7 +3067,9 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 async fn local_offload_exposes_v1_multi_agent_tools_directly() {
     let plan = probe_with_wire_target(
         |turn| {
-            Arc::make_mut(&mut turn.model_info).supports_search_tool = true;
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
             set_feature(turn, Feature::Collab, /*enabled*/ true);
             set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
         },

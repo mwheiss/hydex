@@ -382,6 +382,7 @@ async fn run_remote_compaction_request_v2(
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
 ) -> CodexResult<RemoteCompactionV2Output> {
+    let turn_context = &step_context.turn;
     let max_retries = client_session
         .stream_max_retries_for(responses_metadata)
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);

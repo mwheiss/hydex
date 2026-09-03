@@ -1399,6 +1399,7 @@ pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
             message: String::new(),
             window_number,
             window_ids,
+            compaction_response_id: None,
             remote_compaction_model: None,
         },
     )
@@ -1446,6 +1447,7 @@ async fn promote_retro_local_history_before_local_sampling(
             message: String::new(),
             window_number,
             window_ids,
+            compaction_response_id: None,
             remote_compaction_model: None,
         },
     )

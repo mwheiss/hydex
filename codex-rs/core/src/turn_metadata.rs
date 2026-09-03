@@ -118,11 +118,12 @@ pub async fn detached_local_output_validation_responses_metadata(
     cwd: &AbsolutePathBuf,
     sandbox: Option<&str>,
 ) -> CodexResponsesMetadata {
+    let git_root_discovery = Arc::new(GitRootDiscovery::default());
     CodexResponsesMetadata {
         request_kind: Some(CodexResponsesRequestKind::LocalOutputValidation),
         subagent_header: subagent_header_value(session_source),
         sandbox: sandbox.map(ToString::to_string),
-        workspaces: memory_workspaces(cwd).await,
+        workspaces: memory_workspaces(cwd, git_root_discovery.discover(cwd.clone())).await,
         ..CodexResponsesMetadata::new(installation_id, session_id, thread_id, window_id)
     }
 }

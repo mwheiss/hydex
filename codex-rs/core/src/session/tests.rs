@@ -52,8 +52,8 @@ use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::WireApi;
+use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
@@ -2922,6 +2922,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record,
+            remote_compaction_model: None,
         })
     };
 
@@ -5952,6 +5953,7 @@ async fn compaction_checkpoint_waits_for_accepted_settings_persistence() {
                 window_number,
                 window_ids,
                 compaction_response_id: None,
+                remote_compaction_model: None,
             },
         ),
     ));

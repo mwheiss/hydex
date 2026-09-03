@@ -39,13 +39,16 @@ def capture_lines(args: list[str], *, cwd: pathlib.Path) -> list[str]:
 
 
 def ref_exists(repo: pathlib.Path, ref: str) -> bool:
-    return subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", ref],
-        cwd=repo,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", ref],
+            cwd=repo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def resolve_commit(repo: pathlib.Path, ref: str) -> str:
@@ -85,7 +88,9 @@ def print_preflight(
         check=False,
     )
     conflict_lines = [
-        line for line in merge_result.stdout.splitlines() if line.startswith("CONFLICT ")
+        line
+        for line in merge_result.stdout.splitlines()
+        if line.startswith("CONFLICT ")
     ]
     print(f"predicted_conflicts={len(conflict_lines)}")
     for line in conflict_lines:
@@ -93,17 +98,22 @@ def print_preflight(
 
 
 def is_generated_replay_path(path: str) -> bool:
-    return any(path == prefix or path.startswith(prefix) for prefix in GENERATED_REPLAY_PATHS)
+    return any(
+        path == prefix or path.startswith(prefix) for prefix in GENERATED_REPLAY_PATHS
+    )
 
 
 def ref_has_path(repo: pathlib.Path, ref: str, path: str) -> bool:
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"{ref}:{path}"],
-        cwd=repo,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}:{path}"],
+            cwd=repo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def restore_path_from_ref(
@@ -168,7 +178,9 @@ def apply_managed_conflict_policy(
                 destination_path=UPSTREAM_README_MIRROR_PATH,
             )
         elif is_generated_replay_path(path):
-            print(f"Resolving generated output {path} from {upstream_sha}; regenerate after replay")
+            print(
+                f"Resolving generated output {path} from {upstream_sha}; regenerate after replay"
+            )
             restore_path_from_ref(repo, worktree, ref=upstream_sha, path=path)
     return unmerged_paths(worktree)
 
@@ -192,12 +204,16 @@ def refresh_upstream_readme_mirror(
         ["git", "status", "--porcelain", "--", UPSTREAM_README_MIRROR_PATH],
         cwd=worktree,
     ):
-        print(f"Refreshed {UPSTREAM_README_MIRROR_PATH} from {upstream_sha}; commit after validation")
+        print(
+            f"Refreshed {UPSTREAM_README_MIRROR_PATH} from {upstream_sha}; commit after validation"
+        )
 
 
 def rebase_in_progress(worktree: pathlib.Path) -> bool:
     for state_dir in ("rebase-merge", "rebase-apply"):
-        path = pathlib.Path(capture(["git", "rev-parse", "--git-path", state_dir], cwd=worktree))
+        path = pathlib.Path(
+            capture(["git", "rev-parse", "--git-path", state_dir], cwd=worktree)
+        )
         if path.exists():
             return True
     return False
@@ -239,7 +255,10 @@ def continue_rebase(
         if result.returncode == 0:
             return 0
         if not rebase_in_progress(worktree):
-            print("rebase continuation failed without leaving a resumable rebase", file=sys.stderr)
+            print(
+                "rebase continuation failed without leaving a resumable rebase",
+                file=sys.stderr,
+            )
             return result.returncode
         should_continue = True
 
@@ -286,7 +305,9 @@ def replay_commits(
         if result_code != 0:
             return result_code
     refresh_upstream_readme_mirror(repo, worktree, upstream_sha=upstream_sha)
-    print("Commit-preserving replay completed. Regenerate outputs, validate, and commit any refreshes.")
+    print(
+        "Commit-preserving replay completed. Regenerate outputs, validate, and commit any refreshes."
+    )
     print(f"Replay worktree: {worktree}")
     return 0
 
@@ -312,7 +333,9 @@ def replay_aggregate_patch(
     if result.returncode == 0:
         print("Aggregate fallback applied. Validate and commit the scratch branch.")
     else:
-        print(f"Aggregate fallback needs manual resolution in {worktree}", file=sys.stderr)
+        print(
+            f"Aggregate fallback needs manual resolution in {worktree}", file=sys.stderr
+        )
     return result.returncode
 
 
@@ -336,7 +359,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    repo = pathlib.Path(capture(["git", "rev-parse", "--show-toplevel"], cwd=pathlib.Path.cwd()))
+    repo = pathlib.Path(
+        capture(["git", "rev-parse", "--show-toplevel"], cwd=pathlib.Path.cwd())
+    )
     run(["git", "config", "rerere.enabled", "true"], cwd=repo)
     run(["git", "config", "rerere.autoupdate", "true"], cwd=repo)
 
@@ -348,11 +373,14 @@ def main() -> int:
     base_sha = resolve_commit(repo, args.base_anchor)
     hydex_sha = resolve_commit(repo, args.hydex_branch)
     upstream_sha = resolve_commit(repo, args.upstream)
-    if subprocess.run(
-        ["git", "merge-base", "--is-ancestor", base_sha, hydex_sha],
-        cwd=repo,
-        check=False,
-    ).returncode != 0:
+    if (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_sha, hydex_sha],
+            cwd=repo,
+            check=False,
+        ).returncode
+        != 0
+    ):
         print(
             f"Hydex base contract violated: {args.base_anchor} ({base_sha}) is not an ancestor "
             f"of {args.hydex_branch} ({hydex_sha}).",
@@ -363,7 +391,9 @@ def main() -> int:
     print(f"Hydex base: {args.base_anchor} -> {base_sha}")
     print(f"Hydex tip: {args.hydex_branch} -> {hydex_sha}")
     print(f"Replay target: {args.upstream} -> {upstream_sha}")
-    print_preflight(repo, base_sha=base_sha, hydex_sha=hydex_sha, upstream_sha=upstream_sha)
+    print_preflight(
+        repo, base_sha=base_sha, hydex_sha=hydex_sha, upstream_sha=upstream_sha
+    )
     if args.preflight_only:
         return 0
 

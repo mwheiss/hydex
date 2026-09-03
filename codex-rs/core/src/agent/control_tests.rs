@@ -1420,6 +1420,7 @@ async fn spawn_agent_fork_drops_inherited_token_usage_state() {
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: Some(parent_record.clone()),
+                remote_compaction_model: None,
             }),
             RolloutItem::TokenUsageRecord(parent_record),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),

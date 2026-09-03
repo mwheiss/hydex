@@ -98,6 +98,7 @@ impl ActiveReplaySegment<'_> {
 #[derive(Debug)]
 struct MaterializedRolloutHistory {
     history: Vec<ResponseItemEnvelope>,
+    guardian_history: Option<codex_history::GuardianHistoryCheckpoint>,
     saw_legacy_compaction_without_replacement_history: bool,
 }
 
@@ -140,10 +141,10 @@ fn finalize_active_segment<'a>(
             .compacted
             .remote_compaction_model
             .clone();
-        let mut suffix = active_segment.segment_end_index
+        let mut suffix = active_segment
+            .segment_end_index
             .map(|segment_end| {
-                rollout_items[segment_base_compaction.index.saturating_add(1)..segment_end]
-                    .to_vec()
+                rollout_items[segment_base_compaction.index.saturating_add(1)..segment_end].to_vec()
             })
             .unwrap_or_default();
         suffix.append(&mut progress.surviving_newer_rollout_items);
@@ -178,12 +179,11 @@ fn finalize_active_segment<'a>(
     if matches!(
         progress.reference_context_item,
         TurnReferenceContextItem::NeverSet
-    )
-        && (has_context_baseline
-            || matches!(
-                active_segment.reference_context_item,
-                TurnReferenceContextItem::Cleared
-            ))
+    ) && (has_context_baseline
+        || matches!(
+            active_segment.reference_context_item,
+            TurnReferenceContextItem::Cleared
+        ))
     {
         progress.reference_context_item = active_segment.reference_context_item;
     }
@@ -444,10 +444,12 @@ fn checkpoint_matches_active_remote_compaction(
 fn materialize_rollout_items(
     turn_context: &TurnContext,
     initial_history: Vec<ResponseItemEnvelope>,
+    initial_guardian_history: Option<&codex_history::GuardianHistoryCheckpoint>,
     rollout_items: &[RolloutItem],
 ) -> MaterializedRolloutHistory {
     let mut history = ContextManager::new();
     history.replace_annotated(initial_history);
+    history.restore_guardian_history(initial_guardian_history);
     let mut saw_legacy_compaction_without_replacement_history = false;
 
     for item in rollout_items {
@@ -468,6 +470,7 @@ fn materialize_rollout_items(
             RolloutItem::Compacted(compacted) => {
                 if let Some(replacement_history) = &compacted.replacement_history {
                     history.replace_annotated(replacement_history.clone());
+                    history.restore_guardian_history(compacted.guardian_history.as_ref());
                 } else {
                     saw_legacy_compaction_without_replacement_history = true;
                     let user_messages =
@@ -495,6 +498,7 @@ fn materialize_rollout_items(
     }
 
     MaterializedRolloutHistory {
+        guardian_history: history.guardian_history_checkpoint(),
         history: history.into_annotated_items(),
         saw_legacy_compaction_without_replacement_history,
     }
@@ -533,6 +537,7 @@ pub(super) fn reconstruct_retro_local_history_from_rollout(
     let prefix = materialize_rollout_items(
         turn_context,
         Vec::new(),
+        /*initial_guardian_history*/ None,
         &rollout_items[..remote_checkpoint_index],
     );
     if prefix.history.iter().any(|envelope| {
@@ -550,6 +555,7 @@ pub(super) fn reconstruct_retro_local_history_from_rollout(
     let reconstructed = materialize_rollout_items(
         turn_context,
         prefix.history,
+        /*initial_guardian_history*/ None,
         &remote_checkpoint.surviving_suffix,
     )
     .history;
@@ -806,7 +812,7 @@ impl Session {
             .base_compaction
             .and_then(|checkpoint| checkpoint.compacted.replacement_history.clone())
             .unwrap_or_default();
-        let guardian_history = progress
+        let initial_guardian_history = progress
             .base_compaction
             .and_then(|checkpoint| checkpoint.compacted.guardian_history.clone());
         let rollout_suffix = progress
@@ -817,7 +823,12 @@ impl Session {
                     .base_compaction
                     .map_or(rollout_items, |checkpoint| checkpoint.suffix)
             });
-        let materialized = materialize_rollout_items(turn_context, initial_history, rollout_suffix);
+        let materialized = materialize_rollout_items(
+            turn_context,
+            initial_history,
+            initial_guardian_history.as_ref(),
+            rollout_suffix,
+        );
         let saw_legacy_compaction_without_replacement_history =
             materialized.saw_legacy_compaction_without_replacement_history;
 
@@ -878,7 +889,7 @@ impl Session {
                 id: None,
             });
         RolloutReconstruction {
-            guardian_history,
+            guardian_history: materialized.guardian_history,
             history: materialized.history,
             previous_turn_settings: progress.previous_turn_settings,
             reference_context_item,

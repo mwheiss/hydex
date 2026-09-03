@@ -1136,6 +1136,7 @@ async fn record_initial_history_requires_surviving_full_snapshot_without_user_tu
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
+                remote_compaction_model: None,
             }),
         ],
     };
@@ -1280,12 +1281,15 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(remote_history.clone()),
+            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
             remote_compaction_model: Some("gpt-5.4".to_string()),
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::ResponseItem(user_message("primary continuation").into()),
     ];
@@ -1321,12 +1325,15 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(old_remote_history.clone())),
+            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
             remote_compaction_model: Some("gpt-old".to_string()),
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
@@ -1350,12 +1357,15 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(new_remote_history)),
+            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
             remote_compaction_model: Some("gpt-new".to_string()),
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
@@ -1404,12 +1414,15 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(old_remote_history.clone())),
+            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
             remote_compaction_model: Some("gpt-old".to_string()),
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
@@ -1434,12 +1447,15 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(new_remote_history)),
+            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
             remote_compaction_model: Some("gpt-new".to_string()),
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
@@ -1482,12 +1498,15 @@ async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_activ
             encrypted_content: "newest raw but inactive state".to_string(),
             internal_chat_message_metadata_passthrough: None,
         }])),
+        guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,
         remote_compaction_model: Some("gpt-new".to_string()),
         window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
     })];
 
     let err = reconstruct_retro_local_history_from_rollout(
@@ -1591,6 +1610,7 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions() {
                     window_id: Some(window_ids[window_number].to_string()),
                     compaction_response_id: None,
                     latest_token_usage_record: None,
+                    remote_compaction_model: None,
                 }),
                 RolloutItem::WorldState(WorldStateItem::full(object!({
                     "environment": {"window": window_number, "status": "starting"}

@@ -12,7 +12,9 @@ OPENAI_CODEX_REMOTE = "https://github.com/openai/codex.git"
 TARGET_PLATFORM = "linux-x64"
 
 
-def run(args: list[str], *, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(
+    args: list[str], *, cwd: Path, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(args), flush=True)
     return subprocess.run(args, cwd=cwd, text=True, check=check)
 
@@ -35,17 +37,15 @@ def find_unpacked_baseline(plugin_dir: Path, baseline: str | None) -> Path:
         reverse=True,
     )
     if not candidates:
-        raise SystemExit(f"no unpacked {TARGET_PLATFORM} plugin baseline found in {plugin_dir}")
+        raise SystemExit(
+            f"no unpacked {TARGET_PLATFORM} plugin baseline found in {plugin_dir}"
+        )
     return candidates[0]
 
 
 def codex_package_version(unpacked_baseline: Path) -> str:
     package_path = (
-        unpacked_baseline
-        / "extension"
-        / "bin"
-        / "linux-x86_64"
-        / "codex-package.json"
+        unpacked_baseline / "extension" / "bin" / "linux-x86_64" / "codex-package.json"
     )
     data = json.loads(package_path.read_text())
     version = data.get("version")
@@ -55,13 +55,16 @@ def codex_package_version(unpacked_baseline: Path) -> str:
 
 
 def ref_exists(repo: Path, ref: str) -> bool:
-    return subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", ref],
-        cwd=repo,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", ref],
+            cwd=repo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def main() -> int:

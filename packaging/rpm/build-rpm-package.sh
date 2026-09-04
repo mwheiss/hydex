@@ -5,6 +5,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 plugin_dir="${HYDEX_PLUGIN_DIR:-${repo_root}/hydex-plugin}"
 baseline="${HYDEX_PLUGIN_BASELINE:-}"
+runtime_root="${HYDEX_RUNTIME_ROOT:-}"
 rhel_major="${HYDEX_RHEL_MAJOR:-}"
 
 case "${rhel_major}" in
@@ -15,12 +16,28 @@ case "${rhel_major}" in
     ;;
 esac
 
-if [[ $# -gt 0 ]]; then
-  if [[ $# -ne 2 || $1 != "--baseline" ]]; then
-    echo "usage: $0 [--baseline openai-chatgpt-<version>-linux-x64]" >&2
-    exit 2
-  fi
-  baseline="$2"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --baseline)
+      [[ $# -ge 2 ]] || { echo "--baseline requires a value" >&2; exit 2; }
+      baseline="$2"
+      shift 2
+      ;;
+    --runtime-root)
+      [[ $# -ge 2 ]] || { echo "--runtime-root requires a value" >&2; exit 2; }
+      runtime_root="$2"
+      shift 2
+      ;;
+    *)
+      echo "usage: $0 [--baseline NAME | --runtime-root PATH]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "${baseline}" && -n "${runtime_root}" ]]; then
+  echo "--baseline and --runtime-root are mutually exclusive" >&2
+  exit 2
 fi
 
 for command in file jq rpmbuild rpm sed sha256sum; do
@@ -30,7 +47,7 @@ for command in file jq rpmbuild rpm sed sha256sum; do
   fi
 done
 
-if [[ -z "${baseline}" ]]; then
+if [[ -z "${baseline}" && -z "${runtime_root}" ]]; then
   mapfile -t baselines < <(
     find "${plugin_dir}/unpacked" \
       -mindepth 1 \
@@ -47,12 +64,22 @@ if [[ -z "${baseline}" ]]; then
   baseline="${baselines[$((${#baselines[@]} - 1))]}"
 fi
 
-extension_bin="${plugin_dir}/unpacked/${baseline}/extension/bin/linux-x86_64"
-codex_binary="${extension_bin}/codex"
-code_mode_host_binary="${extension_bin}/codex-code-mode-host"
-rg_binary="${extension_bin}/codex-path/rg"
-bwrap_binary="${extension_bin}/codex-resources/bwrap"
-package_metadata="${extension_bin}/codex-package.json"
+if [[ -n "${runtime_root}" ]]; then
+  runtime_root="$(realpath "${runtime_root}")"
+  baseline="${HYDEX_RUNTIME_LABEL:-runtime:$(basename "${runtime_root}")}"
+  codex_binary="${runtime_root}/bin/codex"
+  code_mode_host_binary="${runtime_root}/bin/codex-code-mode-host"
+  rg_binary="${runtime_root}/codex-path/rg"
+  bwrap_binary="${runtime_root}/codex-resources/bwrap"
+  package_metadata="${runtime_root}/codex-package.json"
+else
+  extension_bin="${plugin_dir}/unpacked/${baseline}/extension/bin/linux-x86_64"
+  codex_binary="${extension_bin}/codex"
+  code_mode_host_binary="${extension_bin}/codex-code-mode-host"
+  rg_binary="${extension_bin}/codex-path/rg"
+  bwrap_binary="${extension_bin}/codex-resources/bwrap"
+  package_metadata="${extension_bin}/codex-package.json"
+fi
 license_file="${repo_root}/LICENSE"
 
 for path in \

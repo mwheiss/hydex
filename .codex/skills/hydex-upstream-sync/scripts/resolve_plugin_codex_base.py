@@ -3,13 +3,14 @@
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-
 OPENAI_CODEX_REMOTE = "https://github.com/openai/codex.git"
 TARGET_PLATFORM = "linux-x64"
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 
 
 def run(
@@ -71,14 +72,26 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin-dir", type=Path, default=Path("hydex-plugin"))
     parser.add_argument("--baseline", help="Unpacked plugin baseline directory name.")
+    parser.add_argument(
+        "--version",
+        help="Resolve an explicit Codex version, including a desktop surface version.",
+    )
     parser.add_argument("--fetch-tag", action="store_true")
     parser.add_argument("--openai-remote", default=OPENAI_CODEX_REMOTE)
     args = parser.parse_args()
 
     repo = Path(capture(["git", "rev-parse", "--show-toplevel"], cwd=Path.cwd()))
     plugin_dir = (repo / args.plugin_dir).resolve()
-    unpacked_baseline = find_unpacked_baseline(plugin_dir, args.baseline)
-    version = codex_package_version(unpacked_baseline)
+    if args.version is not None:
+        if args.baseline is not None:
+            raise SystemExit("--version and --baseline are mutually exclusive")
+        if VERSION_RE.fullmatch(args.version) is None:
+            raise SystemExit(f"invalid explicit Codex version: {args.version}")
+        unpacked_baseline = None
+        version = args.version
+    else:
+        unpacked_baseline = find_unpacked_baseline(plugin_dir, args.baseline)
+        version = codex_package_version(unpacked_baseline)
     tag = f"rust-v{version}"
 
     if args.fetch_tag:
@@ -99,8 +112,9 @@ def main() -> int:
         )
 
     sha = capture(["git", "rev-parse", f"{tag}^{{commit}}"], cwd=repo)
-    print("HYDEX_PLUGIN_CODEX_BASE")
-    print(f"plugin_baseline={unpacked_baseline.name}")
+    print("HYDEX_CODEX_BASE")
+    if unpacked_baseline is not None:
+        print(f"plugin_baseline={unpacked_baseline.name}")
     print(f"codex_package_version={version}")
     print(f"upstream_tag={tag}")
     print(f"upstream_sha={sha}")

@@ -13,6 +13,11 @@ bundled ripgrep, and bundled bubblewrap are static PIE executables and that the
 CLI version matches `codex-package.json`. The finished RPM is also rejected if
 RPM discovers any host runtime dependency beyond RPM payload capabilities.
 
+The shared builder also accepts `--runtime-root PATH` for a canonical surface
+runtime. `packaging/build-preferred-local-packages.sh` compares the VS Code and
+Codex Desktop runtime versions and uses the newer one for both RHEL packages
+and the Arch package.
+
 The RHEL 7 wrapper forces RPM v4 with a cpio/gzip payload, rejects RPM features
 newer than RPM 4.11, and validates a test installation plus CLI help/version in
 the official UBI 7.9 image. That proves RPM-format and RHEL 7 userland

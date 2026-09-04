@@ -1,4 +1,4 @@
 interface:
   display_name: "Hydex Upstream Sync"
-  short_description: "Replay, publish, and finalize Hydex refs"
-  default_prompt: "Use $hydex-upstream-sync to replay hydex/main when its OpenAI base advances and, when authorized, publish atomically, align local refs, preserve provenance, and clean up superseded worktrees."
+  short_description: "Replay one exact Hydex source version"
+  default_prompt: "Use $hydex-upstream-sync to prepare and validate one exact Hydex source replay and, when authorized, publish paired refs atomically, align clean local refs, and preserve replay provenance."

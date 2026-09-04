@@ -10,6 +10,21 @@ python3 packaging/release/build_runtime_bundle.py \
   --hydex-commit <full-hydex-source-commit>
 ```
 
+For the combined VS Code/Desktop workflow, first normalize each surface with
+`prepare_surface_runtime.py`, compare them with `select_surface_runtime.py`,
+and pass the selected newer root directly:
+
+```bash
+python3 packaging/release/build_runtime_bundle.py \
+  --runtime-root <selected-runtime-root> \
+  --release <positive-integer> \
+  --hydex-commit <full-hydex-source-commit>
+```
+
+`packaging/build-preferred-local-packages.sh` uses the same selection rule for
+the local Arch, RHEL 7, and RHEL 10 packages. If plugin and desktop versions
+are equal, the plugin runtime is the deterministic tie-break.
+
 The deterministic `.tar.gz` contains the stripped static Hydex CLI, matching code-mode host,
 ripgrep, bubblewrap, canonical `codex-package.json`, component licenses, an internal
 `SHA256SUMS`, and a provenance manifest. The adjacent `.sha256` authenticates the complete

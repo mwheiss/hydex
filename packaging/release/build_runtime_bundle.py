@@ -146,10 +146,11 @@ def copy_file(source: Path, destination: Path, mode: int) -> None:
 def build_bundle(args: argparse.Namespace) -> tuple[Path, Path, dict[str, object]]:
     repo = args.repo.resolve()
     plugin_dir = args.plugin_dir.resolve()
-    baseline_match = BASELINE_RE.fullmatch(args.baseline)
-    if baseline_match is None:
+    baseline_match = BASELINE_RE.fullmatch(args.baseline or "")
+    if args.runtime_root is None and baseline_match is None:
         raise SystemExit(
-            "baseline must be openai-chatgpt-<extension-version>-linux-x64"
+            "--baseline must be openai-chatgpt-<extension-version>-linux-x64 "
+            "when --runtime-root is omitted"
         )
     if RELEASE_RE.fullmatch(args.release) is None:
         raise SystemExit("release must be a positive integer")
@@ -158,12 +159,19 @@ def build_bundle(args: argparse.Namespace) -> tuple[Path, Path, dict[str, object
         repo, args.hydex_commit, args.allow_dirty
     )
     packaging_commit = git_output(repo, "rev-parse", "HEAD")
-    extension_bin = (
+    runtime_root = (
+        args.runtime_root.resolve() if args.runtime_root is not None else None
+    )
+    extension_bin = runtime_root or (
         plugin_dir / "unpacked" / args.baseline / "extension" / "bin" / "linux-x86_64"
     )
+    surface_metadata = {}
+    if runtime_root is not None and (runtime_root / "surface.json").is_file():
+        surface_metadata = json.loads((runtime_root / "surface.json").read_text())
     inputs = {
-        "bin/codex": extension_bin / "codex",
-        "bin/codex-code-mode-host": extension_bin / "codex-code-mode-host",
+        "bin/codex": extension_bin / ("bin/codex" if runtime_root else "codex"),
+        "bin/codex-code-mode-host": extension_bin
+        / ("bin/codex-code-mode-host" if runtime_root else "codex-code-mode-host"),
         "codex-path/rg": extension_bin / "codex-path" / "rg",
         "codex-resources/bwrap": extension_bin / "codex-resources" / "bwrap",
         "codex-package.json": extension_bin / "codex-package.json",
@@ -246,8 +254,14 @@ def build_bundle(args: argparse.Namespace) -> tuple[Path, Path, dict[str, object
             "provenance": {
                 "hydex_commit": hydex_commit,
                 "packaging_commit": packaging_commit,
+                "source_surface": surface_metadata.get("surface", "plugin"),
+                "surface_label": surface_metadata.get("sourceLabel", args.baseline),
                 "plugin_baseline": args.baseline,
-                "extension_version": baseline_match.group("version"),
+                "extension_version": (
+                    baseline_match.group("version")
+                    if baseline_match is not None
+                    else None
+                ),
                 "source_date_epoch": source_date_epoch,
                 "release_tag": release_tag,
             },
@@ -299,6 +313,8 @@ def build_bundle(args: argparse.Namespace) -> tuple[Path, Path, dict[str, object
         "target": TARGET,
         "hydex_commit": hydex_commit,
         "packaging_commit": packaging_commit,
+        "source_surface": surface_metadata.get("surface", "plugin"),
+        "surface_label": surface_metadata.get("sourceLabel", args.baseline),
         "plugin_baseline": args.baseline,
         "archive": str(archive_path),
         "archive_sha256": archive_hash,
@@ -319,7 +335,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repo", type=Path, default=repo)
     parser.add_argument("--plugin-dir", type=Path, default=repo / "hydex-plugin")
-    parser.add_argument("--baseline", required=True)
+    parser.add_argument("--baseline")
+    parser.add_argument("--runtime-root", type=Path)
     parser.add_argument("--release", required=True)
     parser.add_argument("--hydex-commit", default="HEAD")
     parser.add_argument("--output-dir", type=Path, default=script_dir / "dist")

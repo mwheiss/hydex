@@ -15,6 +15,11 @@ bundled CLI is a static Hydex build with the offload flags, pairs it with the ma
 packaging/arch/hydex-bin-<version>-1-x86_64.pkg.tar.zst
 ```
 
+The cross-surface refresh can instead supply a canonical runtime root. When the
+VS Code plugin and Codex Desktop require different Codex versions, use
+`packaging/build-preferred-local-packages.sh`; it validates both runtime roots
+and builds local packages from the newer semantic version.
+
 Install or upgrade it with the exact command printed by the helper:
 
 ```bash

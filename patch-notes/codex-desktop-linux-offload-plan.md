@@ -1,8 +1,9 @@
 # Hydex Offload Control for Codex Desktop Linux
 
-- Status: proposed
-- Last evaluated: 2026-08-01
+- Status: patcher prepared; matching desktop-version Hydex binary still required
+- Last evaluated: 2026-09-04
 - Target repository: [ilysenko/codex-desktop-linux](https://github.com/ilysenko/codex-desktop-linux)
+- Maintained fork: [mwheiss/codex-desktop-linux](https://github.com/mwheiss/codex-desktop-linux)
 
 ## Objective
 
@@ -22,14 +23,17 @@ application source.
 ## Summary
 
 This is a small-to-medium integration. Hydex already exposes the required
-app-server protocol and routing behavior. The remaining work is a minified
-webview patch in `codex-desktop-linux`, together with drift-resistant tests and
-feature documentation.
+app-server protocol and routing behavior. A disabled-by-default
+`linux-features/hydex-offload` implementation has now been prepared in the
+local `codex-desktop-linux` checkout with drift-resistant tests and feature
+documentation. The feature also replaces the staged official `resources/codex`
+with a version-matched Hydex binary, following the VS Code integration shape.
 
-A production-quality implementation is expected to take one to two focused
-days. A proof of concept should take two to four hours. The expected change is
-approximately 120-200 lines of patch code, 150-300 lines of tests, and a small
-feature manifest and README.
+The prepared change contains approximately 250 lines of patch code, 400 lines
+of focused tests, and a small feature manifest and README. The test footprint
+is larger than the original estimate because it covers feature dependency
+expansion, partial-surface rejection, storage semantics, both app-server
+payload shapes, and the current split-bundle contracts.
 
 No Rust changes are expected for the initial implementation.
 
@@ -77,11 +81,15 @@ linux-features/hydex-offload/
 ├── README.md
 ├── feature.json
 ├── patch.js
+├── stage.sh
 └── test.js
 ```
 
-The feature should use `webview-asset` patch descriptors. It does not need an
-Electron main-process patch, runtime hook, package hook, or staged resource.
+The feature uses `webview-asset` patch descriptors plus a build-time stage hook
+that validates and atomically replaces the bundled CLI. It does not need an
+Electron main-process patch or runtime hook. Native packaging retains the
+validated Hydex executable in the update-builder payload so later rebuilds can
+reuse it while the official Codex version remains unchanged.
 
 This matches the wrapper's intended extension boundary: optional workflow
 integrations live under `linux-features/`, are disabled by default, and are
@@ -89,16 +97,20 @@ checked independently for upstream asset drift.
 
 ### Evaluated desktop baseline
 
-The assessment used the locally installed desktop build:
+The current implementation was evaluated against the signed official Linux
+package and wrapper checkout:
 
-- Upstream app version: `26.721.81911`
-- Wrapper version: `0.10.4`
-- Wrapper source commit: `042adb7b23b1f47ca8d6a09da0b1abc5e00ff4a7`
-- Main webview asset: `app-initial-CRKqnyc3.js`
+- Upstream app version: `26.901.31953`
+- Wrapper version: `0.11.1`
+- Wrapper source commit: `23c55eb49ca724e8b7a1e698c1f3df075be42631`
+- Request bridge asset: `app-initial-c8dbea294abe.js`
+- Local Codex/Work model picker asset: `app-primary-7eef500906c5.js`
 
-That build contains one unambiguous app-server `sendRequest` implementation
-and one composer model-picker component with the active `conversationId` in
-scope. These are suitable independent patch seams. Names and bundle hashes are
+That build contains one unambiguous app-server `sendRequest` implementation in
+`app-initial` and one local composer model-picker component with the active
+`conversationId` in scope in `app-primary`. Chat uses a separate ChatGPT picker
+and transport. The local picker is shared by Codex and local Work tasks, while
+cloud Work also remains on the ChatGPT path. Names and bundle hashes are
 minified implementation details and must be rediscovered and asserted rather
 than treated as stable API.
 
@@ -115,14 +127,16 @@ Add a disabled-by-default feature with an optional webview patch descriptor:
   "description": "Adds Auto, On, and Off controls for Hydex local model offload.",
   "defaultEnabled": false,
   "entrypoints": {
-    "patchDescriptors": "./patch.js"
+    "patchDescriptors": "./patch.js",
+    "stageHook": "./stage.sh"
   }
 }
 ```
 
-The feature README should state that enabling the UI does not install Hydex.
-The desktop app must resolve a Hydex `codex` executable, normally through an
-installed Hydex package or an explicit `CODEX_CLI_PATH`.
+The feature README should state that `HYDEX_CLI_BINARY` must identify a static
+Hydex executable for the target architecture. Its `codex-cli` version must
+match the official desktop bundle exactly and its help must expose `--offload`
+and `--no-offload`.
 
 ### 2. Stored selection
 
@@ -225,19 +239,46 @@ or turn request occurs.
 
 ### 6. CLI selection
 
-Do not bundle Hydex as part of the first implementation. Document one of these
-supported arrangements:
+The current wrapper intentionally uses the official bundled CLI. Mirror the VS
+Code patch by replacing the staged candidate's `resources/codex` after ASAR
+patching and before build metadata is written. Supply the binary explicitly at
+build time:
 
 ```bash
-CODEX_CLI_PATH=/path/to/hydex/codex ./codex-app/start.sh
+HYDEX_CLI_BINARY=/path/to/hydex/codex make install-native
 ```
 
-or install the Hydex Arch/RPM package so the wrapper resolves its `codex`
-executable through the normal lookup order.
+The stage hook compares the Hydex version with the original bundled CLI,
+checks the target architecture and static linkage, checks both offload flags,
+retains the validated binary for updater rebuilds, and then atomically replaces
+the candidate path. A mismatch rejects the candidate without modifying the
+installed application.
 
-The feature cannot reliably infer from the ordinary Codex version string that
-the selected binary supports Hydex fields. Explicit feature enablement is the
-capability declaration for the initial integration.
+As of 2026-09-04, the official desktop bundle reports `codex-cli 0.153.1` while
+the latest packaged Hydex runtime reports `0.153.0`. A Hydex replay/build for
+the desktop version is therefore required before end-to-end installation can
+pass the strict replacement check.
+
+### Cross-surface refresh
+
+The VS Code and Desktop host versions are independent inputs. Refreshes build
+one matching Hydex runtime for every distinct version, inject each surface's
+corresponding runtime, and normalize both into the canonical runtime layout.
+`packaging/release/select_surface_runtime.py` compares their semantic versions;
+`packaging/build-preferred-local-packages.sh` uses the newer root for local
+Arch and RHEL packages. The public runtime bundle accepts that same selected
+root so AUR and COPR remain aligned with local packaging.
+
+The desktop fork follows the same two-ref contract as Hydex source:
+
+```text
+origin/main        exact ilysenko/codex-desktop-linux upstream commit
+origin/hydex/main  replayed Hydex desktop patchset based on origin/main
+```
+
+`.codex/skills/hydex-plugin-refresh/scripts/sync_codex_desktop_fork.py`
+fetches upstream, replays the patch branch in an isolated worktree, and can
+atomically publish both refs with explicit leases.
 
 ## Patch Structure
 
@@ -247,6 +288,17 @@ capability declaration for the initial integration.
 - `applyHydexRequestBridgePatch(source)`.
 - `applyHydexComposerControlPatch(source)`.
 - One descriptor per owning asset or patch seam.
+
+The prepared implementation uses two enforced descriptors:
+
+- `hydex-offload-request-bridge` targets the semantic `app-initial` request
+  client contract.
+- `hydex-offload-composer-control` targets the semantic `app-primary` local
+  model-picker contract and exposes its existing next-turn settings updater to
+  the injected control.
+- `stage.sh` validates and injects the matching Hydex CLI at the ordinary
+  bundled path; package staging carries that validated binary into the update
+  builder.
 
 Each transform should:
 
@@ -300,7 +352,8 @@ Before merging or packaging:
 2. Enable only `hydex-offload` first and inspect the patch report.
 3. Run the feature test directly with Node.
 4. Run the wrapper's complete relevant test suite.
-5. Launch with `CODEX_CLI_PATH` pointing to Hydex.
+5. Build with `HYDEX_CLI_BINARY` pointing to a version-matched Hydex binary,
+   then launch through the ordinary desktop entry point.
 6. Confirm the selector appears beside the model picker at normal and narrow
    composer widths.
 7. Test Auto, On, and Off on both a new task and an existing task.
@@ -316,6 +369,8 @@ The implementation is complete when:
 
 - The feature is disabled by default and build-selectable through
   `linux-features/features.json`.
+- The staged `resources/codex` is the validated Hydex binary and reports the
+  same version as the original official CLI.
 - Auto, On, and Off render beside the local composer model picker.
 - The selection survives desktop restarts.
 - Auto sends `modelOffloadOverride: null`.
@@ -398,7 +453,8 @@ that would make the selector misleading.
 - Per-task dropdown hydration from `ThreadSettings` notifications.
 - A Hydex capability/version handshake that can hide or disable the control
   when a vanilla CLI is selected.
-- Native packaging that bundles or depends on a matching Hydex build.
+- Automated resolution of an immutable matching Hydex runtime release instead
+  of requiring `HYDEX_CLI_BINARY` at the initial build.
 - A richer status indicator showing whether the last request actually routed
   locally rather than only showing the requested override.
 
@@ -406,7 +462,6 @@ that would make the selector misleading.
 
 - Changing Hydex routing, provider validation, or persistence semantics.
 - Adding Hydex-only code to upstream Codex Desktop sources.
-- Bundling a Hydex executable into the first desktop feature.
 - Automatically installing or configuring a local Responses provider.
 - Silently treating failed forced-on routing as Auto or Off.
 - Adding a general desktop settings page before the composer control has been

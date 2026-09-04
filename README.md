@@ -36,6 +36,13 @@ Linux x86_64 package helpers are available for [Arch Linux](./packaging/arch/)
 and [RHEL 10](./packaging/rpm/). General source-build prerequisites remain in
 the [upstream installation guide](./docs/install.md).
 
+The maintained [Codex Desktop Linux fork](https://github.com/mwheiss/codex-desktop-linux)
+provides a disabled-by-default `hydex-offload` feature. Its build replaces the
+official desktop bundle's `resources/codex` with an exact-version Hydex runtime
+and adds the same Auto/On/Off composer control used by the VS Code integration.
+The fork keeps `main` synchronized with upstream and replays the desktop Hydex
+patchset on `hydex/main`.
+
 ## Configuration
 
 Hydex intentionally uses the standard Codex config, cache, and session

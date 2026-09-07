@@ -12,7 +12,7 @@ bundled CLI is a static Hydex build with the offload flags, pairs it with the ma
 `codex-code-mode-host`, verifies both source hashes, and creates:
 
 ```text
-packaging/arch/hydex-bin-<version>-1-x86_64.pkg.tar.zst
+packaging/arch/hydex-bin-<version>-<release>-x86_64.pkg.tar.zst
 ```
 
 The cross-surface refresh can instead supply a canonical runtime root. When the
@@ -23,12 +23,13 @@ and builds local packages from the newer semantic version.
 Install or upgrade it with the exact command printed by the helper:
 
 ```bash
-sudo pacman -U packaging/arch/hydex-bin-<version>-1-x86_64.pkg.tar.zst
+sudo pacman -U packaging/arch/hydex-bin-<version>-<release>-x86_64.pkg.tar.zst
 ```
 
 The package declares that it replaces and conflicts with `openai-codex-bin`, so pacman performs
-the replacement without a separate removal step. It owns `/usr/bin/codex`,
-`/usr/bin/codex-code-mode-host`, shell completions, the license, and Hydex build metadata.
+the replacement without a separate removal step. It owns `/usr/bin/codex` and
+`/usr/bin/codex-code-mode-host`, plus the matching `/usr/bin/hydex` and
+`/usr/bin/hydex-code-mode-host` aliases, shell completions, the license, and Hydex build metadata.
 
 To package a specific unpacked plugin baseline:
 

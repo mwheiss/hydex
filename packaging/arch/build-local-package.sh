@@ -125,6 +125,17 @@ package_path="$(
   makepkg --packagelist
 )"
 package_sha256="$(sha256sum "${package_path}" | cut -d' ' -f1)"
+package_files="$(bsdtar -tf "${package_path}")"
+for required_path in \
+  usr/bin/codex \
+  usr/bin/codex-code-mode-host \
+  usr/bin/hydex \
+  usr/bin/hydex-code-mode-host; do
+  grep -Fxq "${required_path}" <<< "${package_files}" || {
+    echo "built package is missing command entrypoint: ${required_path}" >&2
+    exit 2
+  }
+done
 
 cat <<EOF
 HYDEX_ARCH_PACKAGE_SUMMARY

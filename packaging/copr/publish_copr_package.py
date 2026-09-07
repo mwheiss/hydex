@@ -11,7 +11,16 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-CHROOTS = ("epel-7-x86_64", "rhel-9-x86_64", "rhel-10-x86_64")
+CHROOTS = (
+    "rhel-7-x86_64",
+    "epel-7-x86_64",
+    "rhel-8-x86_64",
+    "epel-8-x86_64",
+    "rhel-9-x86_64",
+    "epel-9-x86_64",
+    "rhel-10-x86_64",
+    "epel-10-x86_64",
+)
 PLACEHOLDERS = {
     "@RPM_VERSION@",
     "@RPM_RELEASE@",
@@ -100,7 +109,12 @@ def verify_archive(archive: Path, checksum: Path) -> tuple[dict[str, object], st
     return manifest, actual
 
 
-def render_spec(template: str, manifest: dict[str, object], archive: Path) -> str:
+def render_spec(
+    template: str,
+    manifest: dict[str, object],
+    archive: Path,
+    package_release: int | None = None,
+) -> str:
     version = nested(manifest, "artifact", "version")
     release = nested(manifest, "artifact", "release")
     target = nested(manifest, "artifact", "target")
@@ -114,9 +128,12 @@ def render_spec(template: str, manifest: dict[str, object], archive: Path) -> st
         raise SystemExit(
             "runtime manifest has invalid version, release, target, or tag"
         )
+    effective_release = release if package_release is None else package_release
+    if effective_release < 1:
+        raise SystemExit("package release must be positive")
     values = {
         "@RPM_VERSION@": version.replace("-", "_"),
-        "@RPM_RELEASE@": str(release),
+        "@RPM_RELEASE@": str(effective_release),
         "@ARCHIVE_NAME@": archive.name,
         "@RUNTIME_ROOT@": archive.name.removesuffix(".tar.gz"),
         "@RELEASE_TAG@": tag,
@@ -196,8 +213,18 @@ def verify_rpm(path: Path, source: bool) -> str:
     if source:
         if "hydex.spec" not in files or "hydex-runtime-" not in files:
             raise SystemExit("source RPM is missing its spec or runtime archive")
-    elif "/usr/bin/codex" not in files or "/usr/libexec/hydex/" not in files:
-        raise SystemExit("binary RPM is missing the canonical Hydex layout")
+    else:
+        required_paths = {
+            "/usr/bin/codex",
+            "/usr/bin/codex-code-mode-host",
+            "/usr/bin/hydex",
+            "/usr/bin/hydex-code-mode-host",
+        }
+        missing = sorted(required_paths.difference(files.splitlines()))
+        if missing or "/usr/libexec/hydex/" not in files:
+            raise SystemExit(
+                f"binary RPM is missing the canonical Hydex layout: {missing}"
+            )
     if not source:
         requires = run(["rpm", "-qpR", str(path)], path.parent).stdout.splitlines()
         unexpected = [
@@ -298,7 +325,10 @@ def ensure_project(owner: str, project: str, repo: Path) -> str:
 
 def publish_srpm(owner: str, project: str, srpm: Path, repo: Path) -> str:
     full_name = f"{owner}/{project}"
-    result = run(["copr-cli", "build", full_name, str(srpm)], repo)
+    command = ["copr-cli", "build", full_name, str(srpm), "--enable-net", "off"]
+    for chroot in CHROOTS:
+        command.extend(["--chroot", chroot])
+    result = run(command, repo)
     output = result.stdout + result.stderr
     print(output, end="")
     match = re.search(r"/coprs/build/(\d+)", output)
@@ -320,6 +350,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=script_dir / "dist")
     parser.add_argument("--owner")
     parser.add_argument("--project", default="hydex")
+    parser.add_argument("--package-release", type=int)
     parser.add_argument("--build-local", action="store_true")
     parser.add_argument("--publish", action="store_true")
     return parser.parse_args()
@@ -335,7 +366,13 @@ def main() -> int:
     if not isinstance(version, str) or not isinstance(release, int):
         raise SystemExit("runtime manifest has invalid version or release")
     rpm_version = version.replace("-", "_")
-    rendered = render_spec(args.template.resolve().read_text(), manifest, archive)
+    package_release = release if args.package_release is None else args.package_release
+    rendered = render_spec(
+        args.template.resolve().read_text(),
+        manifest,
+        archive,
+        package_release,
+    )
     output = args.output_dir.resolve()
     srpm, spec = build_srpm(output, archive, rendered, rpm_version)
     srpm_query = verify_rpm(srpm, source=True)
@@ -358,7 +395,8 @@ def main() -> int:
     print("HYDEX_COPR_PACKAGE_SUMMARY")
     print(f"runtime_version={version}")
     print(f"rpm_version={rpm_version}")
-    print(f"rpm_release={release}")
+    print(f"runtime_release={release}")
+    print(f"rpm_release={package_release}")
     print(f"archive_sha256={archive_hash}")
     print(f"spec={spec}")
     print(f"srpm={srpm}")

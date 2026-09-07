@@ -2,10 +2,11 @@
 %{!?hydex_plugin_baseline:%global hydex_plugin_baseline unknown}
 %{!?hydex_codex_sha256:%global hydex_codex_sha256 unknown}
 %{!?hydex_code_mode_host_sha256:%global hydex_code_mode_host_sha256 unknown}
+%{!?hydex_package_release:%global hydex_package_release 2}
 
 Name:           hydex
 Version:        %{hydex_version}
-Release:        1%{?dist}
+Release:        %{hydex_package_release}%{?dist}
 Summary:        Codex CLI with Hydex local model offload
 License:        Apache-2.0
 URL:            https://github.com/mwheiss/hydex
@@ -20,7 +21,16 @@ Source5:        LICENSE
 
 Provides:       codex = %{version}-%{release}
 Provides:       openai-codex = %{version}-%{release}
+Provides:       codex-code-mode-host = %{version}-%{release}
+Provides:       hydex-code-mode-host = %{version}-%{release}
+Conflicts:      codex
+Conflicts:      codex-bin
 Conflicts:      openai-codex
+Conflicts:      openai-codex-bin
+Conflicts:      openai-codex-autoup-bin
+Obsoletes:      codex-bin
+Obsoletes:      openai-codex-bin
+Obsoletes:      openai-codex-autoup-bin
 
 %description
 Hydex is a patch line for Codex CLI that retains OpenAI/Codex as the primary
@@ -58,6 +68,8 @@ install -m 0644 %{SOURCE5} %{buildroot}%{_licensedir}/%{name}/LICENSE
 ln -s ../libexec/hydex/bin/codex %{buildroot}%{_bindir}/codex
 ln -s ../libexec/hydex/bin/codex-code-mode-host \
   %{buildroot}%{_bindir}/codex-code-mode-host
+ln -s codex %{buildroot}%{_bindir}/hydex
+ln -s codex-code-mode-host %{buildroot}%{_bindir}/hydex-code-mode-host
 
 %{SOURCE0} completion bash \
   > %{buildroot}%{_datadir}/bash-completion/completions/codex
@@ -81,6 +93,8 @@ EOF
 %license %{_licensedir}/%{name}/LICENSE
 %{_bindir}/codex
 %{_bindir}/codex-code-mode-host
+%{_bindir}/hydex
+%{_bindir}/hydex-code-mode-host
 %{_libexecdir}/hydex/
 %{_datadir}/bash-completion/completions/codex
 %{_datadir}/elvish/lib/codex.elv
@@ -90,5 +104,8 @@ EOF
 %{_datadir}/hydex/build-info
 
 %changelog
+* Mon Sep 07 2026 Michael W. Heiss <mheiss@users.noreply.github.com> - %{version}-2
+- Add Codex and Hydex command aliases and provider metadata
+
 * Fri Jul 31 2026 Michael W. Heiss <mheiss@users.noreply.github.com> - %{version}-1
 - Package Hydex using the canonical Codex runtime layout

@@ -7,15 +7,16 @@ pkgdesc="Codex CLI with Hydex local model offload"
 arch=('x86_64')
 url="https://github.com/mwheiss/hydex"
 license=('Apache-2.0' 'LGPL-2.0-or-later' 'MIT' 'Unlicense')
-provides=("codex=${pkgver}" "openai-codex=${pkgver}")
-conflicts=('openai-codex' 'openai-codex-bin' 'openai-codex-autoup-bin')
+provides=("codex=${pkgver}" "openai-codex=${pkgver}" "hydex=${pkgver}" "codex-code-mode-host=${pkgver}" "hydex-code-mode-host=${pkgver}")
+conflicts=('hydex' 'codex' 'codex-bin' 'openai-codex' 'openai-codex-bin' 'openai-codex-autoup-bin')
+replaces=('hydex' 'codex-bin' 'openai-codex-bin' 'openai-codex-autoup-bin')
 optdepends=(
   'git: working with Git repositories'
 )
 options=('!debug' '!strip')
 
 _runtime_version=@RUNTIME_VERSION@
-_runtime_release=@PKGREL@
+_runtime_release=@RUNTIME_RELEASE@
 _runtime_target="${CARCH}-unknown-linux-musl"
 _runtime_root="hydex-runtime-${_runtime_version}-r${_runtime_release}-${_runtime_target}"
 _runtime_archive="${_runtime_root}.tar.gz"
@@ -44,6 +45,8 @@ package() {
   ln -s ../lib/hydex/bin/codex "${pkgdir}/usr/bin/codex"
   ln -s ../lib/hydex/bin/codex-code-mode-host \
     "${pkgdir}/usr/bin/codex-code-mode-host"
+  ln -s codex "${pkgdir}/usr/bin/hydex"
+  ln -s codex-code-mode-host "${pkgdir}/usr/bin/hydex-code-mode-host"
 
   install -Dm644 "${runtime}/LICENSES/Hydex-Apache-2.0.txt" \
     "${pkgdir}/usr/share/licenses/${pkgname}/Hydex-Apache-2.0.txt"

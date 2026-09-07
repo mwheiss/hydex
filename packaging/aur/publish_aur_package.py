@@ -14,6 +14,7 @@ AUR_URL = "ssh://aur@aur.archlinux.org/hydex-bin.git"
 PLACEHOLDERS = {
     "@PKGVER@",
     "@PKGREL@",
+    "@RUNTIME_RELEASE@",
     "@RUNTIME_VERSION@",
     "@RELEASE_TAG@",
     "@ARCHIVE_SHA256@",
@@ -100,7 +101,10 @@ def verify_archive(archive: Path, checksum: Path) -> tuple[dict[str, object], st
 
 
 def render_pkgbuild(
-    template: str, manifest: dict[str, object], archive_hash: str
+    template: str,
+    manifest: dict[str, object],
+    archive_hash: str,
+    package_release: int | None = None,
 ) -> str:
     version = nested(manifest, "artifact", "version")
     release = nested(manifest, "artifact", "release")
@@ -111,9 +115,13 @@ def render_pkgbuild(
         or not isinstance(tag, str)
     ):
         raise SystemExit("runtime manifest has invalid version, release, or tag")
+    effective_release = release if package_release is None else package_release
+    if effective_release < 1:
+        raise SystemExit("package release must be positive")
     values = {
         "@PKGVER@": version.replace("-", "."),
-        "@PKGREL@": str(release),
+        "@PKGREL@": str(effective_release),
+        "@RUNTIME_RELEASE@": str(release),
         "@RUNTIME_VERSION@": version,
         "@RELEASE_TAG@": tag,
         "@ARCHIVE_SHA256@": archive_hash,
@@ -134,7 +142,12 @@ def render_package(args: argparse.Namespace, output: Path) -> dict[str, str]:
     checksum = args.checksum.resolve()
     manifest, archive_hash = verify_archive(archive, checksum)
     template = args.template.resolve().read_text()
-    pkgbuild = render_pkgbuild(template, manifest, archive_hash)
+    pkgbuild = render_pkgbuild(
+        template,
+        manifest,
+        archive_hash,
+        args.package_release,
+    )
     output.mkdir(parents=True, exist_ok=True)
     (output / "PKGBUILD").write_text(pkgbuild)
     shutil.copyfile(args.license.resolve(), output / "LICENSE")
@@ -145,9 +158,11 @@ def render_package(args: argparse.Namespace, output: Path) -> dict[str, str]:
     version = nested(manifest, "artifact", "version")
     release = nested(manifest, "artifact", "release")
     tag = nested(manifest, "provenance", "release_tag")
+    package_release = release if args.package_release is None else args.package_release
     return {
         "pkgver": str(version).replace("-", "."),
-        "pkgrel": str(release),
+        "pkgrel": str(package_release),
+        "runtime_release": str(release),
         "release_tag": str(tag),
         "archive_sha256": archive_hash,
         "source_url": (
@@ -167,6 +182,18 @@ def validate_package(output: Path, build: bool) -> Path | None:
     ]
     if len(packages) != 1 or not packages[0].is_file():
         raise SystemExit(f"expected one built package, found {packages}")
+    if shutil.which("bsdtar") is None:
+        raise SystemExit("bsdtar is required to validate package entrypoints")
+    files = set(run(["bsdtar", "-tf", str(packages[0])], output).stdout.splitlines())
+    required_paths = {
+        "usr/bin/codex",
+        "usr/bin/codex-code-mode-host",
+        "usr/bin/hydex",
+        "usr/bin/hydex-code-mode-host",
+    }
+    missing = sorted(required_paths.difference(files))
+    if missing:
+        raise SystemExit(f"built package is missing command entrypoints: {missing}")
     if shutil.which("namcap"):
         namcap_tmp = output / ".namcap-tmp"
         namcap_tmp.mkdir(exist_ok=True)
@@ -240,6 +267,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir", type=Path, default=script_dir / "dist" / "hydex-bin"
     )
     parser.add_argument("--aur-url", default=AUR_URL)
+    parser.add_argument("--package-release", type=int)
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--publish", action="store_true")
     return parser.parse_args()

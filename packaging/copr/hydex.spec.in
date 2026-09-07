@@ -18,8 +18,16 @@ BuildArch:      x86_64
 
 Provides:       codex = %{version}-%{release}
 Provides:       openai-codex = %{version}-%{release}
+Provides:       codex-code-mode-host = %{version}-%{release}
+Provides:       hydex-code-mode-host = %{version}-%{release}
+Conflicts:      codex
+Conflicts:      codex-bin
 Conflicts:      openai-codex
 Conflicts:      openai-codex-bin
+Conflicts:      openai-codex-autoup-bin
+Obsoletes:      codex-bin
+Obsoletes:      openai-codex-bin
+Obsoletes:      openai-codex-autoup-bin
 
 %description
 Hydex is a patch line for Codex CLI that retains OpenAI/Codex as the primary
@@ -60,6 +68,8 @@ install -m 0644 codex-package.json \
 ln -s ../libexec/hydex/bin/codex %{buildroot}%{_bindir}/codex
 ln -s ../libexec/hydex/bin/codex-code-mode-host \
   %{buildroot}%{_bindir}/codex-code-mode-host
+ln -s codex %{buildroot}%{_bindir}/hydex
+ln -s codex-code-mode-host %{buildroot}%{_bindir}/hydex-code-mode-host
 
 install -m 0644 LICENSES/Hydex-Apache-2.0.txt \
   %{buildroot}%{_licensedir}/%{name}/Hydex-Apache-2.0.txt
@@ -88,6 +98,8 @@ bin/codex completion zsh > %{buildroot}%{_datadir}/zsh/site-functions/_codex
 %license %{_licensedir}/%{name}/ripgrep-UNLICENSE.txt
 %{_bindir}/codex
 %{_bindir}/codex-code-mode-host
+%{_bindir}/hydex
+%{_bindir}/hydex-code-mode-host
 %{_libexecdir}/hydex/
 %{_datadir}/bash-completion/completions/codex
 %{_datadir}/elvish/lib/codex.elv
@@ -99,4 +111,4 @@ bin/codex completion zsh > %{buildroot}%{_datadir}/zsh/site-functions/_codex
 
 %changelog
 * Thu Aug 27 2026 Michael W. Heiss <mheiss@users.noreply.github.com> - @RPM_VERSION@-@RPM_RELEASE@
-- Package the immutable Hydex runtime for COPR
+- Package the immutable Hydex runtime with Codex and Hydex command aliases

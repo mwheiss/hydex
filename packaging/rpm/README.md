@@ -26,21 +26,22 @@ host to cover its RHEL 7 kernel, SELinux policy, and sandbox configuration.
 
 The package installs the canonical Codex package layout under
 `/usr/libexec/hydex`, with entry points at `/usr/bin/codex` and
-`/usr/bin/codex-code-mode-host`. It also installs shell completions and the
-repository license.
+`/usr/bin/codex-code-mode-host`, plus the matching `/usr/bin/hydex` and
+`/usr/bin/hydex-code-mode-host` aliases. It also installs shell completions and the repository
+license.
 
 Install or update the RHEL 7 package with:
 
 ```bash
-sudo yum install ./hydex-<version>-1.el7.x86_64.rpm
-sudo yum update ./hydex-<version>-1.el7.x86_64.rpm
+sudo yum install ./hydex-<version>-<release>.el7.x86_64.rpm
+sudo yum update ./hydex-<version>-<release>.el7.x86_64.rpm
 ```
 
 Install or update the RHEL 10 package with:
 
 ```bash
-sudo dnf install ./hydex-<version>-1.el10.x86_64.rpm
-sudo dnf upgrade ./hydex-<version>-1.el10.x86_64.rpm
+sudo dnf install ./hydex-<version>-<release>.el10.x86_64.rpm
+sudo dnf upgrade ./hydex-<version>-<release>.el10.x86_64.rpm
 ```
 
 The musl static executables avoid a glibc-version dependency. Runtime behavior

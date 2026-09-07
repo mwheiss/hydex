@@ -26,6 +26,22 @@ class RenderPkgbuildTests(unittest.TestCase):
         self.assertIn("hydex-runtime-v0.150.0-alpha.8-r2", rendered)
         self.assertIn("a" * 64, rendered)
 
+    def test_package_release_can_advance_without_changing_runtime_release(self) -> None:
+        manifest = {
+            "schema_version": 1,
+            "artifact": {"version": "0.153.4", "release": 1},
+            "provenance": {"release_tag": "hydex-runtime-v0.153.4-r1"},
+        }
+
+        rendered = MODULE.render_pkgbuild(
+            "pkgrel=@PKGREL@ runtime=@RUNTIME_RELEASE@ version=@PKGVER@ tag=@RELEASE_TAG@ hash=@ARCHIVE_SHA256@",
+            manifest,
+            "a" * 64,
+            package_release=2,
+        )
+
+        self.assertIn("pkgrel=2 runtime=1", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

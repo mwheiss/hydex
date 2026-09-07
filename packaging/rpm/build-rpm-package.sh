@@ -186,6 +186,16 @@ grep -q 'Header SHA256 digest: OK' <<< "${rpm_verify_output}"
 grep -q 'Payload SHA256 digest: OK' <<< "${rpm_verify_output}"
 rpm -qip "${package_path}"
 rpm -qlp "${package_path}"
+for required_path in \
+  /usr/bin/codex \
+  /usr/bin/codex-code-mode-host \
+  /usr/bin/hydex \
+  /usr/bin/hydex-code-mode-host; do
+  rpm -qlp "${package_path}" | grep -Fxq "${required_path}" || {
+    echo "RHEL package is missing command entrypoint: ${required_path}" >&2
+    exit 2
+  }
+done
 unexpected_requires="$(rpm -qpR "${package_path}" | grep -v '^rpmlib(' || true)"
 if [[ -n "${unexpected_requires}" ]]; then
   echo "RHEL package unexpectedly has runtime dependencies:" >&2

@@ -751,6 +751,7 @@ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
         cyber_access_program: None,
         effort: None,
         summary: ReasoningSummary::Auto,
+        offload_ever_used: false,
     })
 }
 
@@ -765,6 +766,7 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         window_number: Some(1),
         first_window_id: None,
         previous_window_id: None,
+        remote_compaction_model: None,
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,

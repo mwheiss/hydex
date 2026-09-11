@@ -1,5 +1,6 @@
 use super::*;
 
+use super::rollout_reconstruction::reconstruct_retro_local_history_from_rollout;
 use super::tests::build_world_state_from_turn_context;
 use super::tests::make_session_and_context;
 use super::tests::raw_history_items;
@@ -286,6 +287,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -336,6 +338,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -1067,6 +1070,7 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1134,6 +1138,7 @@ async fn record_initial_history_requires_surviving_full_snapshot_without_user_tu
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
+                remote_compaction_model: None,
             }),
         ],
     };
@@ -1167,6 +1172,7 @@ async fn record_initial_history_resumed_does_not_seed_reference_context_item_aft
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1241,6 +1247,7 @@ async fn reconstruct_history_prefers_compacted_window_over_session_meta() {
             window_number: Some(2),
             first_window_id: Some(compacted_first_window_id.to_string()),
             previous_window_id: Some(compacted_previous_window_id.to_string()),
+            remote_compaction_model: None,
             window_id: Some(compacted_window_id.to_string()),
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1264,6 +1271,268 @@ async fn reconstruct_history_prefers_compacted_window_over_session_meta() {
 }
 
 #[tokio::test]
+async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
+    let (session, turn_context) = make_session_and_context().await;
+    let remote_history = annotated(vec![
+        user_message("retained user"),
+        ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "encrypted remote state".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ]);
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(remote_history.clone()),
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-5.4".to_string()),
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+        }),
+        RolloutItem::ResponseItem(user_message("primary continuation").into()),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    let mut expected = remote_history;
+    expected.push(user_message("primary continuation").into());
+    assert_eq!(reconstructed.history, expected);
+    assert_eq!(
+        reconstructed.active_remote_compaction_model,
+        Some("gpt-5.4".to_string())
+    );
+}
+
+#[tokio::test]
+async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
+    let (session, turn_context) = make_session_and_context().await;
+    let old_remote_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "old encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let new_remote_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "new encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let rolled_back_turn_id = "rolled-back-turn".to_string();
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(annotated(old_remote_history.clone())),
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-old".to_string()),
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: rolled_back_turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "new turn".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(annotated(new_remote_history)),
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-new".to_string()),
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id: rolled_back_turn_id,
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, annotated(old_remote_history));
+    assert_eq!(
+        reconstructed.active_remote_compaction_model,
+        Some("gpt-old".to_string())
+    );
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollback() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let readable_source = user_message("readable source before remote compaction");
+    let old_remote_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "old encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let new_remote_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "new encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let rolled_back_turn_id = "rolled-back-retro-local-turn".to_string();
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(readable_source.clone().into()),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(annotated(old_remote_history.clone())),
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-old".to_string()),
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: rolled_back_turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "rolled-back turn".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::ResponseItem(user_message("rolled-back readable state").into()),
+        RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(annotated(new_remote_history)),
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            remote_compaction_model: Some("gpt-new".to_string()),
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(
+            codex_protocol::protocol::TurnCompleteEvent {
+                turn_id: rolled_back_turn_id,
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+        &old_remote_history,
+    )
+    .expect("surviving active checkpoint should be reconstructable");
+
+    assert_eq!(reconstructed, vec![readable_source]);
+}
+
+#[tokio::test]
+async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_active_history() {
+    let (_session, turn_context) = make_session_and_context().await;
+    let active_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "active encrypted remote state".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: String::new(),
+        replacement_history: Some(annotated(vec![ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "newest raw but inactive state".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }])),
+        retained_context: None,
+        guardian_history: None,
+        mcp_resource_origins: None,
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        remote_compaction_model: Some("gpt-new".to_string()),
+        window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
+    })];
+
+    let err = reconstruct_retro_local_history_from_rollout(
+        &turn_context,
+        &rollout_items,
+        &active_history,
+    )
+    .expect_err("raw checkpoint must not be guessed when it does not match active history");
+
+    assert!(
+        err.to_string()
+            .contains("the surviving remote compaction checkpoint does not match active history")
+    );
+}
+
+#[tokio::test]
 async fn reconstruct_history_replays_world_state_from_latest_compaction_window() {
     let (session, turn_context) = make_session_and_context().await;
     let rollout_items = completed_user_turn_rollout(
@@ -1281,6 +1550,7 @@ async fn reconstruct_history_replays_world_state_from_latest_compaction_window()
                 window_number: Some(1),
                 first_window_id: None,
                 previous_window_id: None,
+                remote_compaction_model: None,
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
@@ -1352,6 +1622,7 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions() {
                     window_id: Some(window_ids[window_number].to_string()),
                     compaction_response_id: None,
                     latest_token_usage_record: None,
+                    remote_compaction_model: None,
                 }),
                 RolloutItem::WorldState(WorldStateItem::full(object!({
                     "environment": {"window": window_number, "status": "starting"}
@@ -1458,6 +1729,7 @@ async fn reconstruct_history_preserves_legacy_compaction_count_with_session_meta
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1505,6 +1777,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_does_
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1546,6 +1819,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_clear
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1618,6 +1892,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -1655,6 +1930,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1715,6 +1991,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             multi_agent_mode: None,
             realtime_active: Some(turn_context.realtime_active),
             cyber_access_program: None,
+            offload_ever_used: false,
             effort: turn_context.reasoning_effort().cloned(),
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
         }))
@@ -1750,6 +2027,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -1828,6 +2106,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -1888,6 +2167,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -2018,6 +2298,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -2087,6 +2368,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -2196,6 +2478,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
+        offload_ever_used: false,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -2266,6 +2549,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,

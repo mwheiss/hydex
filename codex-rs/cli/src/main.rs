@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use clap::Args;
 use clap::CommandFactory;
 use clap::Parser;
@@ -3606,6 +3608,14 @@ mod tests {
                 MultitoolCli::try_parse_from(args).expect_err("permission flags should conflict");
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
+    }
+
+    #[test]
+    fn offload_flags_conflict() {
+        let err = MultitoolCli::try_parse_from(["codex", "--offload", "--no-offload"])
+            .expect_err("offload flags should be mutually exclusive");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     fn app_server_from_args(args: &[&str]) -> AppServerCommand {

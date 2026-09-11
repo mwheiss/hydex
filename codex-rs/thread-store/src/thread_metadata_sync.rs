@@ -599,6 +599,7 @@ mod tests {
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
+            remote_compaction_model: None,
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
@@ -674,6 +675,8 @@ mod tests {
                             developer_instructions: None,
                         },
                     },
+                    model_offload_override: None,
+                    model_offload_compaction_override: None,
                 },
             },
         ));

@@ -147,6 +147,10 @@ impl CompactionTurnMetadata {
     pub(crate) fn phase(self) -> CompactionPhase {
         self.phase
     }
+
+    pub(crate) fn is_local_responses_compaction(self) -> bool {
+        matches!(self.implementation, CompactionImplementation::Responses)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -154,6 +158,8 @@ pub(crate) enum CodexResponsesRequestKind {
     Turn,
     Prewarm,
     Compaction(CompactionTurnMetadata),
+    CompactionRecovery,
+    LocalOutputValidation,
     Memory,
 }
 
@@ -163,12 +169,17 @@ impl CodexResponsesRequestKind {
             CodexResponsesRequestKind::Turn => ("turn", None),
             CodexResponsesRequestKind::Prewarm => ("prewarm", None),
             CodexResponsesRequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
+            CodexResponsesRequestKind::CompactionRecovery => ("compaction_recovery", None),
+            CodexResponsesRequestKind::LocalOutputValidation => ("local_output_validation", None),
             CodexResponsesRequestKind::Memory => ("memory", None),
         }
     }
 
-    fn has_thread_identity(self) -> bool {
-        !matches!(self, CodexResponsesRequestKind::Memory)
+    fn has_turn_identity(self) -> bool {
+        !matches!(
+            self,
+            CodexResponsesRequestKind::LocalOutputValidation | CodexResponsesRequestKind::Memory
+        )
     }
 }
 
@@ -380,9 +391,9 @@ impl CodexResponsesMetadata {
             (Some(request_kind), compaction)
         });
         let has_thread_identity =
-            request_kind.is_none_or(CodexResponsesRequestKind::has_thread_identity);
+            request_kind.is_none_or(CodexResponsesRequestKind::has_turn_identity);
         let has_request_identity =
-            request_kind.is_some_and(CodexResponsesRequestKind::has_thread_identity);
+            request_kind.is_some_and(CodexResponsesRequestKind::has_turn_identity);
         CodexTurnMetadataPayload {
             installation_id: has_request_identity.then_some(self.installation_id.as_str()),
             session_id: has_thread_identity.then_some(self.session_id.as_str()),
@@ -390,7 +401,9 @@ impl CodexResponsesMetadata {
             agent_name: has_thread_identity
                 .then_some(self.agent_name.as_deref())
                 .flatten(),
-            turn_id: self.turn_id.as_deref(),
+            turn_id: has_thread_identity
+                .then_some(self.turn_id.as_deref())
+                .flatten(),
             window_id: has_request_identity.then_some(self.window_id.as_str()),
             window_number: has_request_identity.then_some(self.window_number).flatten(),
             context_window_id: has_request_identity

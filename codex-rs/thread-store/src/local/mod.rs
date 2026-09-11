@@ -958,6 +958,7 @@ mod tests {
                 cyber_access_program: None,
                 effort: None,
                 summary: ReasoningSummary::Auto,
+                offload_ever_used: false,
             })
         };
 

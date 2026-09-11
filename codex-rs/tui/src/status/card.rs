@@ -28,6 +28,7 @@ use ratatui::prelude::*;
 use ratatui::style::Stylize;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use url::Url;
 
 use super::account::StatusAccountDisplay;
 use super::format::FieldFormatter;
@@ -134,6 +135,8 @@ struct StatusHistoryCell {
     agents_summary: Arc<RwLock<String>>,
     collaboration_mode: Option<String>,
     model_provider: Option<String>,
+    model_offload: Option<String>,
+    model_offload_compaction: Option<String>,
     remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,
     account: Option<StatusAccountDisplay>,
@@ -354,6 +357,9 @@ impl StatusHistoryCell {
             &approval,
             workspace_root_suffix.as_deref(),
         );
+        let model_provider = model_provider.or_else(|| format_model_provider(config, None));
+        let model_offload = format_model_offload(config);
+        let model_offload_compaction = format_model_offload_compaction(config);
         let show_chatgpt_usage_link = requires_openai_auth;
         let account = compose_account_display(account_display);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
@@ -394,6 +400,8 @@ impl StatusHistoryCell {
             permissions,
             collaboration_mode: collaboration_mode.map(ToString::to_string),
             model_provider,
+            model_offload,
+            model_offload_compaction,
             remote_connection: remote_connection.cloned(),
             show_chatgpt_usage_link,
             account,
@@ -860,6 +868,15 @@ impl StatusHistoryCell {
         if let Some(model_provider) = self.model_provider.as_ref() {
             lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));
         }
+        if let Some(model_offload) = self.model_offload.as_ref() {
+            lines.push(formatter.line("Model offload", vec![Span::from(model_offload.clone())]));
+        }
+        if let Some(model_offload_compaction) = self.model_offload_compaction.as_ref() {
+            lines.push(formatter.line(
+                "Compaction",
+                vec![Span::from(model_offload_compaction.clone())],
+            ));
+        }
         lines.push(formatter.line("Directory", vec![Span::from(directory_value)]));
         lines.push(formatter.line("Permissions", vec![Span::from(self.permissions.clone())]));
         lines.push(formatter.line("Agents.md", vec![Span::from(agents_summary)]));
@@ -956,4 +973,126 @@ impl HistoryCell for Arc<StatusHistoryCell> {
     ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         self.display_hyperlink_lines(width)
     }
+}
+
+fn format_model_provider(config: &Config, runtime_base_url: Option<&str>) -> Option<String> {
+    let provider = &config.model_provider;
+    let name = provider.name.trim();
+    let provider_name = if name.is_empty() {
+        config.model_provider_id.as_str()
+    } else {
+        name
+    };
+    let base_url = runtime_base_url.and_then(sanitize_base_url);
+    let is_default_openai = provider.is_openai() && base_url.is_none();
+    if is_default_openai {
+        return None;
+    }
+
+    Some(match base_url {
+        Some(base_url) => format!("{provider_name} - {base_url}"),
+        None => provider_name.to_string(),
+    })
+}
+
+fn format_model_offload(config: &Config) -> Option<String> {
+    let offload = &config.model_offload;
+    if !offload.enabled && offload.runtime_override.is_none() {
+        return None;
+    }
+
+    let effective = if offload.effective_enabled() {
+        "on"
+    } else {
+        "off"
+    };
+    let source = match offload.runtime_override {
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn) => {
+            "forced by --offload"
+        }
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff) => {
+            "forced by --no-offload"
+        }
+        None if offload.enabled => "configured",
+        None => "disabled in config",
+    };
+    if !offload.effective_enabled() {
+        return Some(format!("{effective} - {source}"));
+    }
+
+    let provider_name = offload
+        .provider
+        .as_ref()
+        .map(|provider| provider.name.trim())
+        .filter(|name| !name.is_empty())
+        .or(offload.provider_id.as_deref())
+        .unwrap_or("local");
+    let model = offload.model.as_deref().unwrap_or("inherited");
+    let base_url = offload
+        .provider
+        .as_ref()
+        .and_then(|provider| provider.base_url.as_deref())
+        .and_then(sanitize_base_url);
+
+    Some(match base_url {
+        Some(base_url) => {
+            format!("{effective} - {model} via {provider_name} - {base_url} - {source}")
+        }
+        None => format!("{effective} - {model} via {provider_name} - {source}"),
+    })
+}
+
+fn format_model_offload_compaction(config: &Config) -> Option<String> {
+    let offload = &config.model_offload;
+    if !offload.enabled
+        && offload.runtime_override.is_none()
+        && offload.compaction_runtime_override.is_none()
+    {
+        return None;
+    }
+
+    let configured = match offload.compaction_policy {
+        codex_config::config_toml::ModelOffloadCompactionPolicy::Local => "local",
+        codex_config::config_toml::ModelOffloadCompactionPolicy::Primary => "primary",
+    };
+    let requested = match offload.compaction_runtime_override {
+        Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local) => "local",
+        Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary) => {
+            "primary"
+        }
+        None => configured,
+    };
+    let source = match offload.compaction_runtime_override {
+        Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local) => {
+            "runtime local"
+        }
+        Some(codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary) => {
+            "runtime primary"
+        }
+        None => "configured",
+    };
+    let effective = if offload.effective_enabled() && requested == "local" {
+        "local when branch has used offload"
+    } else {
+        "primary"
+    };
+    Some(format!(
+        "{effective} - requested {requested} - config {configured} - {source}"
+    ))
+}
+
+fn sanitize_base_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let Ok(mut url) = Url::parse(trimmed) else {
+        return None;
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string().trim_end_matches('/').to_string()).filter(|value| !value.is_empty())
 }

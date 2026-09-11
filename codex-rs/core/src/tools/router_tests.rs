@@ -9,6 +9,7 @@ use crate::tools::handlers::McpHandler;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolExposure;
+use crate::tools::spec_plan::ToolWireTarget;
 use crate::tools::spec_plan::append_source_tools;
 use crate::tools::spec_plan::build_core_tool_registry;
 use crate::tools::spec_plan::extension_tool_executors;
@@ -144,6 +145,7 @@ fn test_tool_router(
         step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
         /*wait_for_environment_tool_config*/ None,
+        ToolWireTarget::Primary,
     );
     let hosted_specs = append_source_tools(
         step_context.turn.as_ref(),
@@ -152,6 +154,7 @@ fn test_tool_router(
         mcp_tools,
         extension_tool_executors,
         dynamic_tools,
+        ToolWireTarget::Primary,
     );
     ToolRouter::from_registry(
         step_context.turn.as_ref(),
@@ -159,6 +162,7 @@ fn test_tool_router(
         registry,
         hosted_specs,
         &Default::default(),
+        ToolWireTarget::Primary,
     )
 }
 

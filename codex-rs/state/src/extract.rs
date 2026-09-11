@@ -457,6 +457,7 @@ mod tests {
                 cyber_access_program: None,
                 effort: None,
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                offload_ever_used: false,
             }),
             "test-provider",
         );
@@ -506,6 +507,7 @@ mod tests {
                 cyber_access_program: None,
                 effort: None,
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                offload_ever_used: false,
             }),
             "test-provider",
         );
@@ -551,6 +553,7 @@ mod tests {
                 cyber_access_program: None,
                 effort: Some(ReasoningEffort::High),
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                offload_ever_used: false,
             }),
             "test-provider",
         );
@@ -593,6 +596,7 @@ mod tests {
                 cyber_access_program: None,
                 effort: Some(ReasoningEffort::High),
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                offload_ever_used: false,
             }),
             "test-provider",
         );
@@ -631,6 +635,8 @@ mod tests {
                             developer_instructions: None,
                         },
                     },
+                    model_offload_override: None,
+                    model_offload_compaction_override: None,
                 },
             },
         ));

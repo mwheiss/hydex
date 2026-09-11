@@ -36,6 +36,7 @@ use codex_core_api::History;
 use codex_core_api::MemoriesConfig;
 use codex_core_api::ModelAvailabilityNuxConfig;
 use codex_core_api::ModelCatalogSettings;
+use codex_core_api::ModelOffloadConfig;
 use codex_core_api::MultiAgentV2Config;
 use codex_core_api::NewThread;
 use codex_core_api::Notice;
@@ -400,6 +401,7 @@ async fn new_config(
         background_terminal_max_timeout: 300_000,
         thread_unload_delay: std::time::Duration::from_secs(/*secs*/ 60),
         ghost_snapshot: GhostSnapshotConfig::default(),
+        model_offload: ModelOffloadConfig::default(),
         multi_agent_v2: MultiAgentV2Config::default(),
         max_goal_token_budget: None,
         token_budget: None,

@@ -27,10 +27,12 @@
 
 use codex_login::AuthOwner;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 mod response_delivery;
@@ -89,8 +91,11 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
 
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -106,6 +111,7 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_responses_lite;
 use codex_tools::create_tools_raw_json_for_responses_api;
+use codex_utils_output_truncation::approx_token_count;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -119,6 +125,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
@@ -131,14 +138,24 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::SamplingStream;
+use crate::config::ModelOffloadConfig;
+use crate::config::ModelOffloadContextConfig;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::feedback_tags;
+use crate::local_offload::LocalOffloadToolNameMap;
+use crate::local_offload::transform_request_for_local_offload;
+use crate::local_offload_context::AdvertisedLocalOffloadContext;
+use crate::local_offload_context::discover_local_offload_context;
+use crate::local_output_validation::local_output_stream_max_bytes;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::subagent_header_value;
 use crate::session::turn_context::TurnContext;
 use crate::util::emit_feedback_auth_recovery_tags;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -148,6 +165,7 @@ use codex_model_provider::AgentIdentitySessionFallback;
 use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::ProviderUnauthorizedRecovery;
 use codex_model_provider::ResolvedProviderRequest as CurrentClientSetup;
+use codex_model_provider::create_model_provider;
 use codex_model_provider::ResponsesConnectionKey;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::WorkspaceRoutingContext;
@@ -184,6 +202,7 @@ const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
 const REALTIME_CALLS_ENDPOINT: &str = "/realtime/calls";
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
+const MISSING_LOCAL_CONTEXT_WINDOW_ERROR: &str = "Cannot use model offload: the local endpoint did not advertise a context window and model_offload.context.context_window is not configured.";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -210,6 +229,18 @@ struct ModelClientState {
     item_id_generator: ItemIdGenerator,
     provider: SharedModelProvider,
     workspace_routing: WorkspaceRoutingContext,
+    offload_provider: Option<SharedModelProvider>,
+    offload_configured_enabled: bool,
+    offload_runtime_override: AtomicU8,
+    offload_model: Option<String>,
+    offload_compaction_policy: ModelOffloadCompactionPolicy,
+    offload_compaction_runtime_override: AtomicU8,
+    offload_memory_mode: ModelOffloadMemoryMode,
+    offload_memory_temperature: Option<f64>,
+    offload_compaction_temperature: Option<f64>,
+    offload_validator_temperature: Option<f64>,
+    offload_context: ModelOffloadContextConfig,
+    offload_ever_used: AtomicBool,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     originator: String,
@@ -289,6 +320,32 @@ impl RequestRouteTelemetry {
     fn for_endpoint(endpoint: &'static str) -> Self {
         Self { endpoint }
     }
+
+    fn for_endpoint_and_model_route(
+        endpoint: &'static str,
+        _model_route: ModelRequestRoute,
+    ) -> Self {
+        Self { endpoint }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModelRequestRoute {
+    Primary,
+    LocalOffload,
+}
+
+impl ModelRequestRoute {
+    fn is_local_offload(self) -> bool {
+        matches!(self, Self::LocalOffload)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::LocalOffload => "local_offload",
+        }
+    }
 }
 
 /// A session-scoped client for model-provider API calls.
@@ -320,6 +377,47 @@ pub struct ModelClient {
     required_cyber_access_programs: Option<Arc<cyber_access_program::RequiredCyberAccessPrograms>>,
 }
 
+const OFFLOAD_OVERRIDE_UNSET: u8 = 0;
+const OFFLOAD_OVERRIDE_FORCE_ON: u8 = 1;
+const OFFLOAD_OVERRIDE_FORCE_OFF: u8 = 2;
+const COMPACTION_OVERRIDE_CONFIGURED: u8 = 0;
+const COMPACTION_OVERRIDE_LOCAL: u8 = 1;
+const COMPACTION_OVERRIDE_PRIMARY: u8 = 2;
+
+fn encode_offload_runtime_override(runtime_override: Option<ModelOffloadRuntimeOverride>) -> u8 {
+    match runtime_override {
+        None => OFFLOAD_OVERRIDE_UNSET,
+        Some(ModelOffloadRuntimeOverride::ForceOn) => OFFLOAD_OVERRIDE_FORCE_ON,
+        Some(ModelOffloadRuntimeOverride::ForceOff) => OFFLOAD_OVERRIDE_FORCE_OFF,
+    }
+}
+
+fn decode_offload_runtime_override(value: u8) -> Option<ModelOffloadRuntimeOverride> {
+    match value {
+        OFFLOAD_OVERRIDE_FORCE_ON => Some(ModelOffloadRuntimeOverride::ForceOn),
+        OFFLOAD_OVERRIDE_FORCE_OFF => Some(ModelOffloadRuntimeOverride::ForceOff),
+        _ => None,
+    }
+}
+
+fn encode_compaction_runtime_override(
+    runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
+) -> u8 {
+    match runtime_override {
+        None => COMPACTION_OVERRIDE_CONFIGURED,
+        Some(ModelOffloadCompactionRuntimeOverride::Local) => COMPACTION_OVERRIDE_LOCAL,
+        Some(ModelOffloadCompactionRuntimeOverride::Primary) => COMPACTION_OVERRIDE_PRIMARY,
+    }
+}
+
+fn decode_compaction_runtime_override(value: u8) -> Option<ModelOffloadCompactionRuntimeOverride> {
+    match value {
+        COMPACTION_OVERRIDE_LOCAL => Some(ModelOffloadCompactionRuntimeOverride::Local),
+        COMPACTION_OVERRIDE_PRIMARY => Some(ModelOffloadCompactionRuntimeOverride::Primary),
+        _ => None,
+    }
+}
+
 /// A turn-scoped streaming session created from a [`ModelClient`].
 ///
 /// The session establishes a Responses WebSocket connection lazily and reuses it across multiple
@@ -337,6 +435,8 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    force_primary_for_responses_requests: Arc<AtomicBool>,
+    local_offload_context: OnceLock<ModelOffloadContextConfig>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -444,6 +544,7 @@ fn responses_request_properties_mismatch(
         tools: previous_tools,
         tool_choice: previous_tool_choice,
         parallel_tool_calls: previous_parallel_tool_calls,
+        temperature: previous_temperature,
         reasoning: previous_reasoning,
         store: previous_store,
         stream: previous_stream,
@@ -463,6 +564,7 @@ fn responses_request_properties_mismatch(
         tools: current_tools,
         tool_choice: current_tool_choice,
         parallel_tool_calls: current_parallel_tool_calls,
+        temperature: current_temperature,
         reasoning: current_reasoning,
         store: current_store,
         stream: current_stream,
@@ -487,6 +589,8 @@ fn responses_request_properties_mismatch(
         "tool_choice_changed"
     } else if previous_parallel_tool_calls != current_parallel_tool_calls {
         "parallel_tool_calls_changed"
+    } else if previous_temperature != current_temperature {
+        "temperature_changed"
     } else if previous_reasoning != current_reasoning {
         "reasoning_changed"
     } else if previous_store != current_store {
@@ -612,7 +716,11 @@ impl ModelClient {
         http_client_factory: HttpClientFactory,
         workspace_routing: WorkspaceRoutingContext,
         request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
+        model_offload: ModelOffloadConfig,
     ) -> Self {
+        let offload_provider = model_offload
+            .provider
+            .map(|provider_info| create_model_provider(provider_info, None));
         let codex_api_key_env_enabled = model_provider
             .auth_manager()
             .as_ref()
@@ -636,6 +744,20 @@ impl ModelClient {
                 item_id_generator,
                 provider: model_provider,
                 workspace_routing,
+                offload_provider,
+                offload_configured_enabled: model_offload.enabled,
+                offload_runtime_override: AtomicU8::new(encode_offload_runtime_override(
+                    model_offload.runtime_override,
+                )),
+                offload_model: model_offload.model,
+                offload_compaction_policy: model_offload.compaction_policy,
+                offload_compaction_runtime_override: AtomicU8::new(COMPACTION_OVERRIDE_CONFIGURED),
+                offload_memory_mode: model_offload.memory_mode,
+                offload_memory_temperature: model_offload.validation.memory_temperature,
+                offload_compaction_temperature: model_offload.validation.compaction_temperature,
+                offload_validator_temperature: model_offload.validation.validator_temperature,
+                offload_context: model_offload.context,
+                offload_ever_used: AtomicBool::new(false),
                 auth_env_telemetry,
                 session_source,
                 originator,
@@ -783,6 +905,8 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session,
+            force_primary_for_responses_requests: Arc::new(AtomicBool::new(false)),
+            local_offload_context: OnceLock::new(),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -793,6 +917,106 @@ impl ModelClient {
 
     pub(crate) fn auth_owner(&self) -> Option<AuthOwner> {
         codex_model_provider::request_auth_owner(self.state.provider.as_ref())
+    }
+
+    pub(crate) fn offload_ever_used(&self) -> bool {
+        self.state.offload_ever_used.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn model_offload_runtime_override(&self) -> Option<ModelOffloadRuntimeOverride> {
+        decode_offload_runtime_override(self.state.offload_runtime_override.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn set_model_offload_runtime_override(
+        &self,
+        runtime_override: Option<ModelOffloadRuntimeOverride>,
+    ) -> CodexResult<()> {
+        if matches!(runtime_override, Some(ModelOffloadRuntimeOverride::ForceOn))
+            && self.state.offload_provider.is_none()
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            ));
+        }
+        self.state.offload_runtime_override.store(
+            encode_offload_runtime_override(runtime_override),
+            Ordering::Relaxed,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn effective_model_offload_enabled(&self) -> bool {
+        self.model_offload_runtime_override()
+            .map(ModelOffloadRuntimeOverride::effective_enabled)
+            .unwrap_or(self.state.offload_configured_enabled)
+    }
+
+    pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
+        self.effective_model_offload_enabled()
+            && self.state.offload_provider.is_some()
+            && self.session_source_allows_local_offload()
+    }
+
+    pub(crate) fn model_offload_compaction_runtime_override(
+        &self,
+    ) -> Option<ModelOffloadCompactionRuntimeOverride> {
+        decode_compaction_runtime_override(
+            self.state
+                .offload_compaction_runtime_override
+                .load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn set_model_offload_compaction_runtime_override(
+        &self,
+        runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
+    ) -> CodexResult<()> {
+        if matches!(
+            runtime_override,
+            Some(ModelOffloadCompactionRuntimeOverride::Local)
+        ) && self.state.offload_provider.is_none()
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot enable local compaction: model_offload.provider is not configured or invalid."
+                    .to_string(),
+            ));
+        }
+        self.state.offload_compaction_runtime_override.store(
+            encode_compaction_runtime_override(runtime_override),
+            Ordering::Relaxed,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn requested_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        match self.model_offload_compaction_runtime_override() {
+            Some(ModelOffloadCompactionRuntimeOverride::Local) => {
+                ModelOffloadCompactionPolicy::Local
+            }
+            Some(ModelOffloadCompactionRuntimeOverride::Primary) => {
+                ModelOffloadCompactionPolicy::Primary
+            }
+            None => self.state.offload_compaction_policy,
+        }
+    }
+
+    pub(crate) fn effective_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        if self.local_offload_enabled_for_turns() && self.offload_ever_used() {
+            self.requested_model_offload_compaction_policy()
+        } else {
+            ModelOffloadCompactionPolicy::Primary
+        }
+    }
+
+    pub(crate) fn local_compaction_effective(&self) -> bool {
+        self.effective_model_offload_compaction_policy() == ModelOffloadCompactionPolicy::Local
+    }
+
+    pub(crate) fn seed_offload_ever_used(&self, offload_ever_used: bool) {
+        if offload_ever_used {
+            self.state.offload_ever_used.store(true, Ordering::Relaxed);
+        }
     }
 
     fn take_cached_websocket_session(&self) -> WebsocketSession {
@@ -1196,6 +1420,36 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
+        self.build_responses_request_for_provider(
+            self.state.provider.info(),
+            /*model_override*/ None,
+            prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            /*include_codex_metadata*/ true,
+            /*temperature*/ None,
+            include_internal,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_responses_request_for_provider(
+        &self,
+        provider_info: &ModelProviderInfo,
+        model_override: Option<&str>,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        include_codex_metadata: bool,
+        temperature: Option<f64>,
+        include_internal: bool,
+    ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info);
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
@@ -1214,7 +1468,7 @@ impl ModelClient {
                 }
             });
         }
-        let is_openai = self.state.provider.info().is_openai();
+        let is_openai = provider_info.is_openai();
         // These prompt-only items are rebuilt on every request. Hash their visible payloads
         // within the thread so retries and resumed sessions preserve their identity.
         let prefix_namespace = Uuid::new_v5(
@@ -1277,7 +1531,7 @@ impl ModelClient {
         }
         let reasoning = self.build_reasoning(model_info, effort, summary);
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled
-            && is_openai
+            && provider_info.is_openai()
             && reasoning.summary.is_some())
         .then_some(StreamOptions {
             reasoning_summary_delivery: codex_api::ReasoningSummaryDelivery::SequentialCutoff,
@@ -1307,7 +1561,7 @@ impl ModelClient {
             .filter(|tier| {
                 // Bedrock requires an advertised tier, including for flex, which the
                 // generic OpenAI resolver permits without catalog support.
-                !self.state.provider.info().is_amazon_bedrock()
+                !provider_info.is_amazon_bedrock()
                     || model_info
                         .service_tiers
                         .iter()
@@ -1319,12 +1573,16 @@ impl ModelClient {
             }
         }
         let client_metadata = responses_metadata.client_metadata(include_internal);
+        let temperature = prompt.temperature.or(temperature);
         let request = ResponsesApiRequest {
-            model: model_info.slug.clone(),
+            model: model_override
+                .map(str::to_string)
+                .unwrap_or_else(|| model_info.slug.clone()),
             input,
             tools,
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
+            temperature,
             reasoning: Some(reasoning),
             store: false,
             stream: true,
@@ -1336,7 +1594,7 @@ impl ModelClient {
                 .prompt_cache_ttl
                 .map(|ttl| codex_api::PromptCacheOptions { ttl }),
             text,
-            client_metadata: Some(client_metadata),
+            client_metadata: include_codex_metadata.then_some(client_metadata),
             access_programs: None,
             request_country: Default::default(),
         };
@@ -1408,6 +1666,82 @@ impl ModelClient {
             self.http_client_factory.clone(),
         )
         .await
+    }
+
+    async fn discover_local_offload_context(&self) -> Option<AdvertisedLocalOffloadContext> {
+        let client_setup = match self
+            .current_client_setup_for_route(ModelRequestRoute::LocalOffload)
+            .await
+        {
+            Ok(client_setup) => client_setup,
+            Err(err) => {
+                debug!(error = %err, "local offload context discovery could not resolve provider");
+                return None;
+            }
+        };
+        let transport = match client_setup.http_transport("models") {
+            Ok(transport) => transport,
+            Err(err) => {
+                debug!(error = %err, "local offload context discovery could not build client");
+                return None;
+            }
+        };
+        match discover_local_offload_context(
+            &client_setup.api_provider,
+            client_setup.api_auth.as_ref(),
+            &transport,
+            self.state.offload_model.as_deref(),
+        )
+        .await
+        {
+            Ok(advertised) => {
+                debug!(
+                    context_window = ?advertised.context_window,
+                    effective_context_window_percent = ?advertised.effective_context_window_percent,
+                    auto_compact_token_limit = ?advertised.auto_compact_token_limit,
+                    "using local provider advertised context metadata"
+                );
+                Some(advertised)
+            }
+            Err(err) => {
+                debug!(error = %err, "local provider context metadata unavailable");
+                None
+            }
+        }
+    }
+
+    fn provider_for_route(&self, route: ModelRequestRoute) -> Result<&SharedModelProvider> {
+        if route.is_local_offload() {
+            self.state.offload_provider.as_ref().ok_or_else(|| {
+                CodexErr::InvalidRequest("Local offload provider is not configured.".to_string())
+            })
+        } else {
+            Ok(&self.state.provider)
+        }
+    }
+
+    async fn current_client_setup_for_route(
+        &self,
+        route: ModelRequestRoute,
+    ) -> Result<CurrentClientSetup> {
+        if !route.is_local_offload() {
+            return self.current_client_setup(ClientRouting::Workspace).await;
+        }
+        let model_provider = self.provider_for_route(route)?;
+        // Bypass primary workspace routing and Agent Identity for local providers.
+        let api_provider = model_provider.api_provider().await?;
+        let api_auth = model_provider.api_auth().await?;
+        Ok(CurrentClientSetup {
+            auth: None,
+            auth_owner: None,
+            auth_revision: None,
+            api_provider,
+            http_client_factory: self.http_client_factory.clone(),
+            redirect_policy: ClientRedirectPolicy::Default,
+            api_auth,
+            agent_identity_telemetry: None,
+            runtime_id: None,
+        })
     }
 
     fn responses_headers(&self, auth: Option<&CodexAuth>, model: &str) -> ApiHeaderMap {
@@ -1483,6 +1817,104 @@ impl ModelClient {
         self.current_client_setup(ClientRouting::Workspace)
             .await
             .map(|_| ())
+    }
+
+    fn model_override_for_request(
+        &self,
+        route: ModelRequestRoute,
+        _responses_metadata: Option<&CodexResponsesMetadata>,
+    ) -> Option<String> {
+        if route.is_local_offload() {
+            return self.state.offload_model.clone();
+        }
+        None
+    }
+
+    fn route_for_responses_request(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> ModelRequestRoute {
+        if self.memory_request_should_route_local(responses_metadata) {
+            return ModelRequestRoute::LocalOffload;
+        }
+
+        if self.local_output_validation_request_should_route_local(responses_metadata) {
+            return ModelRequestRoute::LocalOffload;
+        }
+
+        if !self.local_offload_enabled_for_turns() {
+            return ModelRequestRoute::Primary;
+        }
+
+        match responses_metadata.request_kind {
+            Some(CodexResponsesRequestKind::Turn) => ModelRequestRoute::LocalOffload,
+            Some(CodexResponsesRequestKind::Compaction(metadata))
+                if metadata.is_local_responses_compaction()
+                    && self.local_compaction_effective() =>
+            {
+                ModelRequestRoute::LocalOffload
+            }
+            _ => ModelRequestRoute::Primary,
+        }
+    }
+
+    fn memory_request_should_route_local(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.state.offload_memory_mode == ModelOffloadMemoryMode::Local
+            && self.state.offload_provider.is_some()
+            && (matches!(
+                responses_metadata.request_kind,
+                Some(CodexResponsesRequestKind::Memory)
+            ) || (self.is_memory_consolidation_session()
+                && matches!(
+                    responses_metadata.request_kind,
+                    Some(CodexResponsesRequestKind::Turn)
+                )))
+    }
+
+    fn is_memory_consolidation_session(&self) -> bool {
+        matches!(
+            self.state.session_source,
+            SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
+                | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
+        )
+    }
+
+    fn local_output_validation_request_should_route_local(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.state.offload_provider.is_some()
+            && matches!(
+                responses_metadata.request_kind,
+                Some(CodexResponsesRequestKind::LocalOutputValidation)
+            )
+    }
+
+    fn session_source_allows_local_offload(&self) -> bool {
+        matches!(
+            self.state.session_source,
+            SessionSource::Cli
+                | SessionSource::VSCode
+                | SessionSource::Exec
+                | SessionSource::Mcp
+                | SessionSource::Custom(_)
+                | SessionSource::Unknown
+                | SessionSource::SubAgent(
+                    SubAgentSource::Review
+                        | SubAgentSource::Compact
+                        | SubAgentSource::ThreadSpawn { .. }
+                        | SubAgentSource::Other(_)
+                )
+        )
+    }
+
+    fn mark_offload_used_if_local_route(&self, route: ModelRequestRoute) {
+        if route.is_local_offload() {
+            self.state.offload_ever_used.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Opens a websocket connection using the same header and telemetry wiring as normal turns.
@@ -1660,6 +2092,153 @@ impl<'a> ResponsesHttpExecutor<'a> {
         Self { client }
     }
 
+    pub(crate) fn force_primary_for_responses_requests(&self) {
+        self.force_primary_for_responses_requests
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn primary_forced_for_responses_requests(&self) -> bool {
+        self.force_primary_for_responses_requests
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
+        !self.primary_forced_for_responses_requests()
+            && self.client.local_offload_enabled_for_turns()
+    }
+
+    pub(crate) async fn effective_local_offload_context(
+        &self,
+        configured_fallback: &ModelOffloadContextConfig,
+    ) -> ModelOffloadContextConfig {
+        if let Some(context) = self.local_offload_context.get() {
+            return *context;
+        }
+        let context = self
+            .client
+            .discover_local_offload_context()
+            .await
+            .map(|advertised| advertised.apply_over(*configured_fallback))
+            .unwrap_or(*configured_fallback);
+        let _ = self.local_offload_context.set(context);
+        self.local_offload_context.get().copied().unwrap_or(context)
+    }
+
+    pub(crate) async fn require_local_offload_context(
+        &self,
+        configured_fallback: &ModelOffloadContextConfig,
+    ) -> CodexResult<ModelOffloadContextConfig> {
+        let context = self
+            .effective_local_offload_context(configured_fallback)
+            .await;
+        if context.context_window.is_none() {
+            return Err(CodexErr::InvalidRequest(
+                MISSING_LOCAL_CONTEXT_WINDOW_ERROR.to_string(),
+            ));
+        }
+        Ok(context)
+    }
+
+    /// Returns the endpoint-resolved local context window, or the configured fallback before a
+    /// local request has populated endpoint metadata for this client session.
+    pub fn local_offload_context_window(&self) -> Option<i64> {
+        self.local_offload_context
+            .get()
+            .and_then(|context| context.context_window)
+            .or(self.client.state.offload_context.context_window)
+    }
+
+    pub(crate) fn effective_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        if self.local_offload_enabled_for_turns() && self.client.offload_ever_used() {
+            self.client.requested_model_offload_compaction_policy()
+        } else {
+            ModelOffloadCompactionPolicy::Primary
+        }
+    }
+
+    pub(crate) fn mark_offload_used_for_responses_request(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        let route = self.route_for_responses_request(responses_metadata);
+        route.is_local_offload()
+            && !self
+                .client
+                .state
+                .offload_ever_used
+                .swap(true, Ordering::Relaxed)
+    }
+
+    fn route_for_responses_request(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> ModelRequestRoute {
+        if self.primary_forced_for_responses_requests() {
+            return ModelRequestRoute::Primary;
+        }
+        self.client.route_for_responses_request(responses_metadata)
+    }
+
+    pub(crate) fn stream_max_retries_for(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> u64 {
+        match self.route_for_responses_request(responses_metadata) {
+            ModelRequestRoute::Primary => self.client.state.provider.info().stream_max_retries(),
+            ModelRequestRoute::LocalOffload => {
+                self.client.state.offload_provider.as_ref().map_or_else(
+                    || self.client.state.provider.info().stream_max_retries(),
+                    |provider| provider.info().stream_max_retries(),
+                )
+            }
+        }
+    }
+
+    pub(crate) fn is_local_offload_route_for(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.route_for_responses_request(responses_metadata)
+            .is_local_offload()
+    }
+
+    pub(crate) fn validates_completed_output_for(
+        &self,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> bool {
+        self.is_local_offload_route_for(responses_metadata)
+            && !matches!(
+                responses_metadata.request_kind,
+                Some(CodexResponsesRequestKind::LocalOutputValidation)
+            )
+    }
+
+    pub(crate) fn local_helper_temperature_for_request(
+        &self,
+        route: ModelRequestRoute,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Option<f64> {
+        if !route.is_local_offload() {
+            return None;
+        }
+        match responses_metadata.request_kind {
+            Some(CodexResponsesRequestKind::Compaction(_)) => {
+                self.client.state.offload_compaction_temperature
+            }
+            Some(CodexResponsesRequestKind::LocalOutputValidation) => {
+                self.client.state.offload_validator_temperature
+            }
+            Some(CodexResponsesRequestKind::Memory) => self.client.state.offload_memory_temperature,
+            Some(CodexResponsesRequestKind::Turn)
+                if self.client.is_memory_consolidation_session() =>
+            {
+                self.client.state.offload_memory_temperature
+            }
+            Some(CodexResponsesRequestKind::Turn | CodexResponsesRequestKind::Prewarm)
+            | Some(CodexResponsesRequestKind::CompactionRecovery)
+            | None => None,
+        }
+    }
     #[allow(clippy::too_many_arguments)]
     /// Builds shared Responses API transport options and request-body options.
     ///
@@ -1671,29 +2250,35 @@ impl<'a> ResponsesHttpExecutor<'a> {
         responses_metadata: &CodexResponsesMetadata,
         compression: Compression,
         use_responses_lite: bool,
+        include_codex_headers: bool,
     ) -> ApiResponsesOptions {
         ApiResponsesOptions {
-            session_id: Some(self.client.responses_session_id(responses_metadata)),
-            thread_id: Some(responses_metadata.thread_id.to_string()),
-            session_source: Some(self.client.state.session_source.clone()),
+            session_id: include_codex_headers
+                .then(|| self.client.responses_session_id(responses_metadata)),
+            thread_id: include_codex_headers.then(|| responses_metadata.thread_id.to_string()),
+            session_source: include_codex_headers.then(|| self.client.state.session_source.clone()),
             extra_headers: {
-                let mut headers = build_responses_headers(
-                    self.client.state.beta_features_header.as_deref(),
-                    Some(turn_state),
-                );
-                add_originator_header(&mut headers, self.client.state.originator.as_str());
-                headers.extend(
-                    self.client
-                        .build_responses_compatibility_headers(responses_metadata),
-                );
-                if let Some(header_value) = self.client.generate_attestation_header_for().await {
-                    headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
+                let mut headers = ApiHeaderMap::new();
+                if include_codex_headers {
+                    headers.extend(build_responses_headers(
+                        self.client.state.beta_features_header.as_deref(),
+                        Some(turn_state),
+                    ));
+                    add_originator_header(&mut headers, self.client.state.originator.as_str());
+                    headers.extend(
+                        self.client
+                            .build_responses_compatibility_headers(responses_metadata),
+                    );
+                    if let Some(header_value) = self.client.generate_attestation_header_for().await
+                    {
+                        headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
+                    }
+                    add_responses_lite_header(&mut headers, use_responses_lite);
                 }
-                add_responses_lite_header(&mut headers, use_responses_lite);
                 headers
             },
             compression,
-            turn_state: Some(Arc::clone(turn_state)),
+            turn_state: include_codex_headers.then(|| Arc::clone(turn_state)),
         }
     }
 }
@@ -2015,7 +2600,28 @@ impl ResponsesHttpExecutor<'_> {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<OpenedModelResponse> {
-        let auth_manager = self.client.state.provider.auth_manager();
+        let route = self.route_for_responses_request(responses_metadata);
+        // Keep this at the shared local HTTP boundary: normal turns have richer compaction
+        // preflight, but detached memory, local compaction, and validator calls must use the same
+        // endpoint-resolved context before they can send a request.
+        let local_context = if route.is_local_offload() {
+            Some(
+                self.require_local_offload_context(&self.client.state.offload_context)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let local_stream_max_bytes =
+            local_context.map(|context| local_output_stream_max_bytes(context.context_window));
+        let provider = self.client.provider_for_route(route)?;
+        let model_override = self.client.model_override_for_request(route, Some(responses_metadata));
+        self.client.mark_offload_used_if_local_route(route);
+        let auth_manager = if route.is_local_offload() {
+            None
+        } else {
+            self.client.state.provider.auth_manager()
+        };
         let mut auth_recovery = auth_manager
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
@@ -2024,22 +2630,35 @@ impl ResponsesHttpExecutor<'_> {
         loop {
             let client_setup = self
                 .client
-                .current_client_setup(ClientRouting::Workspace)
+                .current_client_setup_for_route(route)
                 .await?;
             if expected_auth_owner.as_ref().is_some_and(|owner| {
-                Some(owner) != client_setup.auth_owner.as_ref() || !owner.is_current()
+                (!route.is_local_offload() && Some(owner) != client_setup.auth_owner.as_ref())
+                    || !owner.is_current()
             }) {
                 return Err(CodexErr::TurnAborted);
             }
-            let include_internal = self
-                .client
-                .state
-                .provider
-                .include_internal_metadata(&client_setup.api_provider);
-            let responses_headers = self
-                .client
-                .responses_headers(client_setup.auth.as_ref(), &model_info.slug);
+            let include_internal = !route.is_local_offload()
+                && self
+                    .client
+                    .state
+                    .provider
+                    .include_internal_metadata(&client_setup.api_provider);
+            let responses_headers = if route.is_local_offload() {
+                ApiHeaderMap::new()
+            } else {
+                self.client
+                    .responses_headers(client_setup.auth.as_ref(), &model_info.slug)
+            };
             tracing::Span::current().record("api.path", "/responses");
+            if self.client.offload_ever_used() {
+                tracing::info!(
+                    model_route = route.as_str(),
+                    provider = %provider.info().name,
+                    api_path = "/responses",
+                    "resolved model request route"
+                );
+            }
             let transport = client_setup.http_transport("/responses")?;
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -2051,7 +2670,7 @@ impl ResponsesHttpExecutor<'_> {
             let (request_telemetry, sse_telemetry) = ModelClientSession::build_streaming_telemetry(
                 session_telemetry,
                 request_auth_context,
-                RequestRouteTelemetry::for_endpoint("/responses"),
+                RequestRouteTelemetry::for_endpoint_and_model_route("/responses", route),
                 self.client.state.auth_env_telemetry.clone(),
             );
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
@@ -2061,16 +2680,21 @@ impl ResponsesHttpExecutor<'_> {
                     responses_metadata,
                     compression,
                     model_info.use_responses_lite,
+                    !route.is_local_offload(),
                 )
                 .await;
 
-            let mut request = self.client.build_responses_request(
+            let mut request = self.client.build_responses_request_for_provider(
+                provider.info(),
+                model_override.as_deref(),
                 prompt,
                 model_info,
                 sampling.reasoning_effort.clone(),
                 sampling.reasoning_summary,
                 sampling.service_tier.clone(),
                 responses_metadata,
+                !route.is_local_offload(),
+                self.local_helper_temperature_for_request(route, responses_metadata),
                 include_internal,
             )?;
             if self.client.uses_codex_backend(client_setup.auth.as_ref()) {
@@ -2121,13 +2745,28 @@ impl ResponsesHttpExecutor<'_> {
                 continue;
             }
             self.client.check_generation_start(responses_metadata)?;
-            let interceptors = crate::model_request::prepare(
+            let interceptors = if route.is_local_offload() {
+                Vec::new()
+            } else {
+                crate::model_request::prepare(
                 &self.client.request_contributors,
                 &thread_id,
                 &model_info.slug,
                 kind,
                 &mut request.client_metadata,
-            );
+            )
+            };
+            let local_tool_names = if route.is_local_offload() {
+                Some(transform_request_for_local_offload(
+                    &mut request,
+                    &prompt.tools,
+                )?)
+            } else {
+                None
+            };
+            if let Some(local_context) = local_context {
+                ensure_local_request_fits_effective_context(&request, local_context)?;
+            }
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
@@ -2162,14 +2801,20 @@ impl ResponsesHttpExecutor<'_> {
                         client: Arc::clone(&self.client.state),
                         interceptors,
                         continuation: None,
+                        local_mapping: local_stream_max_bytes.map(|output_byte_limit| LocalResponseMapping {
+                            provider: Arc::clone(provider),
+                            tool_names: local_tool_names,
+                            output_byte_limit,
+                        }),
                     });
                 }
                 Err(ApiError::Transport(unauthorized_transport))
-                    if self
-                        .client
-                        .state
-                        .provider
-                        .is_recoverable_auth_error(&unauthorized_transport) =>
+                    if !route.is_local_offload()
+                        && self
+                            .client
+                            .state
+                            .provider
+                            .is_recoverable_auth_error(&unauthorized_transport) =>
                 {
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
@@ -2195,7 +2840,7 @@ impl ResponsesHttpExecutor<'_> {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let err = provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
@@ -2272,14 +2917,18 @@ impl ModelClientSession {
                 client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
             )
-            .map_err(|error| self.client.state.provider.map_api_error(error))?;
-            let mut request = self.client.build_responses_request(
+            .map_err(|error| provider.map_api_error(error))?;
+            let mut request = self.client.build_responses_request_for_provider(
+                provider.info(),
+                None,
                 prompt,
                 model_info,
                 sampling.reasoning_effort.clone(),
                 sampling.reasoning_summary,
                 sampling.service_tier.clone(),
                 responses_metadata,
+                true,
+                None,
                 include_internal,
             )?;
             if self.client.uses_codex_backend(client_setup.auth.as_ref()) {
@@ -2559,6 +3208,7 @@ impl ModelClientSession {
                 client: Arc::clone(&self.client.state),
                 interceptors,
                 continuation: Some(last_response_tx),
+                local_mapping: None,
             };
             self.websocket_session.last_response_rx = Some(last_response_rx);
             return Ok(WebsocketStreamOutcome::Stream(Box::new(stream)));
@@ -2725,10 +3375,12 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<OpenedModelResponse> {
-        let wire_api = self.client.state.provider.info().wire_api;
+        let route = self.route_for_responses_request(responses_metadata);
+        let provider = self.client.provider_for_route(route)?;
+        let wire_api = provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
-                if self.client.responses_websocket_enabled() {
+                if !route.is_local_offload() && self.client.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
                     match self
                         .stream_responses_websocket(
@@ -2784,6 +3436,26 @@ impl ModelClientSession {
         self.websocket_session = WebsocketSession::default();
         activated
     }
+}
+
+fn ensure_local_request_fits_effective_context(
+    request: &ResponsesApiRequest,
+    local_context: ModelOffloadContextConfig,
+) -> CodexResult<()> {
+    let Some(effective_context_window) = local_context.effective_context_window() else {
+        return Ok(());
+    };
+    let serialized = serde_json::to_string(request)?;
+    let estimated_tokens = i64::try_from(approx_token_count(&serialized)).unwrap_or(i64::MAX);
+    if estimated_tokens > effective_context_window {
+        warn!(
+            estimated_tokens,
+            effective_context_window,
+            "refusing local request that exceeds the endpoint-resolved effective context window"
+        );
+        return Err(CodexErr::ContextWindowExceeded);
+    }
+    Ok(())
 }
 
 /// Stamp a ResponsesWsRequest with the current time.
@@ -2854,6 +3526,7 @@ pub(crate) struct OpenedModelResponse {
     client: Arc<ModelClientState>,
     interceptors: Vec<Box<dyn codex_extension_api::ModelResponseInterceptor>>,
     continuation: Option<oneshot::Sender<LastResponse>>,
+    local_mapping: Option<LocalResponseMapping>,
 }
 
 impl OpenedModelResponse {
@@ -2897,11 +3570,18 @@ impl OpenedModelResponse {
             &self.client,
             self.continuation,
             delivery,
+            self.local_mapping,
         );
         stream.interrupt = interrupt;
         stream.routing_affinity = routing_affinity;
         Ok(stream)
     }
+}
+
+struct LocalResponseMapping {
+    provider: SharedModelProvider,
+    tool_names: Option<LocalOffloadToolNameMap>,
+    output_byte_limit: usize,
 }
 
 fn map_response_events<S>(
@@ -2912,6 +3592,7 @@ fn map_response_events<S>(
     client: &ModelClientState,
     mut last_response_tx: Option<oneshot::Sender<LastResponse>>,
     mut delivery: ResponseDelivery,
+    local_mapping: Option<LocalResponseMapping>,
 ) -> SamplingStream
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2923,7 +3604,10 @@ where
     let consumer_dropped = CancellationToken::new();
     let consumer_dropped_for_stream = consumer_dropped.clone();
     let settlement_started = Arc::clone(&delivery.settlement_started);
-    let provider = Arc::clone(&client.provider);
+    let provider = local_mapping.as_ref().map_or_else(
+        || Arc::clone(&client.provider),
+        |mapping| Arc::clone(&mapping.provider),
+    );
     let item_id_generator = Arc::clone(&client.item_id_generator);
 
     tokio::spawn(async move {
@@ -2932,6 +3616,10 @@ where
             last_response_tx.is_some() || inference_trace_attempt.needs_output_items();
         let mut items_added: Vec<ResponseItem> = Vec::new();
         let mut active_item_id: Option<ResponseItemId> = None;
+        let local_output_byte_limit = local_mapping.as_ref().map(|mapping| mapping.output_byte_limit);
+        let local_tool_names = local_mapping.and_then(|mapping| mapping.tool_names);
+        let mut local_delta_output_bytes = 0usize;
+        let mut local_completed_output_bytes = 0usize;
         let (request_start, mut ttft_ms) = (Instant::now(), None);
         let mut api_stream = api_stream;
         let upstream_request_id = upstream_request_id.as_deref();
@@ -2954,6 +3642,42 @@ where
             let Some(event) = event else {
                 break;
             };
+            if let (Ok(event), Some(output_byte_limit)) = (&event, local_output_byte_limit) {
+                local_delta_output_bytes = local_delta_output_bytes
+                    .saturating_add(incremental_response_event_output_bytes(event));
+                if let ResponseEvent::OutputItemDone(item) = event {
+                    match serialized_response_item_bytes(item) {
+                        Ok(item_bytes) => {
+                            local_completed_output_bytes =
+                                local_completed_output_bytes.saturating_add(item_bytes);
+                        }
+                        Err(err) => {
+                            let err = CodexErr::from(err);
+                            inference_trace_attempt.record_failed(
+                                &err,
+                                upstream_request_id,
+                                &items_added,
+                            );
+                            if !logged_error {
+                                session_telemetry.see_event_completed_failed(&err);
+                            }
+                            let _ = delivery.send_or_hold(Err(err), &tx_event).await;
+                            return;
+                        }
+                    }
+                }
+                if local_delta_output_bytes.max(local_completed_output_bytes) > output_byte_limit {
+                    let err = CodexErr::Stream(format!(
+                        "local model response exceeded aggregate safety limit of {output_byte_limit} bytes"
+                    ));
+                    inference_trace_attempt.record_failed(&err, upstream_request_id, &items_added);
+                    if !logged_error {
+                        session_telemetry.see_event_completed_failed(&err);
+                    }
+                    let _ = delivery.send_or_hold(Err(err), &tx_event).await;
+                    return;
+                }
+            }
             let overflow = delivery.would_overflow(&event);
             let event = if overflow {
                 Err(ApiError::Stream(
@@ -2975,6 +3699,11 @@ where
                         );
                     }
                     active_item_id = None;
+                    let item = local_tool_names
+                        .as_ref()
+                        .map_or(item.clone(), |tool_names| {
+                            tool_names.unflatten_response_item_with_telemetry(item)
+                        });
                     if collect_output_items {
                         items_added.push(item.clone());
                     }
@@ -2987,6 +3716,9 @@ where
                     reasoning_removals,
                     end_turn,
                 }) => {
+                    if let Some(tool_names) = local_tool_names.as_ref() {
+                        tool_names.trace_response_call_summary();
+                    }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);
@@ -3024,6 +3756,12 @@ where
                             i64::try_from(request_start.elapsed().as_millis()).unwrap_or(i64::MAX),
                         );
                     }
+                    let event = match (event, local_tool_names.as_ref()) {
+                        (ResponseEvent::OutputItemAdded(item), Some(tool_names)) => {
+                            ResponseEvent::OutputItemAdded(tool_names.unflatten_response_item(item))
+                        }
+                        (event, _) => event,
+                    };
                     Ok(event)
                 }
                 Err(err) => {
@@ -3095,6 +3833,38 @@ where
         interrupt: None,
         consumer_dropped: consumer_dropped_for_stream,
         settlement_started,
+    }
+}
+
+fn incremental_response_event_output_bytes(event: &ResponseEvent) -> usize {
+    match event {
+        ResponseEvent::OutputTextDelta(delta)
+        | ResponseEvent::ReasoningContentDelta { delta, .. }
+        | ResponseEvent::ReasoningSummaryDelta { delta, .. }
+        | ResponseEvent::ToolCallInputDelta { delta, .. } => delta.len(),
+        _ => 0,
+    }
+}
+
+fn serialized_response_item_bytes(item: &ResponseItem) -> serde_json::Result<usize> {
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, item)?;
+    Ok(writer.bytes)
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: usize,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

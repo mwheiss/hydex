@@ -1212,6 +1212,7 @@ mod tests {
             ),
             tool_choice: "auto".to_string(),
             parallel_tool_calls: true,
+            temperature: None,
             reasoning: None,
             store: false,
             stream: true,

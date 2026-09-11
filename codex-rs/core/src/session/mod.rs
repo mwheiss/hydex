@@ -26,6 +26,7 @@ use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
+use crate::config::ConstraintError;
 use crate::config::ManagedFeatures;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
@@ -328,6 +329,8 @@ use self::turn_context::TurnContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
 
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpEnvironmentScope;
@@ -2002,10 +2005,15 @@ impl Session {
             window_number,
             first_window_id,
             previous_window_id,
+            offload_ever_used,
             window_id,
+            active_remote_compaction_model,
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
+        self.services
+            .model_client
+            .seed_offload_ever_used(offload_ever_used);
         // An automatic turn can have a persisted routing override without establishing the
         // user-turn context baseline. Recover its own latest context by surviving turn ID.
         let restored_turn_routing = turn_attribution.as_ref().and_then(|turn| {
@@ -2089,6 +2097,7 @@ impl Session {
                     window_id,
                 },
             );
+            state.set_active_remote_compaction_model(active_remote_compaction_model);
             state.set_previous_turn_settings(previous_turn_settings.clone());
         }
         let prefix_tokens = if matches!(
@@ -2185,6 +2194,8 @@ impl Session {
         should_commit: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
     ) -> ConstraintResult<Option<SessionSettingsCommit>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let model_offload_override = updates.model_offload_override;
+        let model_offload_compaction_override = updates.model_offload_compaction_override;
         let windows_sandbox_changed;
         let (
             commit,
@@ -2301,6 +2312,28 @@ impl Session {
                 commit.configuration.windows_sandbox_type,
                 commit.configuration.windows_sandbox_level,
             );
+        }
+        if let Some(model_offload_override) = model_offload_override {
+            self.services
+                .model_client
+                .set_model_offload_runtime_override(model_offload_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+        }
+        if let Some(model_offload_compaction_override) = model_offload_compaction_override {
+            self.services
+                .model_client
+                .set_model_offload_compaction_runtime_override(model_offload_compaction_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.compaction.runtime_override",
+                    candidate: "local".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
         }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if refresh_network_proxy {
@@ -4862,13 +4895,41 @@ impl Session {
 
     pub(crate) async fn replace_compacted_history<'a>(
         &self,
-        mut items: Vec<ResponseItemEnvelope>,
+        items: Vec<ResponseItemEnvelope>,
         reference_context_item: TurnContextItem,
         world_state_baseline: WorldStateSnapshot,
         rejected_audio_file_ids: std::collections::BTreeSet<String>,
         installation: impl Into<CompactedHistoryInstallation<'a>>,
     ) -> bool {
-        let installation = installation.into();
+        self.replace_compacted_history_inner(
+            items,
+            Some(reference_context_item),
+            Some(world_state_baseline),
+            rejected_audio_file_ids,
+            installation.into(),
+        )
+        .await
+    }
+
+    /// Promote local recovery without claiming to have rendered a new context snapshot.
+    /// The next sampling step owns the fresh context and its comparison baseline.
+    pub(crate) async fn replace_recovered_local_history(
+        &self,
+        items: Vec<ResponseItemEnvelope>,
+        metadata: CompactedHistoryMetadata,
+    ) {
+        self.replace_compacted_history_inner(items, None, None, Default::default(), metadata.into())
+            .await;
+    }
+
+    async fn replace_compacted_history_inner<'a>(
+        &self,
+        mut items: Vec<ResponseItemEnvelope>,
+        reference_context_item: Option<TurnContextItem>,
+        world_state_baseline: Option<WorldStateSnapshot>,
+        rejected_audio_file_ids: std::collections::BTreeSet<String>,
+        installation: CompactedHistoryInstallation<'a>,
+    ) -> bool {
         let (compaction_model_hash, trace) = match &installation {
             CompactedHistoryInstallation::Complete(metadata, trace) => {
                 (&metadata.compaction_model_hash, *trace)
@@ -4932,7 +4993,7 @@ impl Session {
                     let Some(replacement) = prefix.assemble_replacement(
                         &mut state,
                         items,
-                        world_state_baseline,
+                        world_state_baseline.expect("prefix compaction captures a world-state baseline"),
                         self.services.model_client.auth_owner(),
                     ) else {
                         return false;
@@ -4977,20 +5038,22 @@ impl Session {
                 .extend_rejected_audio_file_ids(rejected_audio_file_ids);
             state.replace_annotated_history(
                 items,
-                Some(reference_context_item.clone()),
+                reference_context_item.clone(),
                 HistoryReplacement::Compaction {
                     reviewer_compaction_hash: metadata.reviewer_compaction_hash,
                 },
             );
             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
-            state
-                .history
-                .set_world_state_baseline(world_state_baseline.clone());
+            if let Some(snapshot) = &world_state_baseline {
+                state.history.set_world_state_baseline(snapshot.clone());
+            }
+            state.set_active_remote_compaction_model(metadata.remote_compaction_model.clone());
             let resume_metadata = CompactionResumeMetadata {
                 observation_clock_floor_ms,
                 ..self.compaction_resume_metadata(&state)
             };
             let compacted_item = CompactedItem {
+                remote_compaction_model: metadata.remote_compaction_model,
                 message: metadata.message,
                 replacement_history: Some(replacement_history),
                 guardian_history: state.history.guardian_history_checkpoint(),
@@ -5022,14 +5085,15 @@ impl Session {
             // The prefix is now known to be valid; announce the install before checkpoint I/O.
             self.emit_turn_item_started(turn_context, item).await;
         }
-        let world_state_item = WorldStateItem::full(world_state_baseline.into_object());
-        let rollout_items = [
-            RolloutItem::Compacted(Box::new(compacted_item)),
-            RolloutItem::WorldState(world_state_item),
-            RolloutItem::TurnContext(reference_context_item),
-            // The frozen turn context must not override current settings in persisted metadata.
-            RolloutItem::EventMsg(thread_settings::applied_event(self).await),
-        ];
+        let mut rollout_items = vec![RolloutItem::Compacted(Box::new(compacted_item))];
+        if let Some(snapshot) = world_state_baseline {
+            rollout_items.push(RolloutItem::WorldState(WorldStateItem::full(snapshot.into_object())));
+        }
+        if let Some(reference_context_item) = reference_context_item {
+            rollout_items.push(RolloutItem::TurnContext(reference_context_item));
+        }
+        // The frozen turn context must not override current settings in persisted metadata.
+        rollout_items.push(RolloutItem::EventMsg(thread_settings::applied_event(self).await));
         if self.persist_rollout_items(&rollout_items).await
             && let Some(revision) = mcp_revision
         {
@@ -5054,6 +5118,27 @@ impl Session {
                 .is_some()
     }
 
+    pub(crate) async fn remote_compaction_recovery_cache_get(
+        &self,
+        key: &RemoteCompactionRecoveryCacheKey,
+    ) -> Option<RemoteCompactionRecoveryCacheEntry> {
+        let state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.get(key)
+    }
+
+    pub(crate) async fn remote_compaction_recovery_cache_insert(
+        &self,
+        key: RemoteCompactionRecoveryCacheKey,
+        entry: RemoteCompactionRecoveryCacheEntry,
+    ) {
+        let mut state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.insert(key, entry);
+    }
+
+    pub(crate) async fn active_remote_compaction_model(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.active_remote_compaction_model()
+    }
     pub fn enabled(&self, feature: Feature) -> bool {
         self.features.enabled(feature)
     }
@@ -5533,7 +5618,7 @@ impl Session {
                 .map(ResponseItemEnvelope::new)
                 .chain(retained_client_items.into_values())
                 .collect();
-        let turn_context_item = step_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(step_context);
         self.replace_compacted_history(
             context_items,
             turn_context_item,
@@ -5548,6 +5633,7 @@ impl Session {
                     compaction_response_id: None,
                     compaction_model_hash: None,
                     reviewer_compaction_hash: None,
+                    remote_compaction_model: None,
                 },
                 Some((trace, &history)),
             ),
@@ -5559,6 +5645,23 @@ impl Session {
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
         let state = self.state.lock().await;
         state.reference_context_item()
+    }
+
+    pub(crate) fn turn_context_item(&self, step_context: &StepContext) -> TurnContextItem {
+        let mut item = step_context.to_turn_context_item();
+        item.offload_ever_used = self.services.model_client.offload_ever_used();
+        item
+    }
+
+    pub(crate) async fn persist_turn_context_item_and_set_reference_context_item(
+        &self,
+        step_context: &StepContext,
+    ) {
+        let turn_context_item = self.turn_context_item(step_context);
+        self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
+            .await;
+        let mut state = self.state.lock().await;
+        state.set_reference_context_item(Some(turn_context_item));
     }
 
     /// Persist the latest turn context snapshot for the first real user turn and for
@@ -5584,7 +5687,7 @@ impl Session {
             let state = self.state.lock().await;
             state.reference_context_item()
         };
-        let turn_context_item = step_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(step_context);
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
         let world_state = self

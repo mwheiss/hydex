@@ -27,7 +27,7 @@ pub(crate) struct PrefixCompactionInstallation<'a> {
 
 pub(super) struct CompactedHistoryReplacement<'a> {
     pub(super) items: Vec<ResponseItemEnvelope>,
-    pub(super) world_state_baseline: WorldStateSnapshot,
+    pub(super) world_state_baseline: Option<WorldStateSnapshot>,
     pub(super) metadata: CompactedHistoryMetadata,
     pub(super) started_item: Option<(&'a TurnContext, &'a TurnItem)>,
 }
@@ -88,7 +88,7 @@ impl<'a> PrefixCompactionInstallation<'a> {
         let (window_number, window_ids) = state.advance_auto_compact_window();
         Some(CompactedHistoryReplacement {
             items,
-            world_state_baseline,
+            world_state_baseline: Some(world_state_baseline),
             metadata: CompactedHistoryMetadata {
                 input_goal_ids,
                 message: String::new(),
@@ -97,6 +97,10 @@ impl<'a> PrefixCompactionInstallation<'a> {
                 compaction_response_id: Some(self.compaction_response_id),
                 compaction_model_hash: self.model_info.comp_hash.clone(),
                 reviewer_compaction_hash: self.reviewer_compaction_hash,
+                remote_compaction_model: compact::remote_compaction_model_provenance(
+                    self.turn_context.config.model_offload.provider.as_ref(),
+                    &self.model_info.slug,
+                ),
             },
             started_item: self.started_item.map(|item| (self.turn_context, item)),
         })

@@ -5,6 +5,7 @@ use crate::metrics::MEMORY_STARTUP;
 use crate::phase1;
 use crate::phase2;
 use crate::runtime::MemoryStartupContext;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
@@ -31,6 +32,7 @@ pub fn start_memories_startup_task(
 ) {
     if config.ephemeral
         || !config.features.enabled(Feature::MemoryTool)
+        || config.model_offload.memory_mode == ModelOffloadMemoryMode::Off
         || source.is_non_root_agent()
     {
         return;

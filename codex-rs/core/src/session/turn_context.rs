@@ -801,6 +801,7 @@ impl TurnContext {
             cyber_access_program: self.cyber_access_program,
             effort: self.reasoning_effort().cloned(),
             summary: self.reasoning_summary(),
+            offload_ever_used: false,
         }
     }
 

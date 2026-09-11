@@ -750,6 +750,7 @@ fn reference_context_item() -> TurnContextItem {
         cyber_access_program: None,
         effort: None,
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
+        offload_ever_used: false,
     }
 }
 

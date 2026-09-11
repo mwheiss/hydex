@@ -96,6 +96,7 @@ use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL;
@@ -304,6 +305,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         model: model_cli_arg,
         oss,
         oss_provider,
+        offload,
+        no_offload,
         config_profile_v2,
         sandbox_mode: sandbox_mode_cli_arg,
         auto_review: _,
@@ -313,6 +316,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         mut add_dir,
         worktree,
     } = shared;
+    let model_offload_override = if offload {
+        Some(ModelOffloadRuntimeOverride::ForceOn)
+    } else if no_offload {
+        Some(ModelOffloadRuntimeOverride::ForceOff)
+    } else {
+        None
+    };
 
     if worktree {
         if ignore_user_config {
@@ -598,6 +608,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cwd: resolved_cwd,
         workspace_roots: None,
         model_provider: model_provider.clone(),
+        model_offload_override,
         service_tier: None,
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -1250,6 +1261,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         sandbox_policy: None,
                         permissions: None,
                         model: None,
+                        model_offload_override: None,
+                        model_offload_compaction_override: None,
                         service_tier: None,
                         service_tier_for_turn: None,
                         effort: default_effort,

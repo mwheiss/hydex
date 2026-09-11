@@ -76,6 +76,8 @@ pub(super) fn prepare_update(
         effort,
         summary,
         service_tier,
+        model_offload_override,
+        model_offload_compaction_override,
         collaboration_mode,
         personality,
         disabled_plugin_ids,
@@ -100,6 +102,8 @@ pub(super) fn prepare_update(
         active_permission_profile,
         windows_sandbox_level,
         disabled_plugin_ids,
+        model_offload_override,
+        model_offload_compaction_override,
         ..Default::default()
     }
 }

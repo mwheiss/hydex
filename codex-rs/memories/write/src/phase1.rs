@@ -8,10 +8,14 @@ use crate::phase1_output::output_schema;
 use crate::rollout_input::sanitize_response_item_for_memories;
 use crate::runtime::MemoryStartupContext;
 use crate::runtime::StageOneRequestContext;
+use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_config::types::MemoriesConfig;
 use codex_core::Prompt;
 use codex_core::RolloutRecorder;
 use codex_core::config::Config;
+use codex_core::local_output_validation::CheapValidationOutcome;
+use codex_core::local_output_validation::LocalOutputKind;
+use codex_core::local_output_validation::cheap_validate_local_output_with_context;
 use codex_protocol::MemoryVersion;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErr;
@@ -310,11 +314,29 @@ mod job {
         prompt.output_schema = Some(output_schema(config.memories.version));
         prompt.output_schema_strict = true;
 
-        let (result, token_usage) = context
+        let (result, token_usage, local_context_window) = context
             .stream_stage_one_prompt(config, &prompt, stage_one_context)
             .await?;
 
         let output = StageOneOutput::parse(&result, config.memories.version)?;
+        if config.model_offload.memory_mode == ModelOffloadMemoryMode::Local {
+            let validation_text = format!(
+                "{}\n{}",
+                output.rollout_summary,
+                output.raw_memory.as_deref().unwrap_or_default()
+            );
+            match cheap_validate_local_output_with_context(
+                &config.model_offload.validation,
+                LocalOutputKind::MemoryPayload,
+                &validation_text,
+                local_context_window,
+            ) {
+                CheapValidationOutcome::Pass | CheapValidationOutcome::Disabled => {}
+                CheapValidationOutcome::Reject(reason) => {
+                    anyhow::bail!("local memory output failed sanity validation: {reason}");
+                }
+            }
+        }
 
         Ok((output, token_usage))
     }

@@ -346,7 +346,7 @@ async fn run_remote_compact_task_inner_impl(
     };
     sess.replace_compacted_history(
         new_history,
-        replacement_step_context.to_turn_context_item(),
+        sess.turn_context_item(replacement_step_context),
         world_state_baseline,
         CompactedHistoryMetadata {
             input_goal_ids,
@@ -356,6 +356,14 @@ async fn run_remote_compact_task_inner_impl(
             compaction_response_id: Some(compaction_response_id),
             compaction_model_hash: compaction_turn_context.model_info().comp_hash.clone(),
             reviewer_compaction_hash,
+            remote_compaction_model: crate::compact::remote_compaction_model_provenance(
+                compaction_turn_context
+                    .config
+                    .model_offload
+                    .provider
+                    .as_ref(),
+                &compaction_turn_context.model_info().slug,
+            ),
         },
     )
     .await;
@@ -381,10 +389,8 @@ async fn run_remote_compaction_request_v2(
     responses_metadata: &CodexResponsesMetadata,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let turn_context = &step_context.turn;
-    let max_retries = turn_context
-        .provider
-        .info()
-        .stream_max_retries()
+    let max_retries = client_session
+        .stream_max_retries_for(responses_metadata)
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {

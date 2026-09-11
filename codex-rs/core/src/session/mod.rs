@@ -21,6 +21,7 @@ use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
+use crate::config::ConstraintError;
 use crate::config::ManagedFeatures;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
@@ -302,6 +303,8 @@ use self::turn_context::TurnContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
 
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheEntry;
+use crate::compaction_recovery_cache::RemoteCompactionRecoveryCacheKey;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpEnvironmentScope;
@@ -1760,10 +1763,15 @@ impl Session {
             window_number,
             first_window_id,
             previous_window_id,
+            offload_ever_used,
             window_id,
+            active_remote_compaction_model,
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
+        self.services
+            .model_client
+            .seed_offload_ever_used(offload_ever_used);
         // Keep the recorded rollout unchanged. Prepare its reconstructed history before
         // installing it, so legacy media is processed once for this resume or fork and
         // will be processed again if the rollout is reconstructed in a future session.
@@ -1825,6 +1833,7 @@ impl Session {
                     window_id,
                 },
             );
+            state.set_active_remote_compaction_model(active_remote_compaction_model);
             state.set_previous_turn_settings(previous_turn_settings.clone());
         }
         let prefix_tokens = if matches!(
@@ -1919,6 +1928,8 @@ impl Session {
         should_commit: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
     ) -> ConstraintResult<Option<SessionSettingsCommit>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let model_offload_override = updates.model_offload_override;
+        let model_offload_compaction_override = updates.model_offload_compaction_override;
         let (commit, previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
             let mut state = self.state.lock().await;
             let updated = match self.apply_session_settings(&state.session_configuration, &updates)
@@ -1976,6 +1987,28 @@ impl Session {
                 mcp_inputs_changed,
             )
         };
+        if let Some(model_offload_override) = model_offload_override {
+            self.services
+                .model_client
+                .set_model_offload_runtime_override(model_offload_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+        }
+        if let Some(model_offload_compaction_override) = model_offload_compaction_override {
+            self.services
+                .model_client
+                .set_model_offload_compaction_runtime_override(model_offload_compaction_override)
+                .map_err(|err| ConstraintError::InvalidValue {
+                    field_name: "model_offload.compaction.runtime_override",
+                    candidate: "local".to_string(),
+                    allowed: err.to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
@@ -4046,9 +4079,36 @@ impl Session {
 
     pub(crate) async fn replace_compacted_history(
         &self,
-        mut items: Vec<ResponseItemEnvelope>,
+        items: Vec<ResponseItemEnvelope>,
         reference_context_item: TurnContextItem,
         world_state_baseline: WorldStateSnapshot,
+        metadata: CompactedHistoryMetadata,
+    ) {
+        self.replace_compacted_history_inner(
+            items,
+            Some(reference_context_item),
+            Some(world_state_baseline),
+            metadata,
+        )
+        .await;
+    }
+
+    /// Promote readable local recovery without claiming to have rendered a new context snapshot.
+    /// The next sampling step owns the fresh context and its comparison baseline.
+    pub(crate) async fn replace_recovered_local_history(
+        &self,
+        items: Vec<ResponseItemEnvelope>,
+        metadata: CompactedHistoryMetadata,
+    ) {
+        self.replace_compacted_history_inner(items, None, None, metadata)
+            .await;
+    }
+
+    async fn replace_compacted_history_inner(
+        &self,
+        mut items: Vec<ResponseItemEnvelope>,
+        reference_context_item: Option<TurnContextItem>,
+        world_state_baseline: Option<WorldStateSnapshot>,
         metadata: CompactedHistoryMetadata,
     ) {
         for envelope in &mut items {
@@ -4078,7 +4138,9 @@ impl Session {
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
-        let world_state_item = WorldStateItem::full(world_state_baseline.clone().into_object());
+        let world_state_item = world_state_baseline
+            .as_ref()
+            .map(|snapshot| WorldStateItem::full(snapshot.clone().into_object()));
         let compacted_item = {
             let mut state = self.state.lock().await;
             // Goal edits are published outside the running task. Keep edits accepted after
@@ -4103,14 +4165,18 @@ impl Session {
             let replacement_history = items.clone();
             state.replace_annotated_history(
                 items,
-                Some(reference_context_item.clone()),
+                reference_context_item.clone(),
                 HistoryReplacement::Compaction {
                     reviewer_compaction_hash: metadata.reviewer_compaction_hash,
                 },
             );
             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
-            state.history.set_world_state_baseline(world_state_baseline);
+            if let Some(snapshot) = world_state_baseline {
+                state.history.set_world_state_baseline(snapshot);
+            }
+            state.set_active_remote_compaction_model(metadata.remote_compaction_model.clone());
             CompactedItem {
+                remote_compaction_model: metadata.remote_compaction_model,
                 message: metadata.message,
                 replacement_history: Some(replacement_history),
                 guardian_history: state.history.guardian_history_checkpoint(),
@@ -4134,13 +4200,17 @@ impl Session {
             }
         };
 
-        let rollout_items = [
-            RolloutItem::Compacted(compacted_item),
-            RolloutItem::WorldState(world_state_item),
-            RolloutItem::TurnContext(reference_context_item),
-            // The frozen turn context must not override current settings in persisted metadata.
-            RolloutItem::EventMsg(thread_settings::applied_event(self).await),
-        ];
+        let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
+        if let Some(world_state_item) = world_state_item {
+            rollout_items.push(RolloutItem::WorldState(world_state_item));
+        }
+        if let Some(reference_context_item) = reference_context_item {
+            rollout_items.push(RolloutItem::TurnContext(reference_context_item));
+        }
+        // The frozen turn context must not override current settings in persisted metadata.
+        rollout_items.push(RolloutItem::EventMsg(
+            thread_settings::applied_event(self).await,
+        ));
         if self.persist_rollout_items(&rollout_items).await
             && let Some(revision) = mcp_revision
         {
@@ -4154,6 +4224,27 @@ impl Session {
         }
     }
 
+    pub(crate) async fn remote_compaction_recovery_cache_get(
+        &self,
+        key: &RemoteCompactionRecoveryCacheKey,
+    ) -> Option<RemoteCompactionRecoveryCacheEntry> {
+        let state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.get(key)
+    }
+
+    pub(crate) async fn remote_compaction_recovery_cache_insert(
+        &self,
+        key: RemoteCompactionRecoveryCacheKey,
+        entry: RemoteCompactionRecoveryCacheEntry,
+    ) {
+        let mut state = self.state.lock().await;
+        state.remote_compaction_recovery_cache.insert(key, entry);
+    }
+
+    pub(crate) async fn active_remote_compaction_model(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.active_remote_compaction_model()
+    }
     pub fn enabled(&self, feature: Feature) -> bool {
         self.features.enabled(feature)
     }
@@ -4615,7 +4706,7 @@ impl Session {
                 .map(ResponseItemEnvelope::new)
                 .chain(retained_client_developer_messages)
                 .collect();
-        let turn_context_item = step_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(step_context);
         self.replace_compacted_history(
             context_items,
             turn_context_item,
@@ -4628,6 +4719,7 @@ impl Session {
                 compaction_response_id: None,
                 compaction_model_hash: None,
                 reviewer_compaction_hash: None,
+                remote_compaction_model: None,
             },
         )
         .await;
@@ -4638,6 +4730,23 @@ impl Session {
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
         let state = self.state.lock().await;
         state.reference_context_item()
+    }
+
+    pub(crate) fn turn_context_item(&self, step_context: &StepContext) -> TurnContextItem {
+        let mut item = step_context.to_turn_context_item();
+        item.offload_ever_used = self.services.model_client.offload_ever_used();
+        item
+    }
+
+    pub(crate) async fn persist_turn_context_item_and_set_reference_context_item(
+        &self,
+        step_context: &StepContext,
+    ) {
+        let turn_context_item = self.turn_context_item(step_context);
+        self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
+            .await;
+        let mut state = self.state.lock().await;
+        state.set_reference_context_item(Some(turn_context_item));
     }
 
     /// Persist the latest turn context snapshot for the first real user turn and for
@@ -4663,7 +4772,7 @@ impl Session {
             let state = self.state.lock().await;
             state.reference_context_item()
         };
-        let turn_context_item = step_context.to_turn_context_item();
+        let turn_context_item = self.turn_context_item(step_context);
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);

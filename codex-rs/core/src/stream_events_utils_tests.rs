@@ -294,6 +294,7 @@ fn output_context(session: Arc<Session>, turn_context: Arc<TurnContext>) -> Hand
         registry,
         hosted_specs,
         &Default::default(),
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     ));
     let step_context = step_context.with_tool_router_for_test(router);
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));

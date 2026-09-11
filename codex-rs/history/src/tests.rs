@@ -545,6 +545,7 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        remote_compaction_model: None,
     };
 
     let serialized = serde_json::to_value(item)?;
@@ -703,6 +704,7 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
             turn_attribution: None,
             previous_turn_settings: None,
         }),
+        remote_compaction_model: None,
     })))?;
 
     let restored: RolloutItem = serde_json::from_value(compacted_line.clone())?;
@@ -987,6 +989,7 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        remote_compaction_model: None,
     };
 
     assert_eq!(
@@ -1027,6 +1030,7 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
+            remote_compaction_model: None,
         }
     );
     Ok(())

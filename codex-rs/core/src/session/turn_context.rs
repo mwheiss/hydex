@@ -912,6 +912,7 @@ impl TurnContext {
             cyber_access_program: self.cyber_access_program,
             effort: self.reasoning_effort().cloned(),
             summary: Some(ReasoningSummaryConfig::None),
+            offload_ever_used: false,
         }
     }
 }

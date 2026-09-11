@@ -157,6 +157,8 @@ impl App {
             permission_profile: _,
             active_permission_profile,
             model,
+            model_offload_override,
+            model_offload_compaction_override: _,
             effort,
             summary,
             service_tier,
@@ -175,6 +177,7 @@ impl App {
                 .as_ref()
                 .map(|profile| profile.id.clone()),
             model: model.clone(),
+            model_offload_override: *model_offload_override,
             effort: effort.clone().unwrap_or_default(),
             summary: *summary,
             service_tier: service_tier.clone(),
@@ -278,6 +281,7 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.sandbox_policy.is_some()
         || params.permissions.is_some()
         || params.model.is_some()
+        || params.model_offload_override.is_some()
         || params.service_tier.is_some()
         || params.effort.is_some()
         || params.summary.is_some()

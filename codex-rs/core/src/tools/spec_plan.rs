@@ -116,6 +116,14 @@ struct CoreToolPlanContext<'a> {
     wait_for_environment_tool_config: Option<&'a Arc<crate::WaitForEnvironmentToolConfig>>,
     default_agent_type_description: &'a str,
     wait_agent_timeouts: WaitAgentTimeoutOptions,
+    deferred_tool_search_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToolWireTarget {
+    #[default]
+    Primary,
+    LocalOffload,
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -130,6 +138,34 @@ pub(crate) fn build_tool_router(
     step_store: &ExtensionData,
     tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
 ) -> CodexResult<ToolRouter> {
+    build_tool_router_for_wire(
+        session,
+        turn_context,
+        model_info,
+        environments,
+        mcp,
+        apps_enabled,
+        step_store,
+        tool_suggest_candidates,
+        ToolWireTarget::Primary,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[instrument(level = "trace", skip_all)]
+pub(crate) fn build_tool_router_for_wire(
+    session: &Session,
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    environments: &TurnEnvironmentSnapshot,
+    mcp: &Arc<codex_mcp::McpBinding>,
+    apps_enabled: bool,
+    step_store: &ExtensionData,
+    tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
+    wire_target: ToolWireTarget,
+) -> CodexResult<ToolRouter> {
+    let deferred_tool_search_enabled =
+        deferred_tool_search_enabled(turn_context, model_info, wire_target);
     let default_agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
     let wait_for_environment_tool_config = session
@@ -146,6 +182,7 @@ pub(crate) fn build_tool_router(
         wait_for_environment_tool_config: wait_for_environment_tool_config.as_ref(),
         default_agent_type_description: &default_agent_type_description,
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
+        deferred_tool_search_enabled,
     };
     let mut registry = ToolRegistry::with_tool_policy(Arc::clone(&session.tool_policy));
     add_core_tool_sources(&context, &mut registry);
@@ -155,7 +192,7 @@ pub(crate) fn build_tool_router(
         &turn_context.config,
         apps_enabled,
         &mcp.config().mcp_server_catalog,
-        search_tool_enabled(turn_context, model_info),
+        deferred_tool_search_enabled,
         &mut registry,
     );
     apply_mcp_tool_exposure_policy(
@@ -163,11 +200,13 @@ pub(crate) fn build_tool_router(
         model_info,
         mcp,
         &registered_mcp_tools,
+        deferred_tool_search_enabled,
         &mut registry,
     );
     let standalone_web_search_tool = append_extension_tool_executors(
         turn_context,
         model_info,
+        wire_target,
         extension_tool_executors(session, step_store),
         &mut registry,
     );
@@ -175,15 +214,17 @@ pub(crate) fn build_tool_router(
     let hosted_specs = hosted_model_tool_specs(
         turn_context,
         model_info,
+        wire_target,
         standalone_web_search_tool.as_slice(),
     );
 
-    finalize_tool_router(
+    finalize_tool_router_for_wire(
         turn_context,
         model_info,
         registry,
         hosted_specs,
         &session.services.tool_search_handler_cache,
+        wire_target,
     )
 }
 
@@ -192,6 +233,7 @@ fn apply_mcp_tool_exposure_policy(
     model_info: &ModelInfo,
     mcp: &codex_mcp::McpBinding,
     registered_mcp_tools: &HashSet<ToolName>,
+    deferred_tool_search_enabled: bool,
     registry: &mut ToolRegistry,
 ) {
     let mut omitted_exposures_by_tool = HashMap::new();
@@ -243,7 +285,7 @@ fn apply_mcp_tool_exposure_policy(
             exposures = exposures.difference(ToolExposures::DEFERRED | ToolExposures::CODE_MODE);
         }
 
-        exposures = if search_tool_enabled(turn_context, model_info)
+        exposures = if deferred_tool_search_enabled
             && exposures.contains(ToolExposures::DEFERRED)
             && (effective_tool_mode(turn_context, model_info) != ToolMode::CodeModeOnly
                 || exposures.contains(ToolExposures::CODE_MODE))
@@ -278,6 +320,7 @@ pub(crate) fn build_core_tool_registry(
     mcp: &codex_mcp::McpBinding,
     tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
     wait_for_environment_tool_config: Option<&Arc<crate::WaitForEnvironmentToolConfig>>,
+    wire_target: ToolWireTarget,
 ) -> ToolRegistry {
     let default_agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
@@ -291,6 +334,11 @@ pub(crate) fn build_core_tool_registry(
         wait_for_environment_tool_config,
         default_agent_type_description: &default_agent_type_description,
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
+        deferred_tool_search_enabled: deferred_tool_search_enabled(
+            turn_context,
+            model_info,
+            wire_target,
+        ),
     };
     let mut registry = ToolRegistry::default();
     add_core_tool_sources(&context, &mut registry);
@@ -308,6 +356,7 @@ pub(crate) fn append_source_tools(
         Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>,
     >,
     dynamic_tools: &[DynamicToolSpec],
+    wire_target: ToolWireTarget,
 ) -> Vec<ToolSpec> {
     for tool in mcp_tools {
         registry.register_external_with_exposure(tool.runtime, tool.exposure);
@@ -315,6 +364,7 @@ pub(crate) fn append_source_tools(
     let standalone_web_search_tool = append_extension_tool_executors(
         turn_context,
         model_info,
+        wire_target,
         extension_tool_executors,
         registry,
     );
@@ -322,6 +372,7 @@ pub(crate) fn append_source_tools(
     hosted_model_tool_specs(
         turn_context,
         model_info,
+        wire_target,
         standalone_web_search_tool.as_slice(),
     )
 }
@@ -345,15 +396,40 @@ pub(crate) fn extension_tool_executors<'a>(
         })
 }
 
+#[cfg(test)]
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn finalize_tool_router(
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    registry: ToolRegistry,
+    hosted_specs: Vec<ToolSpec>,
+    tool_search_handler_cache: &ToolSearchHandlerCache,
+) -> CodexResult<ToolRouter> {
+    finalize_tool_router_for_wire(
+        turn_context,
+        model_info,
+        registry,
+        hosted_specs,
+        tool_search_handler_cache,
+        ToolWireTarget::Primary,
+    )
+}
+
+#[instrument(level = "trace", skip_all)]
+pub(crate) fn finalize_tool_router_for_wire(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
     mut registry: ToolRegistry,
     mut hosted_specs: Vec<ToolSpec>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
+    wire_target: ToolWireTarget,
 ) -> CodexResult<ToolRouter> {
     hosted_specs.retain(|spec| registry.tool_policy.allows(&ToolName::plain(spec.name())));
+    let deferred_tool_search_enabled =
+        deferred_tool_search_enabled(turn_context, model_info, wire_target);
+    if wire_target == ToolWireTarget::LocalOffload {
+        expose_deferred_tools_directly(&mut registry);
+    }
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
     let tool_mode = effective_tool_mode(turn_context, model_info);
     let code_mode_enabled = matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly);
@@ -368,7 +444,7 @@ pub(crate) fn finalize_tool_router(
         }
     }
     let tool_search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
-    if search_tool_enabled(turn_context, model_info)
+    if deferred_tool_search_enabled
         && registry.entries().any(|tool| {
             tool.runtime.tool_name() != tool_search_name
                 && tool.exposure.is_deferred()
@@ -410,8 +486,13 @@ pub(crate) fn finalize_tool_router(
         registry.mcp_namespaces(),
     )
     .map_err(|error| CodexErrorDetails::InvalidRequest(error.to_string()))?;
-    let code_mode_tool_names =
-        register_code_mode_executors(turn_context, model_info, &mut registry, &indirect_prefixes);
+    let code_mode_tool_names = register_code_mode_executors(
+        turn_context,
+        model_info,
+        &mut registry,
+        &indirect_prefixes,
+        deferred_tool_search_enabled,
+    );
     let include_tool_namespaces_info = turn_context
         .config
         .tool_registry
@@ -480,7 +561,11 @@ pub(crate) fn finalize_tool_router(
         &registry,
         &code_mode_tool_names,
         hosted_specs,
+        wire_target,
     );
+    if wire_target == ToolWireTarget::LocalOffload {
+        trace_local_tool_router_surface(&registry, &model_visible_specs);
+    }
     let tool_namespaces_info = include_tool_namespaces_info
         .then(|| {
             collect_tool_namespaces_info(&registry, &code_mode_tool_names, &model_visible_specs)
@@ -515,6 +600,83 @@ pub(crate) fn finalize_tool_router(
         }
     }
     Ok(router)
+}
+
+fn expose_deferred_tools_directly(registry: &mut ToolRegistry) {
+    for tool in registry.entries_mut() {
+        tool.exposure = match tool.exposure {
+            ToolExposure::Deferred => ToolExposure::Direct,
+            ToolExposure::DeferredModelOnly => ToolExposure::DirectModelOnly,
+            exposure => exposure,
+        };
+    }
+}
+
+fn trace_local_tool_router_surface(registry: &ToolRegistry, model_visible_specs: &[ToolSpec]) {
+    let deferred_tools = registry
+        .entries()
+        .filter(|tool| tool.exposure.is_deferred())
+        .count();
+    let hidden_tools = registry
+        .entries()
+        .filter(|tool| tool.exposure == ToolExposure::Hidden)
+        .count();
+    let local_request_tool_names = model_visible_specs
+        .iter()
+        .flat_map(|spec| match spec {
+            ToolSpec::Function(function) => {
+                vec![ToolName::plain(function.name.clone()).with_default_namespace()]
+            }
+            ToolSpec::Namespace(namespace) => namespace
+                .tools
+                .iter()
+                .filter_map(|tool| match tool {
+                    ResponsesApiNamespaceTool::Function(function) => Some(
+                        ToolName::namespaced(namespace.name.clone(), function.name.clone())
+                            .with_default_namespace(),
+                    ),
+                    ResponsesApiNamespaceTool::Custom(_) => None,
+                })
+                .collect(),
+            ToolSpec::Freeform(_) | ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => {
+                Vec::new()
+            }
+        })
+        .collect::<HashSet<_>>();
+    let tools_present_in_router_absent_from_local_request = registry
+        .entries()
+        .filter(|tool| {
+            !local_request_tool_names.contains(&tool.runtime.tool_name().with_default_namespace())
+        })
+        .count();
+    let special_hosted_specs_removed_locally = model_visible_specs
+        .iter()
+        .filter(|spec| {
+            matches!(
+                spec,
+                ToolSpec::Freeform(_) | ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. }
+            )
+        })
+        .count();
+
+    if deferred_tools != 0 {
+        tracing::error!(
+            executable_deferred_tools_without_model_visible_discovery_route = deferred_tools,
+            "local tool reachability invariant violated"
+        );
+    }
+    debug_assert_eq!(
+        deferred_tools, 0,
+        "local routers cannot leave executable deferred tools without a discovery route"
+    );
+    tracing::debug!(
+        deferred_tools,
+        hidden_tools,
+        special_hosted_specs_removed_locally,
+        tools_present_in_router_absent_from_local_request,
+        executable_deferred_tools_without_model_visible_discovery_route = deferred_tools,
+        "built local offload tool router"
+    );
 }
 
 fn apply_direct_model_only_namespace_overrides(
@@ -557,6 +719,7 @@ fn build_model_visible_specs(
     registry: &ToolRegistry,
     code_mode_tool_names: &BTreeMap<String, ToolName>,
     hosted_specs: Vec<ToolSpec>,
+    wire_target: ToolWireTarget,
 ) -> Vec<ToolSpec> {
     let mut specs = Vec::new();
     for tool in registry.entries() {
@@ -566,7 +729,8 @@ fn build_model_visible_specs(
         }
 
         let tool_name = tool.runtime.tool_name();
-        if is_hidden_by_code_mode_only(turn_context, model_info, &tool_name, exposure) {
+        if is_hidden_by_code_mode_only(turn_context, model_info, &tool_name, exposure, wire_target)
+        {
             continue;
         }
 
@@ -622,6 +786,7 @@ fn spec_for_model_request(
 fn hosted_model_tool_specs(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
     registered_extension_tool_names: &[ToolName],
 ) -> Vec<ToolSpec> {
     // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
@@ -630,8 +795,9 @@ fn hosted_model_tool_specs(
     }
 
     let mut specs = Vec::new();
-    let standalone_web_search_available = standalone_web_search_enabled(turn_context, model_info)
-        && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
+    let standalone_web_search_available =
+        standalone_web_search_enabled(turn_context, model_info, wire_target)
+            && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
     let web_search_mode = (!standalone_web_search_available
@@ -652,6 +818,14 @@ fn hosted_model_tool_specs(
 
 pub(crate) fn search_tool_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
     model_info.supports_search_tool && namespace_tools_enabled(turn_context)
+}
+
+fn deferred_tool_search_enabled(
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
+) -> bool {
+    wire_target == ToolWireTarget::Primary && search_tool_enabled(turn_context, model_info)
 }
 
 pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
@@ -796,9 +970,11 @@ fn is_hidden_by_code_mode_only(
     model_info: &ModelInfo,
     tool_name: &ToolName,
     exposure: ToolExposure,
+    wire_target: ToolWireTarget,
 ) -> bool {
     let tool_mode = effective_tool_mode(turn_context, model_info);
-    tool_mode == ToolMode::CodeModeOnly
+    wire_target == ToolWireTarget::Primary
+        && tool_mode == ToolMode::CodeModeOnly
         && exposure.is_available_in_code_mode()
         && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
             tool_name,
@@ -821,6 +997,7 @@ fn register_code_mode_executors(
     model_info: &ModelInfo,
     registry: &mut ToolRegistry,
     indirect_prefixes: &IndirectNamespacePrefixes<'_>,
+    deferred_tool_search_enabled: bool,
 ) -> BTreeMap<String, ToolName> {
     let tool_mode = effective_tool_mode(turn_context, model_info);
     if !matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly) {
@@ -832,7 +1009,7 @@ fn register_code_mode_executors(
     let mut exec_prompt_tool_specs = Vec::new();
     let mut deferred_exec_prompt_tool_specs = Vec::new();
     let mut included_deferred_mcp_output_schema = false;
-    let deferred_tools_guidance_enabled = search_tool_enabled(turn_context, model_info);
+    let deferred_tools_guidance_enabled = deferred_tool_search_enabled;
     for tool in registry.entries() {
         let exposure = tool.exposure;
         if !exposure.is_available_in_code_mode() {
@@ -1035,7 +1212,11 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
     add_collaboration_tools(context, registry);
 }
 
-fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
+fn standalone_web_search_enabled(
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
+) -> bool {
     namespace_tools_enabled(turn_context)
         && turn_context.provider.capabilities().web_search
         && (model_info.use_responses_lite
@@ -1043,7 +1224,8 @@ fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelI
                 .config
                 .features
                 .get()
-                .enabled(Feature::StandaloneWebSearch))
+                .enabled(Feature::StandaloneWebSearch)
+            || wire_target == ToolWireTarget::LocalOffload)
 }
 
 fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironmentMode {
@@ -1396,7 +1578,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
-            let exposure = if search_tool_enabled(turn_context, context.model_info) {
+            let exposure = if context.deferred_tool_search_enabled {
                 ToolExposure::Deferred
             } else {
                 ToolExposure::Direct
@@ -1477,10 +1659,12 @@ fn append_tool_search_executor(
 fn append_extension_tool_executors(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
+    wire_target: ToolWireTarget,
     executors: impl IntoIterator<Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>>,
     registry: &mut ToolRegistry,
 ) -> Option<ToolName> {
-    let standalone_web_search_enabled = standalone_web_search_enabled(turn_context, model_info);
+    let standalone_web_search_enabled =
+        standalone_web_search_enabled(turn_context, model_info, wire_target);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
     let mut standalone_web_search_tool = None;
 

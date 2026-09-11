@@ -292,6 +292,8 @@ pub struct CompactedItem {
     /// Resume metadata for values not represented by the companion rollout records.
     /// Presence distinguishes explicitly persisted values from legacy fallback reconstruction.
     pub resume_metadata: Option<CompactionResumeMetadata>,
+    /// Producing model for encrypted primary remote compaction, when known.
+    pub remote_compaction_model: Option<String>,
 }
 
 impl Serialize for CompactedItem {

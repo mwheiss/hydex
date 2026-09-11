@@ -31,6 +31,9 @@ pub struct Prompt {
     /// Whether parallel tool calls are permitted for this prompt.
     pub(crate) parallel_tool_calls: bool,
 
+    /// Optional per-request sampling temperature override.
+    pub temperature: Option<f64>,
+
     pub base_instructions: BaseInstructions,
 
     /// Optional the output schema for the model's response.
@@ -48,6 +51,7 @@ impl Default for Prompt {
             input: Vec::new(),
             tools: Arc::default(),
             parallel_tool_calls: false,
+            temperature: None,
             base_instructions: BaseInstructions::default(),
             output_schema: None,
             output_schema_strict: true,

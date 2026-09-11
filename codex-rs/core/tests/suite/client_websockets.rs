@@ -10,6 +10,7 @@ use codex_core::TurnInputRequest;
 use codex_core::X_CODEX_ROUTING_HINT_HEADER;
 use codex_core::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 use codex_core::test_support::EmptyUserInstructionsProvider;
+use codex_core::config::ModelOffloadConfig;
 use codex_core::test_support::with_parent_turn;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
@@ -2810,6 +2811,7 @@ async fn websocket_harness_with_provider_options_and_auth(
         http_client_factory,
         config.workspace_routing_context(),
         Vec::new(),
+        ModelOffloadConfig::default(),
     );
 
     WebsocketTestHarness {

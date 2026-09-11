@@ -1352,6 +1352,8 @@ async fn permissions_selection_sends_approvals_reviewer_in_override_turn_context
                 BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
             )),
             model: None,
+            model_offload_override: None,
+            model_offload_compaction_override: None,
             effort: None,
             summary: None,
             service_tier: None,

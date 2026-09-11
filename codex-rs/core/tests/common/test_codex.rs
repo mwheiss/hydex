@@ -425,6 +425,7 @@ pub struct TestCodexBuilder {
     models_manager: Option<SharedModelsManager>,
     thread_store: Option<Arc<dyn ThreadStore>>,
     image_store: Arc<dyn AttachmentStore>,
+    session_source: SessionSource,
 }
 
 impl TestCodexBuilder {
@@ -491,6 +492,11 @@ impl TestCodexBuilder {
 
     pub fn with_history_mode(mut self, history_mode: impl Into<Option<ThreadHistoryMode>>) -> Self {
         self.history_mode = history_mode.into();
+        self
+    }
+
+    pub fn with_session_source(mut self, session_source: SessionSource) -> Self {
+        self.session_source = session_source;
         self
     }
 
@@ -870,7 +876,7 @@ impl TestCodexBuilder {
                 auth_manager.clone(),
                 models_manager,
                 self.apps_tools_cache.clone(),
-                SessionSource::Exec,
+                self.session_source.clone(),
                 Arc::clone(&environment_manager),
                 Arc::new(extensions.build()),
                 user_instructions_provider,
@@ -1559,6 +1565,7 @@ pub fn test_codex() -> TestCodexBuilder {
         models_manager: None,
         thread_store: None,
         image_store: codex_core::passthrough_image_store(),
+        session_source: SessionSource::Exec,
     }
 }
 

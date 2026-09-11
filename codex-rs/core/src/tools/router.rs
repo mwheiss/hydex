@@ -15,8 +15,9 @@ use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::spec_plan::ToolWireTarget;
 #[cfg(test)]
-use crate::tools::spec_plan::finalize_tool_router;
+use crate::tools::spec_plan::finalize_tool_router_for_wire;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_REGISTRATIONS_METRIC;
 use codex_otel::TOOL_REGISTRATIONS_METRIC_BUCKETS;
@@ -111,13 +112,15 @@ impl ToolRouter {
         registry: ToolRegistry,
         hosted_specs: Vec<ToolSpec>,
         tool_search_handler_cache: &ToolSearchHandlerCache,
+        wire_target: ToolWireTarget,
     ) -> Self {
-        finalize_tool_router(
+        finalize_tool_router_for_wire(
             turn_context,
             model_info,
             registry,
             hosted_specs,
             tool_search_handler_cache,
+            wire_target,
         )
         .expect("test tool registry should not contain duplicate tools")
     }

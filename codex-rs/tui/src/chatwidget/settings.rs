@@ -511,6 +511,7 @@ impl ChatWidget {
         self.apply_thread_settings_cwd(settings.cwd.clone());
         self.config.model_provider_id = settings.model_provider.clone();
         self.set_daybreak_enabled(self.daybreak_enabled);
+        self.config.model_offload.runtime_override = settings.model_offload_override;
         self.set_service_tier(settings.service_tier.clone());
         if let Err(err) = self
             .config

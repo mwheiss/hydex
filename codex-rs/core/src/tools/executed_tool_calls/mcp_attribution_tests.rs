@@ -74,6 +74,7 @@ fn restores_cumulative_item_and_compaction_checkpoints() {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
+            remote_compaction_model: None,
         }),
     ]);
 

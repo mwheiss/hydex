@@ -19,6 +19,8 @@ pub(crate) mod telemetry;
 pub const RESPONSES_PATH: &str = "/responses";
 
 pub use crate::requests::headers::build_session_headers;
+pub use codex_client::HttpTransport;
+pub use codex_client::Request;
 pub use codex_client::RequestTelemetry;
 pub use codex_client::ReqwestTransport;
 pub use codex_client::TransportError;

@@ -242,6 +242,7 @@ async fn build_and_install_compaction(
             window_ids,
             compaction_response_id: Some(compaction_response_id),
             compaction_model_hash: compaction_turn_context.model_info().comp_hash.clone(),
+            remote_compaction_model: crate::compact::remote_compaction_model_provenance(compaction_turn_context.config.model_offload.provider.as_ref(), &compaction_turn_context.model_info().slug),
             reviewer_compaction_hash,
         };
         sess.replace_compacted_history(

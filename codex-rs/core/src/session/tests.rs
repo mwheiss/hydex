@@ -64,7 +64,9 @@ use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
@@ -129,6 +131,7 @@ use crate::tools::registry::ToolExecutor;
 use crate::tools::router::ToolCallSource;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_config::config_toml::ConfigToml;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::FilesystemPermissionsToml;
@@ -857,6 +860,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
             "https://chatgpt.com/backend-api".into(),
         ),
         Vec::new(),
+        crate::config::ModelOffloadConfig::default(),
     )
     .new_session()
 }
@@ -1014,6 +1018,7 @@ pub(crate) fn tool_registry_for_test_step(
         step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
         /*wait_for_environment_tool_config*/ None,
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     );
     let hosted_specs = crate::tools::spec_plan::append_source_tools(
         step_context.turn.as_ref(),
@@ -1022,6 +1027,7 @@ pub(crate) fn tool_registry_for_test_step(
         Vec::new(),
         Vec::new(),
         &step_context.turn.dynamic_tools,
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     );
     (registry, hosted_specs)
 }
@@ -1035,6 +1041,7 @@ fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> T
         registry,
         hosted_specs,
         &Default::default(),
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     ));
     let step_context = step_context.with_tool_router_for_test(router);
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -2464,6 +2471,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         window_id: Some(window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        remote_compaction_model: None,
         resume_metadata: None,
     })];
 
@@ -3402,6 +3410,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record,
+            remote_compaction_model: None,
             resume_metadata: None,
         })
     };
@@ -4331,6 +4340,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        offload_ever_used: false,
     };
     let turn_id = previous_context_item
         .turn_id
@@ -5902,6 +5912,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
                 compaction_response_id: None,
                 compaction_model_hash: None,
                 reviewer_compaction_hash: None,
+                remote_compaction_model: None,
             },
         ),
     ));
@@ -6036,6 +6047,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
                 compaction_response_id: None,
                 compaction_model_hash: None,
                 reviewer_compaction_hash: None,
+                remote_compaction_model: None,
             },
         )
         .await;
@@ -6187,6 +6199,7 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
                     compaction_response_id: None,
                     compaction_model_hash: None,
                     reviewer_compaction_hash: None,
+                    remote_compaction_model: None,
                 },
             )
             .await;
@@ -6958,6 +6971,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.http_client_factory(),
             config.workspace_routing_context(),
             Vec::new(),
+            config.model_offload.clone(),
         ),
         executed_tool_calls: executed_tool_calls.clone(),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
@@ -9224,6 +9238,7 @@ where
             config.http_client_factory(),
             config.workspace_routing_context(),
             Vec::new(),
+            config.model_offload.clone(),
         ),
         executed_tool_calls: executed_tool_calls.clone(),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
@@ -11219,6 +11234,105 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
 }
 
 #[tokio::test]
+async fn first_offloaded_turn_persists_offload_marker_for_resume() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let local_provider =
+        create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
+    session.services.model_client = ModelClient::new(
+        Some(session.services.auth_manager.clone()),
+        AgentIdentityAuthPolicy::JwtOnly,
+        session.thread_id,
+        turn_context.provider.info().clone(),
+        turn_context.session_source.clone(),
+        "test_originator".to_string(),
+        turn_context.config.model_verbosity,
+        turn_context
+            .config
+            .features
+            .enabled(Feature::ContentItemKinds),
+        /*reasoning_effort_override_enabled*/ false,
+        turn_context
+            .config
+            .features
+            .enabled(Feature::EnableRequestCompression),
+        turn_context
+            .config
+            .features
+            .enabled(Feature::RuntimeMetrics),
+        Session::build_model_client_beta_features_header(turn_context.config.as_ref()),
+        /*concurrent_reasoning_summaries_enabled*/
+        turn_context
+            .config
+            .features
+            .enabled(Feature::ConcurrentReasoningSummaries),
+        /*attestation_provider*/ None,
+        turn_context.config.http_client_factory(),
+        turn_context.config.workspace_routing_context(),
+        crate::config::ModelOffloadConfig {
+            enabled: true,
+            runtime_override: None,
+            compaction_runtime_override: None,
+            memory_mode: codex_config::config_toml::ModelOffloadMemoryMode::Local,
+            provider_id: Some("local".to_string()),
+            provider: Some(local_provider),
+            model: Some("local-responses-model".to_string()),
+            compaction_policy: ModelOffloadCompactionPolicy::Local,
+            compaction_local_handoff_role:
+                codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
+            compaction_recovery: crate::config::ModelOffloadCompactionRecoveryConfig::default(),
+            context: Default::default(),
+            validation: Default::default(),
+        },
+    );
+    let rollout_path = attach_thread_persistence(&mut session).await;
+    let mut step_context = StepContext::for_test(Arc::clone(&turn_context));
+    Arc::make_mut(
+        &mut Arc::get_mut(&mut step_context)
+            .expect("step context should not be shared")
+            .settings,
+    )
+    .reasoning_summary = ReasoningSummaryConfig::Detailed;
+
+    session
+        .record_context_updates_and_set_reference_context_item(&step_context)
+        .await
+        .expect("context update should be recorded");
+    let window_id = session.current_window_id().await;
+    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
+        session.installation_id.clone(),
+        window_id,
+        CodexResponsesRequestKind::Turn,
+    );
+    let client_session = session.services.model_client.new_session();
+    assert!(client_session.mark_offload_used_for_responses_request(&responses_metadata));
+    session
+        .persist_turn_context_item_and_set_reference_context_item(&step_context)
+        .await;
+    session.flush_rollout().await.expect("rollout should flush");
+
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await
+        .expect("read rollout history")
+    else {
+        panic!("expected resumed rollout history");
+    };
+    let latest_context = resumed.history.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(ctx) => Some(ctx),
+        _ => None,
+    });
+    let mut expected_context = step_context.to_turn_context_item();
+    expected_context.offload_ever_used = true;
+    assert_eq!(latest_context, Some(&expected_context));
+
+    let (replay_session, _replay_turn_context) = make_session_and_context().await;
+    replay_session
+        .record_initial_history(InitialHistory::Resumed(resumed))
+        .await;
+    assert!(replay_session.services.model_client.offload_ever_used());
+}
+
+#[tokio::test]
 async fn record_context_updates_and_set_reference_context_item_persists_split_file_system_policy_to_rollout()
  {
     let (mut session, mut turn_context) = make_session_and_context().await;
@@ -13060,6 +13174,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
         registry,
         hosted_specs,
         &Default::default(),
+        crate::tools::spec_plan::ToolWireTarget::Primary,
     );
     let item = ResponseItem::CustomToolCall {
         id: None,
@@ -13149,6 +13264,7 @@ async fn sample_rollout(
         window_id: Some(window_ids.window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        remote_compaction_model: None,
         resume_metadata: None,
     }));
 
@@ -13184,6 +13300,7 @@ async fn sample_rollout(
         window_id: Some(window_ids.window_id.to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        remote_compaction_model: None,
         resume_metadata: None,
     }));
 

@@ -7,10 +7,12 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
@@ -45,7 +47,54 @@ impl SessionTask for CompactTask {
             return Ok(None);
         }
 
-        let result = match ctx.provider.capabilities().remote_compaction {
+        let mut client_session = session.services.model_client.new_session();
+        let mut use_remote = crate::compact::should_use_remote_compact_task_with_offload_policy(
+            ctx.provider.info(),
+            session.services.model_client.offload_ever_used(),
+            client_session.local_offload_enabled_for_turns(),
+            client_session.effective_model_offload_compaction_policy(),
+        );
+        let uses_local_offload = !use_remote
+            && client_session.effective_model_offload_compaction_policy()
+                == codex_config::config_toml::ModelOffloadCompactionPolicy::Local;
+        if uses_local_offload {
+            if let Err(err) = client_session
+                .require_local_offload_context(&ctx.config.model_offload.context)
+                .await
+            {
+                session.track_turn_codex_error(ctx.as_ref(), &err);
+                session
+                    .send_event(
+                        &ctx,
+                        EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+                    )
+                    .await;
+                return Ok(None);
+            }
+            if let Err(err) = crate::session::turn::maybe_recover_remote_compaction_for_local_route(
+                &session,
+                &ctx,
+                &mut client_session,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    "manual local compaction recovery failed; falling back to primary compaction"
+                );
+                use_remote = true;
+            } else if crate::compaction_recovery::active_history_has_remote_compaction(
+                &session.clone_history().await.raw_items().cloned().collect::<Vec<_>>(),
+            ) {
+                use_remote = true;
+            }
+        }
+        let remote_compaction = if use_remote {
+            ctx.provider.capabilities().remote_compaction
+        } else {
+            RemoteCompactionSupport::Unsupported
+        };
+        let result = match remote_compaction {
             RemoteCompactionSupport::V2 => {
                 emit_compact_metric(
                     &session.services.session_telemetry,
@@ -61,13 +110,13 @@ impl SessionTask for CompactTask {
                     "local",
                     /*manual*/ true,
                 );
+                let local_handoff_role = if !use_remote && uses_local_offload {
+                    ctx.config.model_offload.compaction_local_handoff_role
+                } else {
+                    ModelOffloadCompactionLocalHandoffRole::UserSummary
+                };
                 let input = vec![UserInput::Text {
-                    text: ctx
-                        .config
-                        .compact_prompt
-                        .as_deref()
-                        .unwrap_or(crate::compact::SUMMARIZATION_PROMPT)
-                        .to_string(),
+                    text: crate::compact::local_compaction_prompt(&ctx, local_handoff_role).to_string(),
                     // Compaction prompt is synthesized; no UI element ranges to preserve.
                     text_elements: Vec::new(),
                 }];

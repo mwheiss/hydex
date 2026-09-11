@@ -21,6 +21,8 @@ pub(super) struct RolloutReconstruction {
     pub(super) first_window_id: Option<Uuid>,
     pub(super) previous_window_id: Option<Uuid>,
     pub(super) window_id: Option<Uuid>,
+    pub(super) offload_ever_used: bool,
+    pub(super) active_remote_compaction_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,7 +167,454 @@ fn finalize_active_segment<'a>(
     }
 }
 
+#[derive(Debug)]
+struct MaterializedRolloutHistory {
+    history: Vec<ResponseItemEnvelope>,
+    retained_context: codex_history::RetainedContext,
+    guardian_history: Option<codex_history::GuardianHistoryCheckpoint>,
+}
+
+#[derive(Default)]
+struct CheckpointReplaySegment {
+    turn_id: Option<String>,
+    counts_as_user_turn: bool,
+    remote_compaction_indices_newest_first: Vec<usize>,
+    segment_start_index: Option<usize>,
+    segment_end_index: Option<usize>,
+}
+
+impl CheckpointReplaySegment {
+    fn include_rollout_index(&mut self, index: usize) {
+        self.segment_start_index = Some(
+            self.segment_start_index
+                .map_or(index, |start| start.min(index)),
+        );
+        self.segment_end_index = Some(
+            self.segment_end_index
+                .map_or(index.saturating_add(1), |end| {
+                    end.max(index.saturating_add(1))
+                }),
+        );
+    }
+}
+
+struct ActiveRemoteCompactionCheckpoint {
+    index: usize,
+    surviving_suffix: Vec<RolloutItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteCompactionFingerprint<'a> {
+    Compaction(&'a str),
+    ContextCompaction(&'a str),
+}
+
+enum CheckpointSegmentOutcome {
+    Found(ActiveRemoteCompactionCheckpoint),
+    NotFound,
+}
+
+fn finalize_checkpoint_segment(
+    segment: CheckpointReplaySegment,
+    surviving_newer_rollout_items: &mut Vec<RolloutItem>,
+    rollout_items: &[RolloutItem],
+    pending_rollback_turns: &mut usize,
+) -> CheckpointSegmentOutcome {
+    if *pending_rollback_turns > 0 {
+        if segment.counts_as_user_turn {
+            *pending_rollback_turns -= 1;
+        }
+        return CheckpointSegmentOutcome::NotFound;
+    }
+
+    if let Some(index) = segment
+        .remote_compaction_indices_newest_first
+        .first()
+        .copied()
+    {
+        let mut surviving_suffix = segment
+            .segment_end_index
+            .map(|segment_end| rollout_items[index.saturating_add(1)..segment_end].to_vec())
+            .unwrap_or_default();
+        surviving_suffix.append(surviving_newer_rollout_items);
+        return CheckpointSegmentOutcome::Found(ActiveRemoteCompactionCheckpoint {
+            index,
+            surviving_suffix,
+        });
+    }
+
+    if let (Some(start), Some(end)) = (segment.segment_start_index, segment.segment_end_index) {
+        let mut segment_items = rollout_items[start..end].to_vec();
+        segment_items.append(surviving_newer_rollout_items);
+        *surviving_newer_rollout_items = segment_items;
+    }
+    CheckpointSegmentOutcome::NotFound
+}
+
+fn active_remote_compaction_checkpoint(
+    rollout_items: &[RolloutItem],
+) -> Option<ActiveRemoteCompactionCheckpoint> {
+    let mut pending_rollback_turns = 0usize;
+    let mut surviving_newer_rollout_items = Vec::new();
+    let mut active_segment: Option<CheckpointReplaySegment> = None;
+
+    for (index, item) in rollout_items.iter().enumerate().rev() {
+        match item {
+            RolloutItem::Compacted(compacted)
+                if compacted
+                    .replacement_history
+                    .as_deref()
+                    .is_some_and(|history| {
+                        history.iter().any(|envelope| {
+                            matches!(
+                                envelope.item,
+                                ResponseItem::Compaction { .. }
+                                    | ResponseItem::ContextCompaction { .. }
+                            )
+                        })
+                    }) =>
+            {
+                let active_segment =
+                    active_segment.get_or_insert_with(CheckpointReplaySegment::default);
+                active_segment.include_rollout_index(index);
+                active_segment
+                    .remote_compaction_indices_newest_first
+                    .push(index);
+            }
+            RolloutItem::Compacted(_) => {
+                active_segment
+                    .get_or_insert_with(CheckpointReplaySegment::default)
+                    .include_rollout_index(index);
+            }
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+                pending_rollback_turns = pending_rollback_turns
+                    .saturating_add(usize::try_from(rollback.num_turns).unwrap_or(usize::MAX));
+            }
+            RolloutItem::EventMsg(EventMsg::TurnComplete(event)) => {
+                let active_segment =
+                    active_segment.get_or_insert_with(CheckpointReplaySegment::default);
+                active_segment.include_rollout_index(index);
+                if active_segment.turn_id.is_none() {
+                    active_segment.turn_id = Some(event.turn_id.clone());
+                }
+            }
+            RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => {
+                if let Some(active_segment) = active_segment.as_mut() {
+                    active_segment.include_rollout_index(index);
+                    if active_segment.turn_id.is_none()
+                        && let Some(turn_id) = &event.turn_id
+                    {
+                        active_segment.turn_id = Some(turn_id.clone());
+                    }
+                } else if let Some(turn_id) = &event.turn_id {
+                    active_segment = Some(CheckpointReplaySegment {
+                        turn_id: Some(turn_id.clone()),
+                        segment_start_index: Some(index),
+                        segment_end_index: Some(index.saturating_add(1)),
+                        ..Default::default()
+                    });
+                }
+            }
+            RolloutItem::EventMsg(EventMsg::UserMessage(_)) => {
+                let active_segment =
+                    active_segment.get_or_insert_with(CheckpointReplaySegment::default);
+                active_segment.include_rollout_index(index);
+                active_segment.counts_as_user_turn = true;
+            }
+            RolloutItem::TurnContext(ctx) => {
+                let active_segment =
+                    active_segment.get_or_insert_with(CheckpointReplaySegment::default);
+                active_segment.include_rollout_index(index);
+                if active_segment.turn_id.is_none() {
+                    active_segment.turn_id = ctx.turn_id.clone();
+                }
+            }
+            RolloutItem::WorldState(_) => {
+                active_segment
+                    .get_or_insert_with(CheckpointReplaySegment::default)
+                    .include_rollout_index(index);
+            }
+            RolloutItem::EventMsg(EventMsg::TurnStarted(event)) => {
+                if active_segment.as_ref().is_some_and(|active_segment| {
+                    turn_ids_are_compatible(
+                        active_segment.turn_id.as_deref(),
+                        Some(event.turn_id.as_str()),
+                    )
+                }) && let Some(mut active_segment) = active_segment.take()
+                {
+                    active_segment.include_rollout_index(index);
+                    match finalize_checkpoint_segment(
+                        active_segment,
+                        &mut surviving_newer_rollout_items,
+                        rollout_items,
+                        &mut pending_rollback_turns,
+                    ) {
+                        CheckpointSegmentOutcome::Found(checkpoint) => return Some(checkpoint),
+                        CheckpointSegmentOutcome::NotFound => {}
+                    }
+                }
+            }
+            RolloutItem::ResponseItem(response_item) => {
+                let active_segment =
+                    active_segment.get_or_insert_with(CheckpointReplaySegment::default);
+                active_segment.include_rollout_index(index);
+                active_segment.counts_as_user_turn |= is_user_turn_boundary(&response_item.item);
+            }
+            RolloutItem::InterAgentCommunication(_) => {
+                let active_segment =
+                    active_segment.get_or_insert_with(CheckpointReplaySegment::default);
+                active_segment.include_rollout_index(index);
+                active_segment.counts_as_user_turn = true;
+            }
+            RolloutItem::EventMsg(_)
+            | RolloutItem::RealtimeItem(_)
+            | RolloutItem::SessionMeta(_)
+            | RolloutItem::RetainedContext(_)
+            | RolloutItem::SecurityRiskScore(_)
+            | RolloutItem::TokenUsageRecord(_)
+            | RolloutItem::InterAgentCommunicationMetadata { .. } => {
+                if let Some(active_segment) = active_segment.as_mut() {
+                    active_segment.include_rollout_index(index);
+                }
+            }
+        }
+    }
+
+    active_segment.and_then(|active_segment| {
+        match finalize_checkpoint_segment(
+            active_segment,
+            &mut surviving_newer_rollout_items,
+            rollout_items,
+            &mut pending_rollback_turns,
+        ) {
+            CheckpointSegmentOutcome::Found(checkpoint) => Some(checkpoint),
+            CheckpointSegmentOutcome::NotFound => None,
+        }
+    })
+}
+
+fn suffix_most_remote_compaction_fingerprint<'a>(
+    history: impl DoubleEndedIterator<Item = &'a ResponseItem>,
+) -> Option<RemoteCompactionFingerprint<'a>> {
+    history.rev().find_map(|item| match item {
+        ResponseItem::Compaction {
+            encrypted_content, ..
+        } => Some(RemoteCompactionFingerprint::Compaction(encrypted_content)),
+        ResponseItem::ContextCompaction {
+            encrypted_content: Some(encrypted_content),
+            ..
+        } => Some(RemoteCompactionFingerprint::ContextCompaction(
+            encrypted_content,
+        )),
+        _ => None,
+    })
+}
+
+fn checkpoint_matches_active_remote_compaction(
+    rollout_items: &[RolloutItem],
+    checkpoint: &ActiveRemoteCompactionCheckpoint,
+    active_fingerprint: &RemoteCompactionFingerprint<'_>,
+) -> bool {
+    let Some(RolloutItem::Compacted(compacted)) = rollout_items.get(checkpoint.index) else {
+        return false;
+    };
+    compacted
+        .replacement_history
+        .as_deref()
+        .and_then(|history| {
+            suffix_most_remote_compaction_fingerprint(history.iter().map(|envelope| &envelope.item))
+        })
+        .is_some_and(|fingerprint| fingerprint == *active_fingerprint)
+}
+
+fn materialize_rollout_items(
+    turn_context: &TurnContext,
+    guardian_context_mode: GuardianContextMode,
+    initial_history: Vec<ResponseItemEnvelope>,
+    initial_retained_context: Option<&codex_history::RetainedContext>,
+    initial_guardian_history: Option<&codex_history::GuardianHistoryCheckpoint>,
+    rollout_items: &[RolloutItem],
+) -> MaterializedRolloutHistory {
+    let mut history = ContextManager::with_guardian_context_mode(
+        guardian_context_mode,
+        &turn_context.session_source,
+    );
+    history.replace_annotated(initial_history);
+    history.restore_review_context(
+        initial_retained_context,
+        initial_guardian_history,
+        /*reviewer_compaction_hash*/ None,
+    );
+
+    for item in rollout_items {
+        match item {
+            RolloutItem::RetainedContext(event) => {
+                history.record_retained_context(event);
+            }
+            RolloutItem::ResponseItem(response_item) => {
+                history.record_annotated_items(
+                    std::slice::from_ref(response_item),
+                    turn_context.model_info().truncation_policy.into(),
+                );
+            }
+            RolloutItem::InterAgentCommunication(communication) => {
+                let response_item = communication.to_model_input_item();
+                history.record_items(
+                    std::iter::once(&response_item),
+                    turn_context.model_info().truncation_policy.into(),
+                );
+            }
+            RolloutItem::Compacted(compacted) => {
+                if let Some(replacement_history) = &compacted.replacement_history {
+                    history.replace_annotated(replacement_history.clone());
+                    history.restore_review_context(
+                        compacted.retained_context.as_ref(),
+                        compacted.guardian_history.as_ref(),
+                        /*reviewer_compaction_hash*/ None,
+                    );
+                } else {
+                    let identity = if guardian_context_mode == GuardianContextMode::ThreadOwned {
+                        compact::CompactedMessageIdentity::Preserve
+                    } else {
+                        compact::CompactedMessageIdentity::Regenerate
+                    };
+                    let user_messages = compact::collect_annotated_user_messages(
+                        history.annotated_items(),
+                        identity,
+                    );
+                    let rebuilt = compact::build_compacted_history(
+                        Vec::new(),
+                        &user_messages,
+                        &compacted.message,
+                    );
+                    let retained_context = history.retained_context().clone();
+                    history.replace_annotated(rebuilt);
+                    history.restore_retained_context(Some(&retained_context));
+                }
+            }
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+                history.drop_last_n_user_turns(rollback.num_turns);
+            }
+            RolloutItem::EventMsg(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::RealtimeItem(_)
+            | RolloutItem::WorldState(_)
+            | RolloutItem::SecurityRiskScore(_)
+            | RolloutItem::TokenUsageRecord(_)
+            | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::SessionMeta(_) => {}
+        }
+    }
+
+    MaterializedRolloutHistory {
+        guardian_history: history.guardian_history_checkpoint(),
+        retained_context: history.retained_context().clone(),
+        history: history.into_annotated_items(),
+    }
+}
+
+pub(super) fn reconstruct_retro_local_history_from_rollout(
+    turn_context: &TurnContext,
+    rollout_items: &[RolloutItem],
+    active_history: &[ResponseItem],
+) -> CodexResult<Vec<ResponseItem>> {
+    let Some(active_fingerprint) = suffix_most_remote_compaction_fingerprint(active_history.iter())
+    else {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: active history has no encrypted remote compaction item."
+                .to_string(),
+        ));
+    };
+    let Some(remote_checkpoint) = active_remote_compaction_checkpoint(rollout_items) else {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: no surviving remote compaction checkpoint with replacement history is available."
+                .to_string(),
+        ));
+    };
+    if !checkpoint_matches_active_remote_compaction(
+        rollout_items,
+        &remote_checkpoint,
+        &active_fingerprint,
+    ) {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: the surviving remote compaction checkpoint does not match active history."
+                .to_string(),
+        ));
+    }
+    let remote_checkpoint_index = remote_checkpoint.index;
+
+    let prefix = materialize_rollout_items(
+        turn_context,
+        GuardianContextMode::Legacy,
+        Vec::new(),
+        /*initial_retained_context*/ None,
+        /*initial_guardian_history*/ None,
+        &rollout_items[..remote_checkpoint_index],
+    );
+    if prefix.history.iter().any(|envelope| {
+        matches!(
+            envelope.item,
+            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+        )
+    }) {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: readable source history still contains encrypted remote compaction before the selected checkpoint."
+                .to_string(),
+        ));
+    }
+
+    let reconstructed = materialize_rollout_items(
+        turn_context,
+        GuardianContextMode::Legacy,
+        prefix.history,
+        Some(&prefix.retained_context),
+        prefix.guardian_history.as_ref(),
+        &remote_checkpoint.surviving_suffix,
+    )
+    .history;
+    if reconstructed.iter().any(|envelope| {
+        matches!(
+            envelope.item,
+            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+        )
+    }) {
+        return Err(CodexErr::InvalidRequest(
+            "Cannot run retro-local fallback: reconstructed suffix still contains encrypted remote compaction."
+                .to_string(),
+        ));
+    }
+
+    Ok(reconstructed
+        .into_iter()
+        .map(ResponseItemEnvelope::into_item)
+        .collect())
+}
+
 impl Session {
+    pub(crate) async fn reconstruct_retro_local_history_from_persisted_rollout(
+        &self,
+        turn_context: &TurnContext,
+    ) -> CodexResult<Vec<ResponseItem>> {
+        let active_history = self.clone_history().await.raw_items().cloned().collect::<Vec<_>>();
+        let Some(live_thread) = self.live_thread() else {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot run retro-local fallback: persisted thread history is unavailable."
+                    .to_string(),
+            ));
+        };
+        live_thread.flush().await.map_err(|err| {
+            CodexErr::InvalidRequest(format!(
+                "Cannot run retro-local fallback: failed to flush persisted thread history: {err}"
+            ))
+        })?;
+        let history = live_thread.load_history(/*include_archived*/ true).await.map_err(|err| {
+            CodexErr::InvalidRequest(format!(
+                "Cannot run retro-local fallback: failed to load persisted thread history: {err}"
+            ))
+        })?;
+        reconstruct_retro_local_history_from_rollout(turn_context, &history.items, &active_history)
+    }
+
     pub(super) async fn reconstruct_history_from_rollout(
         &self,
         turn_context: &TurnContext,
@@ -520,7 +969,11 @@ impl Session {
             previous_id: None,
             id: None,
         });
+        let offload_ever_used = rollout_items.iter().any(|item| matches!(item, RolloutItem::TurnContext(context) if context.offload_ever_used));
+        let active_remote_compaction_model = history_checkpoint.and_then(|checkpoint| checkpoint.compacted.remote_compaction_model.clone());
         RolloutReconstruction {
+            offload_ever_used,
+            active_remote_compaction_model,
             retained_context: history.retained_context().clone(),
             guardian_history: history.guardian_history_checkpoint(),
             last_started_turn_id,

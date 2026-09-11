@@ -71,6 +71,7 @@ coverage/
 
 # personal files
 personal/
+hydex-plugin/
 
 # os
 .DS_Store
@@ -94,3 +95,4 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+.mcp.json

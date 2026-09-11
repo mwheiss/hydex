@@ -30,6 +30,8 @@ use codex_model_provider::SharedModelProvider;
 use codex_prompts::render_model_instructions;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride;
+use codex_protocol::config_types::ModelOffloadRuntimeOverride;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ProfileWorkspaceRoot;
@@ -294,6 +296,14 @@ impl SessionConfiguration {
             reasoning_summary: self.step_settings.reasoning_summary,
             personality: self.step_settings.personality,
             collaboration_mode: self.step_settings.collaboration_mode.clone(),
+            model_offload_override: self
+                .original_config_do_not_use
+                .model_offload
+                .runtime_override,
+            model_offload_compaction_override: self
+                .original_config_do_not_use
+                .model_offload
+                .compaction_runtime_override,
             session_source: self.session_source.clone(),
             history_mode: self.history_mode,
             forked_from_thread_id: self.forked_from_thread_id,
@@ -324,6 +334,14 @@ impl SessionConfiguration {
             personality: self.step_settings.personality,
             collaboration_mode: self.step_settings.collaboration_mode.clone(),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
+            model_offload_override: self
+                .original_config_do_not_use
+                .model_offload
+                .runtime_override,
+            model_offload_compaction_override: self
+                .original_config_do_not_use
+                .model_offload
+                .compaction_runtime_override,
         }
     }
 
@@ -353,6 +371,16 @@ impl SessionConfiguration {
             collaboration_mode: Some(self.step_settings.collaboration_mode.clone()),
             personality: self.step_settings.personality,
             disabled_plugin_ids: Some(self.disabled_plugin_ids.clone()),
+            model_offload_override: Some(
+                self.original_config_do_not_use
+                    .model_offload
+                    .runtime_override,
+            ),
+            model_offload_compaction_override: Some(
+                self.original_config_do_not_use
+                    .model_offload
+                    .compaction_runtime_override,
+            ),
             ..Default::default()
         }
     }
@@ -411,6 +439,44 @@ impl SessionConfiguration {
                             }
                         )
                 });
+        if let Some(model_offload_override) = updates.model_offload_override {
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            if matches!(
+                model_offload_override,
+                Some(ModelOffloadRuntimeOverride::ForceOn)
+            ) && !config.model_offload.can_route_local()
+            {
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_offload.runtime_override",
+                    candidate: "force_on".to_string(),
+                    allowed:
+                        "Cannot enable model offload: model_offload.provider is not configured or invalid."
+                            .to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
+            config.model_offload.runtime_override = model_offload_override;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
+        if let Some(model_offload_compaction_override) = updates.model_offload_compaction_override {
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            if matches!(
+                model_offload_compaction_override,
+                Some(ModelOffloadCompactionRuntimeOverride::Local)
+            ) && !config.model_offload.can_route_local()
+            {
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_offload.compaction.runtime_override",
+                    candidate: "local".to_string(),
+                    allowed:
+                        "Cannot enable local compaction: model_offload.provider is not configured or invalid."
+                            .to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
+            config.model_offload.compaction_runtime_override = model_offload_compaction_override;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
         if let Some(windows_sandbox_level) = updates.windows_sandbox_level {
             next_configuration.windows_sandbox_level = windows_sandbox_level;
         }
@@ -597,6 +663,9 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) service_tier_for_turn: Option<String>,
+    pub(crate) model_offload_override: Option<Option<ModelOffloadRuntimeOverride>>,
+    pub(crate) model_offload_compaction_override:
+        Option<Option<ModelOffloadCompactionRuntimeOverride>>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) app_server_client_version: Option<String>,
     pub(crate) disabled_plugin_ids: Option<Vec<String>>,
@@ -1685,6 +1754,7 @@ impl Session {
                     attestation_provider,
                     config.http_client_factory(),
                     config.workspace_routing_context(),
+                    config.model_offload.clone(),
                 )
                 .with_restored_history(matches!(
                     &initial_history,

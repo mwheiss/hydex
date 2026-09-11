@@ -105,6 +105,8 @@ mod json_result;
 mod live_cli;
 #[path = "managed_threads_tests.rs"]
 mod managed_threads;
+mod live_hydex_offload;
+mod local_offload_context;
 mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
 mod mcp_ema_config;

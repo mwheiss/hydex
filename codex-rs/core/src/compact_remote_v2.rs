@@ -324,7 +324,9 @@ async fn run_remote_compact_task_inner_impl(
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage { step_context, .. } => {
-            Some(step_context.to_turn_context_item())
+            let mut item = step_context.to_turn_context_item();
+            item.offload_ever_used = sess.services.model_client.offload_ever_used();
+            Some(item)
         }
     };
     if let Some(trace_input_history) = trace_input_history.as_deref() {
@@ -363,6 +365,14 @@ async fn run_remote_compact_task_inner_impl(
             compaction_response_id: Some(compaction_response_id),
             compaction_model_hash: compaction_turn_context.model_info().comp_hash.clone(),
             reviewer_compaction_hash,
+            remote_compaction_model: crate::compact::remote_compaction_model_provenance(
+                compaction_turn_context
+                    .config
+                    .model_offload
+                    .provider
+                    .as_ref(),
+                &compaction_turn_context.model_info().slug,
+            ),
         },
     )
     .await;
@@ -387,10 +397,8 @@ async fn run_remote_compaction_request_v2(
     responses_metadata: &CodexResponsesMetadata,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let turn_context = &step_context.turn;
-    let max_retries = turn_context
-        .provider
-        .info()
-        .stream_max_retries()
+    let max_retries = client_session
+        .stream_max_retries_for(responses_metadata)
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {

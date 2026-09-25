@@ -75,7 +75,12 @@ impl SessionTask for CompactTask {
                 );
                 use_remote = true;
             } else if crate::compaction_recovery::active_history_has_remote_compaction(
-                &session.clone_history().await.raw_items().cloned().collect::<Vec<_>>(),
+                &session
+                    .clone_history()
+                    .await
+                    .raw_items()
+                    .cloned()
+                    .collect::<Vec<_>>(),
             ) {
                 use_remote = true;
             }

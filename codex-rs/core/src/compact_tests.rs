@@ -4,13 +4,13 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolPayload;
 use crate::tools::router::ToolCall;
 use codex_code_mode::CellId;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
+use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
-use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider;
 use codex_protocol::ResponseItemId;
@@ -162,11 +162,7 @@ async fn local_compaction_respects_tool_metadata_state(
     )
     .await;
     // OpenAI identity keeps the client from removing passthrough for compatibility.
-    run_compact_task(
-        Arc::clone(&session),
-        turn,
-    )
-    .await?;
+    run_compact_task(Arc::clone(&session), turn).await?;
 
     let request = mock.single_request();
     assert!(request.inputs_of_type("compaction_trigger").is_empty());
@@ -833,7 +829,6 @@ fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
         ModelOffloadCompactionPolicy::Primary,
     ));
 }
-
 
 #[test]
 fn insert_initial_context_before_last_real_user_or_summary_keeps_summary_last() {

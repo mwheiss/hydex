@@ -2755,6 +2755,16 @@ class ModelListParams(BaseModel):
     ] = None
 
 
+class ModelOffloadCompactionRuntimeOverride(Enum):
+    local = "local"
+    primary = "primary"
+
+
+class ModelOffloadRuntimeOverride(Enum):
+    force_on = "force_on"
+    force_off = "force_off"
+
+
 class ModelProviderCapabilitiesReadParams(BaseModel):
     pass
     model_config = ConfigDict(
@@ -9991,6 +10001,12 @@ class ThreadSettings(BaseModel):
     ] = []
     effort: ReasoningEffort | None = None
     model: str
+    model_offload_compaction_override: Annotated[
+        ModelOffloadCompactionRuntimeOverride | None, Field(alias="modelOffloadCompactionOverride")
+    ] = None
+    model_offload_override: Annotated[
+        ModelOffloadRuntimeOverride | None, Field(alias="modelOffloadOverride")
+    ] = None
     model_provider: Annotated[str, Field(alias="modelProvider")]
     personality: Annotated[
         Personality | None,
@@ -12160,6 +12176,20 @@ class TurnStartParams(BaseModel):
     input: list[UserInput]
     model: Annotated[
         str | None, Field(description="Override the model for this turn and subsequent turns.")
+    ] = None
+    model_offload_compaction_override: Annotated[
+        ModelOffloadCompactionRuntimeOverride | None,
+        Field(
+            alias="modelOffloadCompactionOverride",
+            description="Runtime override for Hydex compaction routing for this turn and subsequent turns. Omission leaves the current setting unchanged; null clears the override and follows config.",
+        ),
+    ] = None
+    model_offload_override: Annotated[
+        ModelOffloadRuntimeOverride | None,
+        Field(
+            alias="modelOffloadOverride",
+            description="Runtime override for Hydex local model offload for this turn and subsequent turns. Omission leaves the current setting unchanged; null clears the override and follows config.",
+        ),
     ] = None
     output_schema: Annotated[
         Any | None,

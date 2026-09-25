@@ -1498,7 +1498,12 @@ pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
 ) -> CodexResult<bool> {
-    let active_history = sess.clone_history().await.raw_items().cloned().collect::<Vec<_>>();
+    let active_history = sess
+        .clone_history()
+        .await
+        .raw_items()
+        .cloned()
+        .collect::<Vec<_>>();
     if !remote_compaction_recovery_needed(
         client_session.local_offload_enabled_for_turns(),
         &active_history,
@@ -1626,7 +1631,12 @@ async fn ensure_no_remote_compaction_for_local_sampling(
     sess: &Arc<Session>,
     client_session: &ModelClientSession,
 ) -> CodexResult<()> {
-    let active_history = sess.clone_history().await.raw_items().cloned().collect::<Vec<_>>();
+    let active_history = sess
+        .clone_history()
+        .await
+        .raw_items()
+        .cloned()
+        .collect::<Vec<_>>();
     if remote_compaction_recovery_needed(
         client_session.local_offload_enabled_for_turns(),
         &active_history,
@@ -2107,7 +2117,12 @@ async fn run_auto_compact_with_route(
         }
     } else {
         maybe_recover_remote_compaction_for_local_route(sess, turn_context, client_session).await?;
-        let active_history = sess.clone_history().await.raw_items().cloned().collect::<Vec<_>>();
+        let active_history = sess
+            .clone_history()
+            .await
+            .raw_items()
+            .cloned()
+            .collect::<Vec<_>>();
         if client_session.primary_forced_for_responses_requests()
             || active_history_has_remote_compaction(&active_history)
         {
@@ -2336,7 +2351,8 @@ async fn run_sampling_request(
             .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
             .await;
         if client_session.mark_offload_used_for_responses_request(&responses_metadata) {
-            sess.persist_turn_context_item_and_set_reference_context_item(step_context.as_ref()).await;
+            sess.persist_turn_context_item_and_set_reference_context_item(step_context.as_ref())
+                .await;
         }
         if is_retry && client_session.is_local_offload_route_for(&responses_metadata) {
             // Local servers can surface generation loops or malformed framing as retryable stream

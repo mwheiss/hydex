@@ -2242,7 +2242,8 @@ impl ModelClientSession {
                 .client
                 .current_client_setup_for_request(route, Some(responses_metadata))
                 .await?;
-            let include_internal = !route.is_local_offload() && is_internal_metadata_destination(&client_setup.api_provider);
+            let include_internal = !route.is_local_offload()
+                && is_internal_metadata_destination(&client_setup.api_provider);
             let responses_headers = if route.is_local_offload() {
                 ApiHeaderMap::new()
             } else {

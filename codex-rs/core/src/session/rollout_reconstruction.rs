@@ -595,7 +595,12 @@ impl Session {
         &self,
         turn_context: &TurnContext,
     ) -> CodexResult<Vec<ResponseItem>> {
-        let active_history = self.clone_history().await.raw_items().cloned().collect::<Vec<_>>();
+        let active_history = self
+            .clone_history()
+            .await
+            .raw_items()
+            .cloned()
+            .collect::<Vec<_>>();
         let Some(live_thread) = self.live_thread() else {
             return Err(CodexErr::InvalidRequest(
                 "Cannot run retro-local fallback: persisted thread history is unavailable."
@@ -969,8 +974,11 @@ impl Session {
             previous_id: None,
             id: None,
         });
-        let offload_ever_used = rollout_items.iter().any(|item| matches!(item, RolloutItem::TurnContext(context) if context.offload_ever_used));
-        let active_remote_compaction_model = history_checkpoint.and_then(|checkpoint| checkpoint.compacted.remote_compaction_model.clone());
+        let offload_ever_used = rollout_items.iter().any(
+            |item| matches!(item, RolloutItem::TurnContext(context) if context.offload_ever_used),
+        );
+        let active_remote_compaction_model = history_checkpoint
+            .and_then(|checkpoint| checkpoint.compacted.remote_compaction_model.clone());
         RolloutReconstruction {
             offload_ever_used,
             active_remote_compaction_model,

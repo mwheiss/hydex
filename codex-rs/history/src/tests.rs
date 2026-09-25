@@ -596,6 +596,7 @@ fn compacted_resume_metadata_presence_round_trips_empty_values() -> Result<()> {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: Some(resume_metadata.clone()),
+        remote_compaction_model: None,
     };
 
     let serialized = serde_json::to_value(&item)?;

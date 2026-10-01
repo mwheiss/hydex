@@ -40,6 +40,7 @@ fn response_stream(events: Vec<CodexResult<ResponseEvent>>) -> crate::ResponseSt
     drop(tx_event);
     crate::ResponseStream {
         rx_event,
+        interrupt: None,
         consumer_dropped: CancellationToken::new(),
     }
 }

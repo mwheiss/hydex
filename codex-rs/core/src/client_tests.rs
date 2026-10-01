@@ -230,6 +230,7 @@ fn test_model_client_with_local_offload_config_memory_mode_and_validation(
         codex_model_provider::WorkspaceRoutingContext::new(
             "https://chatgpt.com/backend-api".into(),
         ),
+        Vec::new(),
         ModelOffloadConfig {
             enabled: true,
             runtime_override: None,
@@ -274,6 +275,7 @@ fn test_model_client_with_local_offload_and_api_primary(
         codex_model_provider::WorkspaceRoutingContext::new(
             "https://chatgpt.com/backend-api".into(),
         ),
+        Vec::new(),
         ModelOffloadConfig {
             enabled: true,
             runtime_override: None,
@@ -328,6 +330,7 @@ async fn local_provider_advertised_context_overrides_configured_fallback() {
         codex_model_provider::WorkspaceRoutingContext::new(
             "https://chatgpt.com/backend-api".into(),
         ),
+        Vec::new(),
         ModelOffloadConfig {
             enabled: true,
             runtime_override: None,
@@ -501,6 +504,7 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header(
             format!("{}/register", registration.uri()).parse().unwrap(),
         ));
         let mut client = test_model_client_with_local_offload(SessionSource::Exec);
+        client.agent_identity_policy = AgentIdentityAuthPolicy::JwtOnly;
         Arc::get_mut(&mut client.state).unwrap().provider =
             codex_model_provider::ProviderAuthContext {
                 credentials: manager,

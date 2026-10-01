@@ -54,6 +54,7 @@ fn request_with_metadata_and_source(
         stream_options: None,
         include: Vec::new(),
         service_tier: None,
+        temperature: None,
         prompt_cache_key: None,
         text: None,
         client_metadata: None,

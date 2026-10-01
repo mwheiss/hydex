@@ -513,12 +513,7 @@ async fn run_compact_task_inner_impl(
     }
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.annotated_items();
-    let identity = if sess.guardian_context_mode == GuardianContextMode::ThreadOwned {
-        CompactedMessageIdentity::Preserve
-    } else {
-        CompactedMessageIdentity::Regenerate
-    };
-    let user_messages = collect_annotated_user_messages(history_items, identity);
+    let user_messages = collect_annotated_user_messages(history_items);
 
     let mut new_history = build_compacted_history_with_handoff_role(
         Vec::new(),

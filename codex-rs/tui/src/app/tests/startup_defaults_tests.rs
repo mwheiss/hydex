@@ -369,6 +369,16 @@ async fn fresh_startup_reads_destination_and_cleared_model_uses_catalog() -> Res
         if !remote {
             let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80)
                 .replace(&destination.path().display().to_string(), "<PROJECT>");
+            let rendered = if let Some(home) = dirs::home_dir()
+                && let Ok(relative) = destination.path().strip_prefix(home)
+            {
+                rendered.replace(
+                    &Path::new("~").join(relative).display().to_string(),
+                    "<PROJECT>",
+                )
+            } else {
+                rendered
+            };
             insta::assert_snapshot!(rendered, @r"
             › Ask Codex to do anything
 

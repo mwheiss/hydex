@@ -1666,6 +1666,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
     let offload_config = ModelOffloadConfig {
         enabled: true,
@@ -1726,6 +1727,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         /*attestation_provider*/ None,
         config.http_client_factory(),
         config.workspace_routing_context(),
+        Vec::new(),
         offload_config,
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);

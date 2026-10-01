@@ -158,6 +158,7 @@ async fn local_retry_preserves_omitted_temperature_after_early_close() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {

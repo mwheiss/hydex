@@ -14,7 +14,6 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Offload,
-    Compaction,
     Ide,
     Permissions,
     Keymap,
@@ -39,6 +38,7 @@ pub enum SlashCommand {
     App,
     Init,
     Compact,
+    Compaction,
     Recap,
     Plan,
     Voice,

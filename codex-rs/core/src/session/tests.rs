@@ -10986,6 +10986,7 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
         /*attestation_provider*/ None,
         turn_context.config.http_client_factory(),
         turn_context.config.workspace_routing_context(),
+        Vec::new(),
         crate::config::ModelOffloadConfig {
             enabled: true,
             runtime_override: None,

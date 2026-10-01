@@ -26,6 +26,21 @@ fn owned_startup_keeps_the_live_bottom_geometry() {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // The snapshot was recorded with a source-build version; keep that row's width.
+    const SNAPSHOT_VERSION: &str = "0.0.0";
+    let normalized_width =
+        usize::from(area.width) + crate::version::CODEX_CLI_VERSION.len() - SNAPSHOT_VERSION.len();
+    let frame = frame
+        .lines()
+        .map(|line| {
+            if line.contains(crate::version::CODEX_CLI_VERSION) {
+                format!("{line:<normalized_width$}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     insta::assert_snapshot!(
         "owned_startup_layout",
         format!("cursor={:?}\n{frame}", layout.cursor_pos(area))

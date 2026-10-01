@@ -597,9 +597,10 @@ fn build_compacted_history_preserves_user_message_passthrough_metadata() {
 
 #[test]
 fn build_compacted_history_assistant_state_appends_assistant_summary() {
+    let original = user_message("first user message");
     let history = build_compacted_history_with_handoff_role(
         Vec::new(),
-        &[compacted_user_message("first user message")],
+        &[compacted_user_message("first user message", &original)],
         "summary text",
         ModelOffloadCompactionLocalHandoffRole::AssistantState,
     );
@@ -621,15 +622,16 @@ fn build_compacted_history_assistant_state_appends_assistant_summary() {
 
 #[test]
 fn build_compacted_history_user_summary_appends_user_summary_by_default() {
+    let original = user_message("first user message");
     let history = build_compacted_history(
         Vec::new(),
-        &[compacted_user_message("first user message")],
+        &[compacted_user_message("first user message", &original)],
         "summary text",
     );
 
     let expected = annotated(vec![
         user_message("first user message"),
-        user_message("summary text"),
+        ContextualUserFragment::into(CompactionSummary::new("summary text")),
     ]);
     assert_eq!(history, expected);
 }
@@ -703,9 +705,10 @@ fn assistant_state_local_compaction_payload_is_raw_assistant_state() {
         "summary text",
         ModelOffloadCompactionLocalHandoffRole::AssistantState,
     );
+    let original = user_message("first user message");
     let history = build_compacted_history_with_handoff_role(
         Vec::new(),
-        &[compacted_user_message("first user message")],
+        &[compacted_user_message("first user message", &original)],
         &summary_text,
         ModelOffloadCompactionLocalHandoffRole::AssistantState,
     );
@@ -734,9 +737,10 @@ fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
         "summary text",
         ModelOffloadCompactionLocalHandoffRole::UserSummary,
     );
+    let original = user_message("first user message");
     let history = build_compacted_history_with_handoff_role(
         Vec::new(),
-        &[compacted_user_message("first user message")],
+        &[compacted_user_message("first user message", &original)],
         &summary_text,
         ModelOffloadCompactionLocalHandoffRole::UserSummary,
     );
@@ -745,7 +749,9 @@ fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
         history,
         annotated(vec![
             user_message("first user message"),
-            user_message(&format!("{SUMMARY_PREFIX}\nsummary text")),
+            ContextualUserFragment::into(CompactionSummary::new(format!(
+                "{SUMMARY_PREFIX}\nsummary text"
+            ))),
         ])
     );
 }
@@ -773,6 +779,7 @@ fn should_use_remote_compact_task_for_azure_provider() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     assert!(should_use_remote_compact_task(&provider));
@@ -815,6 +822,7 @@ fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     assert!(should_use_remote_compact_task_with_offload_policy(

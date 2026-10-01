@@ -432,9 +432,7 @@ impl CodexResponsesMetadata {
             agent_name: has_thread_identity
                 .then_some(self.agent_name.as_deref())
                 .flatten(),
-            turn_id: has_thread_identity
-                .then_some(self.turn_id.as_deref())
-                .flatten(),
+            turn_id: self.turn_id.as_deref(),
             window_id: has_request_identity.then_some(self.window_id.as_str()),
             window_number: has_request_identity.then_some(self.window_number).flatten(),
             context_window_id: has_request_identity

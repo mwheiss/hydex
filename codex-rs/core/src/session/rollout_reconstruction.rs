@@ -448,16 +448,13 @@ fn checkpoint_matches_active_remote_compaction(
 
 fn materialize_rollout_items(
     turn_context: &TurnContext,
-    guardian_context_mode: GuardianContextMode,
     initial_history: Vec<ResponseItemEnvelope>,
     initial_retained_context: Option<&codex_history::RetainedContext>,
     initial_guardian_history: Option<&codex_history::GuardianHistoryCheckpoint>,
     rollout_items: &[RolloutItem],
 ) -> MaterializedRolloutHistory {
-    let mut history = ContextManager::with_guardian_context_mode(
-        guardian_context_mode,
-        &turn_context.session_source,
-    );
+    let mut history =
+        ContextManager::for_session(&turn_context.session_source, &turn_context.config.features);
     history.replace_annotated(initial_history);
     history.restore_review_context(
         initial_retained_context,
@@ -471,8 +468,8 @@ fn materialize_rollout_items(
                 history.record_retained_context(event);
             }
             RolloutItem::ResponseItem(response_item) => {
-                history.record_annotated_items(
-                    std::slice::from_ref(response_item),
+                history.replay_annotated_item(
+                    response_item,
                     turn_context.model_info().truncation_policy.into(),
                 );
             }
@@ -492,15 +489,8 @@ fn materialize_rollout_items(
                         /*reviewer_compaction_hash*/ None,
                     );
                 } else {
-                    let identity = if guardian_context_mode == GuardianContextMode::ThreadOwned {
-                        compact::CompactedMessageIdentity::Preserve
-                    } else {
-                        compact::CompactedMessageIdentity::Regenerate
-                    };
-                    let user_messages = compact::collect_annotated_user_messages(
-                        history.annotated_items(),
-                        identity,
-                    );
+                    let user_messages =
+                        compact::collect_annotated_user_messages(history.annotated_items());
                     let rebuilt = compact::build_compacted_history(
                         Vec::new(),
                         &user_messages,
@@ -564,7 +554,6 @@ pub(super) fn reconstruct_retro_local_history_from_rollout(
 
     let prefix = materialize_rollout_items(
         turn_context,
-        GuardianContextMode::Legacy,
         Vec::new(),
         /*initial_retained_context*/ None,
         /*initial_guardian_history*/ None,
@@ -584,7 +573,6 @@ pub(super) fn reconstruct_retro_local_history_from_rollout(
 
     let reconstructed = materialize_rollout_items(
         turn_context,
-        GuardianContextMode::Legacy,
         prefix.history,
         Some(&prefix.retained_context),
         prefix.guardian_history.as_ref(),

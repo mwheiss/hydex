@@ -4485,6 +4485,8 @@ impl Session {
                 session_telemetry.clone(),
             ));
             extension_data.insert_arc(Arc::clone(&settings.model_info.model));
+            // Standalone and hosted search must use the same turn-scoped permission mode.
+            extension_data.insert(turn_context.config.web_search_mode.value());
             extension_data.insert_arc(
                 self.host_skills_for_step(&turn_context, &environments)
                     .await,

@@ -6,17 +6,29 @@ use std::sync::atomic::Ordering;
 use anyhow::Result;
 use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_core::TurnInputRequest;
+use codex_core::config::Config;
 use codex_core::config::ModelOffloadConfig;
 use codex_core::config::ModelOffloadContextConfig;
+use codex_extension_api::ExtensionData;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ToolContributor;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
+use codex_tools::JsonToolOutput;
+use codex_tools::ToolCall;
+use codex_tools::ToolExecutor;
+use codex_tools::ToolExecutorFuture;
+use codex_tools::ToolName;
+use codex_tools::ToolOutput;
+use codex_tools::ToolSpec;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -73,6 +85,116 @@ fn completed_response(id: &str) -> String {
         ),
         ev_completed(id),
     ])
+}
+
+#[derive(Default)]
+struct CapturedStepTools {
+    initialized_snapshots: AtomicUsize,
+}
+
+struct CapturedStepSnapshot(usize);
+
+impl ToolContributor for CapturedStepTools {
+    fn tools(
+        &self,
+        _session_store: &ExtensionData,
+        _thread_store: &ExtensionData,
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+        Vec::new()
+    }
+
+    fn tools_for_step(
+        &self,
+        _session_store: &ExtensionData,
+        _thread_store: &ExtensionData,
+        step_store: &ExtensionData,
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+        let snapshot = step_store.get_or_init(|| {
+            CapturedStepSnapshot(
+                self.initialized_snapshots
+                    .fetch_add(/*val*/ 1, Ordering::Relaxed),
+            )
+        });
+        vec![snapshot]
+    }
+}
+
+impl<'call> ToolExecutor<ToolCall<'call>> for CapturedStepSnapshot {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("captured_step_snapshot")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(codex_tools::ResponsesApiTool {
+            name: "captured_step_snapshot".to_string(),
+            description: format!("Tool captured from step snapshot {}.", self.0),
+            strict: false,
+            parameters: codex_tools::JsonSchema::object(
+                Default::default(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
+            output_schema: None,
+            defer_loading: None,
+        })
+    }
+
+    fn handle<'a>(&'a self, _call: ToolCall<'call>) -> ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
+        Box::pin(async move {
+            Ok(Box::new(JsonToolOutput::new(json!({"snapshot": self.0}))) as Box<dyn ToolOutput>)
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_offload_tool_plan_retains_captured_step_extension_inputs() -> Result<()> {
+    let primary_server = MockServer::start().await;
+    let local_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": LOCAL_MODEL, "context_window": 200_000}]
+        })))
+        .mount(&local_server)
+        .await;
+    let response = mount_sse_once(&local_server, completed_response("local-snapshot")).await;
+    let contributor = Arc::new(CapturedStepTools::default());
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.tool_contributor(contributor.clone());
+    let offload = model_offload_config(&local_server, /*enabled*/ true);
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_model_info_override("gpt-5.4", |model| model.tool_mode = Some(ToolMode::Direct))
+        .with_config(move |config| config.model_offload = offload)
+        .build_with_auto_env(&primary_server)
+        .await?;
+
+    test.submit_turn("retain the captured tools in the local request")
+        .await?;
+
+    let request = response.single_request();
+    let body = request.body_json();
+    let snapshot_tool = body["tools"]
+        .as_array()
+        .expect("model-visible tool list")
+        .iter()
+        .find(|tool| tool["name"] == "captured_step_snapshot")
+        .expect("captured extension tool");
+    assert_eq!(
+        snapshot_tool,
+        &json!({
+            "type": "function",
+            "name": "captured_step_snapshot",
+            "description": "Tool captured from step snapshot 0.",
+            "strict": false,
+            "parameters": {"type": "object", "properties": {}}
+        })
+    );
+    assert_eq!(contributor.initialized_snapshots.load(Ordering::Relaxed), 1);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

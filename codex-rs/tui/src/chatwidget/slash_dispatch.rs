@@ -255,7 +255,6 @@ impl ChatWidget {
                 summary: None,
                 service_tier: None,
                 collaboration_mode: None,
-                personality: None,
             }));
         match runtime_override {
             codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn => {
@@ -300,7 +299,6 @@ impl ChatWidget {
                 summary: None,
                 service_tier: None,
                 collaboration_mode: None,
-                personality: None,
             }));
         let effective = if self.config.model_offload.effective_enabled() {
             "enabled"
@@ -343,7 +341,6 @@ impl ChatWidget {
                 summary: None,
                 service_tier: None,
                 collaboration_mode: None,
-                personality: None,
             }));
         match runtime_override {
             codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Local => {
@@ -379,7 +376,6 @@ impl ChatWidget {
                 summary: None,
                 service_tier: None,
                 collaboration_mode: None,
-                personality: None,
             }));
         self.add_info_message(
             "Compaction now follows model_offload.compaction.policy from config.toml.".to_string(),

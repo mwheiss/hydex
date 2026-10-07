@@ -412,6 +412,7 @@ async fn responses_client_stream_request_sends_routing_fields_ahead_of_large_inp
         stream_options: None,
         include: Vec::new(),
         service_tier: Some("priority".into()),
+        temperature: None,
         prompt_cache_key: None,
         text: None,
         client_metadata: None,

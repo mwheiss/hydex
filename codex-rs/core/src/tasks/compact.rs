@@ -7,13 +7,11 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
-use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Default)]
@@ -115,17 +113,7 @@ impl SessionTask for CompactTask {
                     "local",
                     /*manual*/ true,
                 );
-                let local_handoff_role = if !use_remote && uses_local_offload {
-                    ctx.config.model_offload.compaction_local_handoff_role
-                } else {
-                    ModelOffloadCompactionLocalHandoffRole::UserSummary
-                };
-                let input = vec![UserInput::Text {
-                    text: crate::compact::local_compaction_prompt(&ctx, local_handoff_role).to_string(),
-                    // Compaction prompt is synthesized; no UI element ranges to preserve.
-                    text_elements: Vec::new(),
-                }];
-                crate::compact::run_compact_task(session.clone(), Arc::clone(&ctx), input).await
+                crate::compact::run_compact_task(session.clone(), Arc::clone(&ctx)).await
             }
         };
         if let Err(err) = result {

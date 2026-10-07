@@ -24,6 +24,7 @@ use crate::compaction_recovery_cache::remote_compaction_recovery_cache_key;
 use crate::config::ModelOffloadContextConfig;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context::UserGoalUpdate;
 use crate::context::UserVerificationNotice;
 use crate::cyber_access_program;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -203,7 +204,7 @@ pub(crate) async fn run_turn(
             .await
     {
         let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), err.details())
             .await;
         sess.track_turn_codex_error(turn_context.as_ref(), &err);
         sess.send_event(
@@ -593,7 +594,7 @@ pub(crate) async fn run_turn(
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
 
-            run_sampling_request(
+            Box::pin(run_sampling_request(
                 Arc::clone(&sess),
                 Arc::clone(&step_context),
                 Arc::clone(&turn_context.extension_data),
@@ -601,7 +602,7 @@ pub(crate) async fn run_turn(
                 &mut client_session,
                 sampling_request_input,
                 cancellation_token.child_token(),
-            )
+            ))
             .await
         }
         .await;
@@ -1637,6 +1638,7 @@ pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
             .compaction_recovery
             .projection,
     )?;
+    let input_goal_ids = UserGoalUpdate::message_ids(active_history.iter());
     let (window_number, window_ids) = sess.advance_auto_compact_window().await;
     sess.replace_compacted_history(
         promoted_history
@@ -1646,6 +1648,7 @@ pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
         None,
         None,
         CompactedHistoryMetadata {
+            input_goal_ids,
             message: String::new(),
             window_number,
             window_ids,
@@ -1692,6 +1695,7 @@ async fn promote_retro_local_history_before_local_sampling(
     let retro_local_history = sess
         .reconstruct_retro_local_history_from_persisted_rollout(turn_context)
         .await?;
+    let input_goal_ids = UserGoalUpdate::message_ids(sess.clone_history().await.raw_items());
     let (window_number, window_ids) = sess.advance_auto_compact_window().await;
     sess.replace_compacted_history(
         retro_local_history
@@ -1701,6 +1705,7 @@ async fn promote_retro_local_history_before_local_sampling(
         None,
         None,
         CompactedHistoryMetadata {
+            input_goal_ids,
             message: String::new(),
             window_number,
             window_ids,
@@ -2336,22 +2341,23 @@ async fn run_sampling_request(
                 prepare_tool_recommendations(sess.as_ref(), turn_context.as_ref())
                     .or_cancel(&cancellation_token)
                     .await?;
-            built_tools_for_wire(
+            Box::pin(built_tools_for_wire(
                 sess.as_ref(),
                 turn_context.as_ref(),
                 step_context.settings.model_info.as_ref(),
                 &step_context.environments,
                 &step_context.mcp,
-                turn_store.as_ref(),
+                step_context.extension_data.as_ref(),
                 prepared_recommendations,
                 wire_target,
-            )
+            ))
             .or_cancel(&cancellation_token)
             .await??
         }
     };
     let step_context = Arc::new(StepContext {
         turn: Arc::clone(&step_context.turn),
+        extension_data: Arc::clone(&step_context.extension_data),
         preempt: step_context.preempt.clone(),
         realtime: step_context.realtime.clone(),
         settings: Arc::clone(&step_context.settings),

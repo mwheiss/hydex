@@ -3793,8 +3793,9 @@ impl Session {
                     &environments,
                 )
                 .await;
-            let extension_data =
-                codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
+            let extension_data = Arc::new(codex_extension_api::ExtensionData::new(
+                turn_context.sub_id.clone(),
+            ));
             if let Some(messages) = settings
                 .model_info
                 .model_messages

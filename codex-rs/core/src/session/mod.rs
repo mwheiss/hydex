@@ -4154,8 +4154,11 @@ impl Session {
                 self.mark_mcp_runtime_dirty();
             }
             let extension_data =
-                codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
+                Arc::new(codex_extension_api::ExtensionData::new(turn_context.sub_id.clone()));
             extension_data.insert_arc(Arc::clone(&settings.model_info));
+            if let Some(snapshots) = &executor_capability_discovery_v2 {
+                extension_data.insert(snapshots.clone());
+            }
             if let Some(messages) = settings
                 .model_info
                 .model_messages

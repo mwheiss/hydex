@@ -3965,8 +3965,9 @@ impl Session {
                     &environments,
                 )
                 .await;
-            let extension_data =
-                codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
+            let extension_data = Arc::new(codex_extension_api::ExtensionData::new(
+                turn_context.sub_id.clone(),
+            ));
             if let Some(snapshots) = &executor_capability_discovery_v2 {
                 extension_data.insert(snapshots.clone());
             }

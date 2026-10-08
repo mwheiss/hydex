@@ -364,6 +364,10 @@ impl HttpClientBuilder {
         if self.tls_backend == TlsBackend::Rustls || self.tls.client_identity.is_some() {
             ensure_rustls_crypto_provider();
             builder = builder.use_rustls_tls();
+        } else {
+            // reqwest selects rustls when any workspace consumer enables HTTP/3.
+            // Keep our native-first contract independent of feature unification.
+            builder = builder.use_native_tls();
         }
         if let Some(certificate) = self.tls.root_certificate {
             builder = builder

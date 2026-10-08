@@ -844,6 +844,7 @@ async fn rejected_local_compaction_is_not_persisted_or_reused_by_retry() {
         config.model_offload.provider_id = Some("hydex-local-test".to_string());
         config.model_offload.provider = Some(local_provider);
         config.model_offload.model = Some("hydex-local-test-model".to_string());
+        config.model_offload.context.context_window = Some(200_000);
         config.model_offload.compaction_policy = ModelOffloadCompactionPolicy::Local;
         config.model_offload.validation.generation_retries = 1;
         config.model_auto_compact_token_limit = Some(200_000);
@@ -932,13 +933,17 @@ async fn manual_local_compaction_reports_validator_transport_failure() {
     let mut local_provider = primary_provider.clone();
     local_provider.name = "Hydex local test provider".to_string();
     local_provider.requires_openai_auth = false;
+    local_provider.stream_max_retries = Some(0);
     let mut builder = test_codex().with_config(move |config| {
         config.model_provider = primary_provider;
         config.model_offload.enabled = true;
         config.model_offload.provider_id = Some("hydex-local-test".to_string());
         config.model_offload.provider = Some(local_provider);
         config.model_offload.model = Some("hydex-local-test-model".to_string());
+        config.model_offload.context.context_window = Some(200_000);
         config.model_offload.compaction_policy = ModelOffloadCompactionPolicy::Local;
+        config.model_offload.validation.validator_attempts = 1;
+        config.model_offload.validation.generation_retries = 0;
         config.model_auto_compact_token_limit = Some(200_000);
         set_test_compact_prompt(config);
     });
@@ -963,7 +968,9 @@ async fn manual_local_compaction_reports_validator_transport_failure() {
     assert!(
         error
             .message
-            .contains("Local compaction output validation unavailable")
+            .contains("Local compaction output validation unavailable"),
+        "unexpected transport failure: {}",
+        error.message
     );
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
@@ -978,7 +985,9 @@ async fn manual_local_compaction_reports_validator_transport_failure() {
     assert!(
         error
             .message
-            .contains("Local compaction output failed sanity validation")
+            .contains("Local compaction output failed sanity validation"),
+        "unexpected deterministic validation failure: {}",
+        error.message
     );
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
@@ -988,7 +997,9 @@ async fn manual_local_compaction_reports_validator_transport_failure() {
     let requests = request_log.requests();
     assert_eq!(requests.len(), 4);
     assert_eq!(requests[2].body_json()["temperature"], 0.0);
-    assert_eq!(requests[3].body_json()["temperature"], 0.01);
+    // A new manual compaction starts a fresh generation, not a retry of the
+    // previous command's failed validator. Greedy-call perturbation stays turn-local.
+    assert_eq!(requests[3].body_json()["temperature"], 0.0);
     let rollout = fs::read_to_string(rollout_path).expect("read rollout");
     assert!(!rollout.contains(UNVALIDATED_SUMMARY));
     assert!(!rollout.contains(BROKEN_SUMMARY));
@@ -1024,6 +1035,7 @@ async fn local_compaction_uses_local_provider_stream_retry_budget() {
         config.model_offload.provider_id = Some("hydex-local-test".to_string());
         config.model_offload.provider = Some(local_provider);
         config.model_offload.model = Some("hydex-local-test-model".to_string());
+        config.model_offload.context.context_window = Some(200_000);
         config.model_offload.compaction_policy = ModelOffloadCompactionPolicy::Local;
         config.model_offload.validation.enabled = false;
         config.model_auto_compact_token_limit = Some(200_000);

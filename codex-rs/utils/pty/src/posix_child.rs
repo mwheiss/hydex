@@ -274,7 +274,7 @@ impl NativeChild {
                         #[cfg(target_os = "macos")]
                         libc::ELOOP | libc::ENAMETOOLONG => {}
                         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                        libc::ESTALE | libc::ENODEV | libc::ETIMEDOUT => {}
+                        libc::ESTALE | libc::ENODEV | libc::ETIMEDOUT | libc::ENAMETOOLONG => {}
                         _ => break,
                     }
                 }

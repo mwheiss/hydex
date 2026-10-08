@@ -132,6 +132,19 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
     };
     let home = TempDir::new()?;
     let cwd = PathUri::from_host_native_path(home.path())?;
+    let shell_path = if deny_fd_path && cfg!(target_os = "linux") {
+        // Linux /dev/fd is a symlink, and bubblewrap rejects mounting a deny mask
+        // over it. Close inherited snapshot carriers instead: the capture probe
+        // must then select env replay while stdin remains available to commands.
+        let wrapper = home.path().join("snapshot-bash");
+        codex_utils_cargo_bin::write_executable(
+            &wrapper,
+            "#!/bin/sh\nfor fd in /dev/fd/[1-9]*; do\n  fd=${fd##*/}\n  if [ \"$fd\" -ge 10 ]; then eval \"exec $fd<&-\"; fi\ndone\nexec /bin/bash \"$@\"\n",
+        )?;
+        wrapper.to_string_lossy().into_owned()
+    } else {
+        format!("/bin/{shell}")
+    };
     // Keep full-size state in a function, below the 512 KiB state + environment cap.
     // The blocked-path case still exercises the smaller environment fallback.
     let payload_len = if deny_fd_path { 1 } else { 480 * 1024 };
@@ -179,12 +192,12 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
             cwd.clone().into(),
             FileSystemAccessMode::Write,
         ));
-        if deny_fd_path {
+        if deny_fd_path && !cfg!(target_os = "linux") {
             policy.entries.push(FileSystemSandboxEntry::new(
                 PathUri::from_host_native_path("/dev/fd")?.into(),
                 FileSystemAccessMode::Deny,
             ));
-        } else {
+        } else if !deny_fd_path {
             policy.entries.push(FileSystemSandboxEntry::new(
                 PathUri::from_host_native_path(std::fs::canonicalize("/tmp")?)?.into(),
                 FileSystemAccessMode::Write,
@@ -202,6 +215,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
         let cwd = cwd.clone();
         let home = home.path();
         let sandbox = sandbox.clone();
+        let shell_path = shell_path.clone();
         let command = command.clone();
         let protected_path = protected_file.path();
         async move {
@@ -209,7 +223,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                 .start(ExecParams {
                     metadata: Default::default(),
                     process_id: format!("parallel-{index}").into(),
-                    argv: vec![format!("/bin/{shell}"), "-lc".to_string(), command],
+                    argv: vec![shell_path.clone(), "-lc".to_string(), command],
                     cwd,
                     env: HashMap::new(),
                     env_policy: Some(ExecEnvPolicy {
@@ -230,7 +244,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                         scope_id: "parallel".to_string(),
                         shell: ShellInfo {
                             name: shell.to_string(),
-                            path: format!("/bin/{shell}"),
+                            path: shell_path,
                         },
                     }),
                     tty,
@@ -250,7 +264,7 @@ async fn shell_snapshot_concurrent_replays_keep_independent_readers(
                 collect_process_output_from_events(started.process).await?;
             assert!(
                 output.ends_with(&format!("restored:input-{index}")),
-                "{output:?}"
+                "stdout={output:?}, stderr={errors:?}, status={status:?}, closed={closed:?}"
             );
             if shell == "zsh" {
                 assert!(

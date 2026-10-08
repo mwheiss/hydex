@@ -1674,7 +1674,10 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         compaction_local_handoff_role:
             codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole::UserSummary,
         compaction_recovery: codex_core::config::ModelOffloadCompactionRecoveryConfig::default(),
-        context: Default::default(),
+        context: codex_core::config::ModelOffloadContextConfig {
+            context_window: Some(200_000),
+            ..Default::default()
+        },
         validation: Default::default(),
     };
 

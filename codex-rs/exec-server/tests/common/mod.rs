@@ -165,6 +165,13 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
     if command != "exec-server" {
         return;
     }
+    // This helper dispatches from a constructor, before Rust's main-entry
+    // initialization. Match the real CLI's SIGPIPE handling so closed child
+    // stdin produces BrokenPipe instead of terminating the executor server.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
     // Enable requested child diagnostics so integration tests can observe background failures.
     if env::var_os("RUST_LOG").is_some()
         && let Err(error) = tracing_subscriber::fmt()

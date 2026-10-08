@@ -230,13 +230,18 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         name => anyhow::bail!("unsupported test shell {name}"),
     };
     let profile_path = home.path().join(profile_name);
+    // Snapshot capture uses the exact execution sandbox. Only these fixture
+    // counters need write access; profiles and executables remain read-only.
+    let capture_root = home.path().join("counters");
+    std::fs::create_dir(&capture_root)?;
+    let capture_root_uri = PathUri::from_host_native_path(&capture_root)?;
     let profile_path_entry = home.path().join("profile-bin");
     let runtime_path_entry = home.path().join("runtime-bin");
     std::fs::create_dir(&profile_path_entry)?;
     let wc = profile_path_entry.join("wc");
     codex_utils_cargo_bin::write_executable(
         &wc,
-        "#!/bin/sh\nprintf x >> \"$HOME/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
+        "#!/bin/sh\nprintf x >> \"$HOME/counters/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
     )?;
     let posix_shell = matches!(shell_name, "sh" | "bash-sh");
     let padding = if !use_remote && !tty && shell_name == "bash" {
@@ -255,7 +260,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     std::fs::write(
         &profile_path,
         format!(
-            "printf x >> \"$HOME/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
+            "printf x >> \"$HOME/counters/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
         ),
     )?;
     if shell_name == "zsh" && automatic_startup {
@@ -345,8 +350,16 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 pipe_stdin: false,
                 arg0: (shell_name == "bash-sh").then(|| "sh".to_string()),
                 sandbox: (use_sandbox && attempt == 0).then(|| {
+                    let mut policy = FileSystemSandboxPolicy::read_only();
+                    policy.entries.push(FileSystemSandboxEntry::new(
+                        capture_root_uri.clone().into(),
+                        FileSystemAccessMode::Write,
+                    ));
                     FileSystemSandboxContext::from_permission_profile(
-                        PermissionProfile::read_only(),
+                        PermissionProfile::from_runtime_permissions(
+                            &policy,
+                            NetworkSandboxPolicy::Restricted,
+                        ),
                         cwd.clone(),
                     )
                 }),
@@ -363,8 +376,12 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         );
     }
 
-    assert_eq!(std::fs::read_to_string(home.path().join("captures"))?, "x");
-    assert!(!std::fs::read(home.path().join("tool-captures"))?.is_empty());
+    // A different sandbox must not reuse state captured under another policy.
+    assert_eq!(
+        std::fs::read_to_string(capture_root.join("captures"))?,
+        "x".repeat(if use_sandbox { 2 } else { 1 })
+    );
+    assert!(!std::fs::read(capture_root.join("tool-captures"))?.is_empty());
     if let Some(server) = context._server {
         assert!(!server.codex_home().join("shell_snapshots").exists());
     }

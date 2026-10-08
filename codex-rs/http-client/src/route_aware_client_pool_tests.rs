@@ -265,6 +265,18 @@ async fn request_failures_classify_https_proxy_authentication_challenges() {
 }
 
 #[test]
+fn request_failures_classify_tls_errors_inside_nested_io_wrappers() {
+    let error = RouteAwareRequestError::Route(RouteAwareClientPoolError::Resolve(
+        io::Error::other(io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        )),
+    ));
+
+    assert_eq!(error.failure_class(), Some(RouteFailureClass::TlsError));
+}
+
+#[test]
 fn request_builder_debug_redacts_url_secrets() {
     let pool = RouteAwareClientPool::new(
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),

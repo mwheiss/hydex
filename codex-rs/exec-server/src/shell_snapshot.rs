@@ -292,6 +292,13 @@ impl ShellSnapshotCache {
             "{startup}if ! {restore} >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
             params.argv[2]
         );
+        if shell_type == ShellType::Bash {
+            // Bash treats socket-backed stdin as a remote shell and reads .bashrc even
+            // with -pc. Suppress that second startup before restoring filtered state.
+            prepared
+                .command
+                .insert(shell_start + 1, "--norc".to_string());
+        }
 
         Ok(reader)
     }

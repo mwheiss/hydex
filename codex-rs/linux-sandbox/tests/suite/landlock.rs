@@ -1161,8 +1161,11 @@ fi
     );
 
     let cwd = AbsolutePathBuf::try_from(subdir.as_path()).expect("cwd should be absolute");
+    // The retargeting attack needs its private fixture parent writable even
+    // when TMPDIR is disk-backed outside the automatically granted /tmp root.
+    let fixture_root = AbsolutePathBuf::try_from(tmpdir.path()).expect("fixture root");
     let permission_profile = PermissionProfile::workspace_write_with(
-        std::slice::from_ref(&cwd),
+        &[cwd.clone(), fixture_root],
         NetworkSandboxPolicy::Enabled,
         /*exclude_tmpdir_env_var*/ false,
         /*exclude_slash_tmp*/ false,

@@ -141,8 +141,8 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
             let mut request = prepared.into_command_request().expect("shell command");
             if let Some(reader) = reader {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
-                request.command[2] =
-                    request.command[2].replace(&format!("/dev/fd/{fd}"), "/dev/fd/SNAPSHOT");
+                let script = request.command.last_mut().expect("replay script");
+                *script = script.replace(&format!("/dev/fd/{fd}"), "/dev/fd/SNAPSHOT");
             }
             (request.command, request.env)
         };

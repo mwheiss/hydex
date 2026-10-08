@@ -6,7 +6,7 @@ use crate::Command;
 use crate::ProcessMode;
 
 #[tokio::test]
-async fn path_search_stops_at_invalid_candidates() -> anyhow::Result<()> {
+async fn path_search_matches_standard_launcher_for_invalid_candidates() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("bin"))?;
     std::os::unix::fs::symlink("loop", root.path().join("loop"))?;
@@ -17,13 +17,25 @@ async fn path_search_stops_at_invalid_candidates() -> anyhow::Result<()> {
         command
             .current_dir(root.path())
             .env("PATH", format!("{candidate}:bin"));
-        let expected = command
-            .inner
-            .spawn()
-            .expect_err("invalid first candidate must stop lookup");
+        let expected = command.inner.output().await;
         command.process_mode(ProcessMode::NewSession);
-        let actual = command.spawn().err().expect("native lookup must stop too");
-        assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+        match expected {
+            Ok(expected) => {
+                let actual = command.spawn()?.wait_with_output().await?;
+                assert_eq!(actual, expected, "PATH candidate: {candidate}");
+            }
+            Err(expected) => {
+                let actual = command
+                    .spawn()
+                    .err()
+                    .expect("native lookup must reject the same candidate");
+                assert_eq!(
+                    actual.raw_os_error(),
+                    expected.raw_os_error(),
+                    "PATH candidate: {candidate}"
+                );
+            }
+        }
     }
     Ok(())
 }

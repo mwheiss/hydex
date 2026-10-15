@@ -151,14 +151,24 @@ async fn strict_flag_does_nothing_outside_effective_code_mode_only() {
             Feature::CodeModeOnlyStrictThirdPartyTools,
             /*enabled*/ false,
         );
-        let off = ToolPlanProbe::from_router(plan_with_model(&turn, turn.model_info(), inputs()));
+        let off = ToolPlanProbe::from_router(plan_with_model(
+            &turn,
+            turn.model_info(),
+            inputs(),
+            ToolWireTarget::Primary,
+        ));
         assert_eq!(off.tool_mode, mode);
         set_feature(
             &mut turn,
             Feature::CodeModeOnlyStrictThirdPartyTools,
             /*enabled*/ true,
         );
-        let on = ToolPlanProbe::from_router(plan_with_model(&turn, turn.model_info(), inputs()));
+        let on = ToolPlanProbe::from_router(plan_with_model(
+            &turn,
+            turn.model_info(),
+            inputs(),
+            ToolWireTarget::Primary,
+        ));
         assert_eq!(on, off, "strict flag changed effective {mode:?}");
     }
 }
@@ -218,6 +228,7 @@ async fn strict_finalization_cannot_resurrect_hidden_or_policy_denied_tools() {
                 /*defer_loading*/ false,
             ),
         ],
+        ToolWireTarget::Primary,
     );
     let plan = ToolPlanProbe::from_router(ToolRouter::from_registry(
         &turn,
@@ -225,6 +236,7 @@ async fn strict_finalization_cannot_resurrect_hidden_or_policy_denied_tools() {
         registry,
         hosted,
         &Default::default(),
+        ToolWireTarget::Primary,
     ));
     plan.assert_registered_lacks(&[
         &ToolName::namespaced("mcp__denied", "lookup").to_string(),

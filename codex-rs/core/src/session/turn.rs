@@ -1505,9 +1505,7 @@ async fn run_pre_sampling_compact(
         {
             AutoCompactRoute::ForcePrimaryRemote
         } else {
-            AutoCompactRoute::Policy {
-                fallback_step_context: None,
-            }
+            AutoCompactRoute::Policy
         };
         let force_primary_remote = matches!(route, AutoCompactRoute::ForcePrimaryRemote);
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
@@ -2041,13 +2039,13 @@ async fn run_auto_compact_with_route(
 
     let use_remote = match route {
         AutoCompactRoute::Policy => should_use_remote_compact_task_with_offload_policy(
-            turn_context.provider.info(),
+            turn_context.provider.as_ref(),
             sess.services.model_client.offload_ever_used(),
             client_session.local_offload_enabled_for_turns(),
             client_session.effective_model_offload_compaction_policy(),
         ),
         AutoCompactRoute::ForcePrimaryRemote => {
-            if !should_use_remote_compact_task(turn_context.provider.info()) {
+            if !should_use_remote_compact_task(turn_context.provider.as_ref()) {
                 return Err(CodexErr::InvalidRequest(
                     "Cannot enable model offload for this oversized thread: primary remote compaction is unavailable.".to_string(),
                 ));
@@ -2055,7 +2053,11 @@ async fn run_auto_compact_with_route(
             true
         }
     };
-    if !use_remote {
+    if !use_remote
+        && client_session.local_offload_enabled_for_turns()
+        && client_session.effective_model_offload_compaction_policy()
+            == codex_config::config_toml::ModelOffloadCompactionPolicy::Local
+    {
         maybe_recover_remote_compaction_for_local_route(sess, turn_context, client_session).await?;
         let active_history = sess
             .clone_history()
@@ -2077,7 +2079,7 @@ async fn run_auto_compact_with_route(
             )
             .await;
         }
-        if !should_use_remote_compact_task(turn_context.provider.info())
+        if !should_use_remote_compact_task(turn_context.provider.as_ref())
             || turn_context.provider.capabilities().remote_compaction
                 == RemoteCompactionSupport::Unsupported
         {

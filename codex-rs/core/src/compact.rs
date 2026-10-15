@@ -69,6 +69,8 @@ use tracing::error;
 
 use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
+use codex_model_provider::ModelProvider;
+use codex_model_provider::RemoteCompactionSupport;
 use codex_model_provider_info::ModelProviderInfo;
 
 pub use codex_prompts::ASSISTANT_STATE_LOCAL_COMPACTION_PROMPT;
@@ -125,10 +127,8 @@ fn assemble_compaction_history(
         .collect()
 }
 
-pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
-    provider.is_openai()
-        || provider.is_amazon_bedrock()
-        || codex_api::is_azure_responses_provider(&provider.name, provider.base_url.as_deref())
+pub(crate) fn should_use_remote_compact_task(provider: &dyn ModelProvider) -> bool {
+    provider.capabilities().remote_compaction == RemoteCompactionSupport::V2
 }
 
 pub(crate) fn remote_compaction_model_provenance(
@@ -139,7 +139,7 @@ pub(crate) fn remote_compaction_model_provenance(
 }
 
 pub(crate) fn should_use_remote_compact_task_with_offload_policy(
-    provider: &ModelProviderInfo,
+    provider: &dyn ModelProvider,
     offload_ever_used: bool,
     effective_model_offload_enabled: bool,
     offload_compaction_policy: ModelOffloadCompactionPolicy,

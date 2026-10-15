@@ -6146,6 +6146,80 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
 }
 
 #[tokio::test]
+async fn recovered_local_compaction_preserves_concurrent_goals_without_snapshot_companions() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let rollout_path = attach_thread_persistence(&mut session).await;
+    {
+        let mut state = session.state.lock().await;
+        state.set_reference_context_item(Some(turn_context.to_turn_context_item()));
+        state.set_active_remote_compaction_model(Some("primary-producing-model".to_string()));
+    }
+    let input_goal_ids =
+        crate::context::UserGoalUpdate::message_ids(session.clone_history().await.raw_items());
+    session
+        .record_user_goal_update(crate::context::UserGoalUpdate::Clear)
+        .await
+        .expect("accept goal update after recovery input snapshot");
+    let accepted_goal = session
+        .clone_history()
+        .await
+        .annotated_items()
+        .last()
+        .cloned()
+        .expect("accepted goal update");
+    let (window_number, window_ids) = session.advance_auto_compact_window().await;
+    session
+        .replace_recovered_local_history(
+            vec![ResponseItemEnvelope::new(user_message(
+                "readable recovered state",
+            ))],
+            CompactedHistoryMetadata {
+                input_goal_ids,
+                message: String::new(),
+                window_number,
+                window_ids,
+                compaction_response_id: None,
+                compaction_model_hash: None,
+                reviewer_compaction_hash: None,
+                remote_compaction_model: None,
+            },
+        )
+        .await;
+    let live_history = session.clone_history().await.annotated_items().to_vec();
+    assert_eq!(&live_history[1..], &[accepted_goal]);
+    assert_eq!(session.reference_context_item().await, None);
+    assert_eq!(session.active_remote_compaction_model().await, None);
+
+    session
+        .flush_rollout()
+        .await
+        .expect("flush recovery checkpoint");
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read recovery checkpoint");
+    let checkpoint = items
+        .into_iter()
+        .skip_while(|item| !matches!(item, RolloutItem::Compacted(_)))
+        .collect::<Vec<_>>();
+    let [
+        RolloutItem::Compacted(compacted),
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_)),
+    ] = checkpoint.as_slice()
+    else {
+        panic!("recovery claimed an unrendered context snapshot: {checkpoint:#?}");
+    };
+    assert_eq!(compacted.replacement_history.as_ref(), Some(&live_history));
+    assert_eq!(compacted.remote_compaction_model, None);
+    assert!(compacted.resume_metadata.is_some());
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &checkpoint)
+        .await;
+    assert_eq!(reconstructed.history, live_history);
+    assert_eq!(reconstructed.reference_context_item, None);
+    assert_eq!(reconstructed.active_remote_compaction_model, None);
+}
+
+#[tokio::test]
 async fn compaction_persists_resume_metadata_and_companion_records() {
     let (mut session, turn_context) = make_session_and_context().await;
     let rollout_path = attach_thread_persistence(&mut session).await;

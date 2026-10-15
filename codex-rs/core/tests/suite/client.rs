@@ -1687,6 +1687,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
     )
     .await;
     let local_provider = ModelProviderInfo {
+        capabilities: None,
         name: "local-offload".into(),
         gateway_oauth: None,
         model_catalog_url: None,

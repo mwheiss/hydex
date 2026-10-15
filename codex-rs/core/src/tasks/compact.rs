@@ -7,11 +7,13 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
+use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Default)]
@@ -58,7 +60,7 @@ impl SessionTask for CompactTask {
 
         let mut client_session = session.services.model_client.new_session();
         let mut use_remote = crate::compact::should_use_remote_compact_task_with_offload_policy(
-            ctx.provider.info(),
+            ctx.provider.as_ref(),
             session.services.model_client.offload_ever_used(),
             client_session.local_offload_enabled_for_turns(),
             client_session.effective_model_offload_compaction_policy(),

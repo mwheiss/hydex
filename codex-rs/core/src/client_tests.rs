@@ -361,16 +361,20 @@ async fn local_provider_advertised_context_overrides_configured_fallback() {
 fn local_request_guard_uses_effective_context_window() {
     let request = ResponsesApiRequest {
         model: "local-model".to_string(),
-        instructions: "follow the request".to_string(),
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "x".repeat(4_000),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
+        input: vec![
+            ContextualUserFragment::into(BaseInstructionsFragment(
+                "follow the request".to_string(),
+            )),
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "x".repeat(4_000),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
         tools: None,
         tool_choice: "auto".to_string(),
         parallel_tool_calls: false,
@@ -2827,9 +2831,31 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
     let tools = tools.as_array().expect("local tools are an array");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "ns__web__run");
+    let ResponseItem::Message {
+        id,
+        role,
+        content,
+        internal_chat_message_metadata_passthrough,
+        ..
+    } = &request.input[0]
+    else {
+        panic!("base instructions must remain a developer message");
+    };
+    assert!(
+        id.as_ref()
+            .is_some_and(codex_protocol::ResponseItemId::is_prefixed)
+    );
+    assert_eq!(role, "developer");
     assert_eq!(
-        request.input,
-        vec![ResponseItem::FunctionCall {
+        content,
+        &[ContentItem::InputText {
+            text: prompt.base_instructions.text.clone(),
+        }]
+    );
+    assert_eq!(internal_chat_message_metadata_passthrough, &None);
+    assert_eq!(
+        &request.input[1..],
+        &[ResponseItem::FunctionCall {
             id: None,
             name: "ns__web__run".to_string(),
             namespace: None,
@@ -3852,3 +3878,5 @@ async fn compaction_runtime_override_updates_effective_policy_with_offload_guard
         ModelOffloadCompactionPolicy::Primary
     );
 }
+use crate::context::BaseInstructionsFragment;
+use crate::context::ContextualUserFragment;

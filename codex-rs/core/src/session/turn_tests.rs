@@ -13,6 +13,97 @@ use tracing_subscriber::prelude::*;
 
 struct RewriteAgentMessageContributor;
 
+#[tokio::test]
+async fn primary_auto_compaction_without_offload_preserves_opaque_history() -> anyhow::Result<()> {
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+    use codex_login::CodexAuth;
+    use codex_model_provider_info::ModelProviderCapabilities;
+    use codex_model_provider_info::ModelProviderInfo;
+    use core_test_support::responses;
+
+    let server = responses::start_mock_server().await;
+    let request = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("primary-summary", "primary summary"),
+            responses::ev_completed("primary-compaction"),
+        ]),
+    )
+    .await;
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.name = "compatible-primary".to_string();
+    provider.supports_websockets = false;
+    provider.capabilities = Some(ModelProviderCapabilities {
+        remote_compaction: Some(RemoteCompactionSupport::Unsupported),
+        ..Default::default()
+    });
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("test-primary-key"),
+        Vec::new(),
+        move |config| {
+            config.model_provider = provider;
+            config.model_offload = Default::default();
+        },
+    )
+    .await;
+    assert!(
+        !session
+            .services
+            .model_client
+            .local_offload_enabled_for_turns()
+    );
+    session
+        .replace_history(
+            vec![
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: "primary-readable-encrypted-state".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue primary work".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+            None,
+        )
+        .await;
+    let step = session
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await?;
+    let world_state = Arc::new(session.build_world_state_for_step(&step).await?);
+    let mut client = session.services.model_client.new_session();
+    run_auto_compact(
+        &session,
+        Arc::clone(&step),
+        step,
+        &mut client,
+        world_state,
+        CompactionReason::ContextLimit,
+        CompactionPhase::PreTurn,
+    )
+    .await?;
+    let body = request.single_request().body_json();
+    assert!(
+        body["input"]
+            .as_array()
+            .expect("primary input")
+            .iter()
+            .any(|item| {
+                item["type"] == "compaction"
+                    && item["encrypted_content"] == "primary-readable-encrypted-state"
+            })
+    );
+    assert!(!session.services.model_client.offload_ever_used());
+    Ok(())
+}
+
 impl TurnItemContributor for RewriteAgentMessageContributor {
     fn contribute<'a>(
         &'a self,

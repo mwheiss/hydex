@@ -12,6 +12,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -19,6 +20,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::GuardianAssessmentAction;
@@ -27,7 +29,10 @@ use codex_protocol::protocol::GuardianCommandSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -39,6 +44,9 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::environment_config_for_selection;
+use core_test_support::test_codex::local;
+use core_test_support::test_codex::local_request;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -103,6 +111,15 @@ async fn unified_exec_zsh_fork_parent_approval_preserves_denied_reads() -> Resul
     )
     .await?;
     approve_expected_exec(&test, &command).await?;
+    let intercepted = expect_exec_approval(&test, denied_path.to_string_lossy().as_ref()).await;
+    assert_eq!(intercepted.command.len(), 2);
+    assert_eq!(
+        Path::new(&intercepted.command[0])
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("cat"),
+    );
+    approve_exec(&test, intercepted.effective_approval_id()).await?;
     wait_for_completion_without_approval(&test).await;
 
     let result = command_result(&results, call_id);
@@ -460,6 +477,7 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
         .path()
         .join("unified-exec-zsh-fork-current-turn.txt");
     let initial_denied_path = outside_dir.path().join("original-environment-private");
+    fs::create_dir(&initial_denied_path)?;
     let permission_profile = denied_read_permission_profile(&initial_denied_path)?;
     let rules = r#"prefix_rule(pattern=["touch"], decision="prompt")"#.to_string();
 
@@ -558,11 +576,23 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
 
     let next_cwd = test.config.cwd.join("next-turn");
     fs::create_dir(&next_cwd)?;
-    let next_denied_path = next_cwd.join("next-environment-private");
-    let (sandbox_policy, permission_profile) = turn_permission_fields(
-        denied_read_permission_profile(next_denied_path.as_path())?,
-        next_cwd.as_path(),
+    // A running terminal cannot acquire new denied-read restrictions. Relax the
+    // current environment's explicit profile while changing its cwd/reviewer;
+    // its launch sandbox still applies.
+    let next_permissions = restrictive_workspace_write_profile();
+    assert!(
+        !next_permissions
+            .file_system_sandbox_policy()
+            .has_denied_read_restrictions()
     );
+    let mut next_environment_config =
+        environment_config_for_selection(&test.config, &local(next_cwd.clone()));
+    next_environment_config.permission_profile =
+        PermissionProfileSnapshot::legacy(next_permissions.clone());
+    let mut next_environment = local_request(next_cwd.clone());
+    next_environment.config = EnvironmentConfigState::Ready(next_environment_config);
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(next_permissions, next_cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -570,7 +600,10 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_requests(next_cwd)),
+                environments: Some(TurnEnvironmentRequests::new(
+                    next_cwd,
+                    vec![next_environment],
+                )),
                 approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -647,13 +680,18 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
     assert!(guardian_requests[0].body_contains_text("The `cwd` field is its launch directory"));
     assert!(guardian_requests[1].body_contains_text(&outside_path.to_string_lossy()));
     let guardian_text = guardian_requests[1].message_input_texts("user").join("");
+    // The reused Guardian thread also retains the earlier stdin review. Check
+    // the newest request's permission evidence for the intercepted command.
     let permissions = guardian_text
-        .split_once("PARENT TURN PERMISSION CONTEXT START")
+        .rsplit_once("PARENT TURN PERMISSION CONTEXT START")
         .and_then(|(_, text)| text.split_once("PARENT TURN PERMISSION CONTEXT END"))
         .map(|(permissions, _)| permissions)
         .context("intercepted command's Guardian permissions")?;
-    assert!(permissions.contains(initial_denied_path.to_string_lossy().as_ref()));
-    assert!(!permissions.contains(next_denied_path.to_string_lossy().as_ref()));
+    assert!(
+        permissions.contains(initial_denied_path.to_string_lossy().as_ref()),
+        "launch denied path {} missing from Guardian permissions: {permissions}",
+        initial_denied_path.display(),
+    );
 
     Ok(())
 }
@@ -745,8 +783,8 @@ fn permission_profile_from_toml(profile: &str) -> Result<PermissionProfile> {
                 ":project_roots" => FileSystemPath::Special {
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
-                _ if *access == FileSystemAccessMode::Deny => FileSystemPath::GlobPattern {
-                    pattern: path.clone(),
+                _ if *access == FileSystemAccessMode::Deny => FileSystemPath::Path {
+                    path: PathUri::from_abs_path(&AbsolutePathBuf::from_absolute_path(path)?),
                 },
                 _ => anyhow::bail!("unexpected filesystem entry in test profile: {path}"),
             };

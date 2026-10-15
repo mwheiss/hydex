@@ -19,7 +19,6 @@ fn function(name: &str) -> ResponsesApiTool {
 fn request_with_input(input: Vec<ResponseItem>) -> ResponsesApiRequest {
     ResponsesApiRequest {
         model: "local-model".to_string(),
-        instructions: String::new(),
         input,
         tools: None,
         tool_choice: "auto".to_string(),

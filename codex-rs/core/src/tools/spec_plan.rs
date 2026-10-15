@@ -871,7 +871,7 @@ fn hosted_model_tool_specs(
     specs
 }
 
-pub(crate) fn search_tool_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
+pub(crate) fn search_tool_enabled(_turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
     model_info.supports_search_tool
 }
 

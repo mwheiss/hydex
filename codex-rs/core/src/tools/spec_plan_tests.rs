@@ -1716,11 +1716,17 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
     let ToolSpec::Freeform(exec) = local.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
         panic!("expected code mode exec tool");
     };
-    assert!(
-        !exec
-            .description
-            .contains("Some deferred nested tools may be omitted")
-    );
+    // Upstream keeps catalog guidance stable across catalog changes. Local offload must
+    // still declare every callable nested tool without advertising hosted tool search.
+    assert!(!exec.description.contains("await tools.tool_search("));
+    for tool_name in [
+        ToolName::namespaced("mcp__searchable", "lookup"),
+        ToolName::namespaced("dynamic", "run"),
+    ] {
+        let name = codex_tools::code_mode_name_for_tool_name(&tool_name);
+        assert_eq!(local.code_mode_tool_names.get(&name), Some(&tool_name));
+        assert!(exec.description.contains(&format!("### `{name}`")));
+    }
 }
 
 #[tokio::test]

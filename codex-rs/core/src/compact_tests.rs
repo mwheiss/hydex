@@ -759,6 +759,7 @@ fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
 #[test]
 fn should_use_remote_compact_task_for_azure_provider() {
     let provider = ModelProviderInfo {
+        capabilities: None,
         gateway_oauth: None,
         model_catalog_url: None,
         name: "Azure".into(),
@@ -782,7 +783,53 @@ fn should_use_remote_compact_task_for_azure_provider() {
         include_internal_metadata: false,
     };
 
-    assert!(should_use_remote_compact_task(&provider));
+    let provider = codex_model_provider::create_model_provider(provider, None);
+    assert!(should_use_remote_compact_task(provider.as_ref()));
+}
+
+#[test]
+fn offload_compaction_policy_preserves_provider_capability_overrides() {
+    for openai in [false, true] {
+        for remote_compaction in [
+            RemoteCompactionSupport::Unsupported,
+            RemoteCompactionSupport::V2,
+        ] {
+            let mut info = if openai {
+                ModelProviderInfo::create_openai_provider(None)
+            } else {
+                create_oss_provider(8020, WireApi::Responses)
+            };
+            info.capabilities = Some(codex_model_provider_info::ModelProviderCapabilities {
+                remote_compaction: Some(remote_compaction),
+                ..Default::default()
+            });
+            let provider = codex_model_provider::create_model_provider(info, None);
+            let expected = remote_compaction == RemoteCompactionSupport::V2;
+            assert_eq!(should_use_remote_compact_task(provider.as_ref()), expected);
+            for policy in [
+                ModelOffloadCompactionPolicy::Primary,
+                ModelOffloadCompactionPolicy::Local,
+            ] {
+                for enabled in [false, true] {
+                    for ever_used in [false, true] {
+                        assert_eq!(
+                            should_use_remote_compact_task_with_offload_policy(
+                                provider.as_ref(),
+                                ever_used,
+                                enabled,
+                                policy,
+                            ),
+                            expected
+                                && !(enabled
+                                    && ever_used
+                                    && policy == ModelOffloadCompactionPolicy::Local),
+                            "openai={openai}, remote={remote_compaction:?}, enabled={enabled}, ever_used={ever_used}, policy={policy:?}",
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -802,6 +849,7 @@ fn remote_compaction_model_provenance_requires_configured_local_provider() {
 #[test]
 fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
     let provider = ModelProviderInfo {
+        capabilities: None,
         gateway_oauth: None,
         model_catalog_url: None,
         name: "Azure".into(),
@@ -825,26 +873,27 @@ fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
         include_internal_metadata: false,
     };
 
+    let provider = codex_model_provider::create_model_provider(provider, None);
     assert!(should_use_remote_compact_task_with_offload_policy(
-        &provider,
+        provider.as_ref(),
         false,
         true,
         ModelOffloadCompactionPolicy::Local,
     ));
     assert!(!should_use_remote_compact_task_with_offload_policy(
-        &provider,
+        provider.as_ref(),
         true,
         true,
         ModelOffloadCompactionPolicy::Local,
     ));
     assert!(should_use_remote_compact_task_with_offload_policy(
-        &provider,
+        provider.as_ref(),
         true,
         false,
         ModelOffloadCompactionPolicy::Local,
     ));
     assert!(should_use_remote_compact_task_with_offload_policy(
-        &provider,
+        provider.as_ref(),
         true,
         true,
         ModelOffloadCompactionPolicy::Primary,

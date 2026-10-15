@@ -1601,6 +1601,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         }),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
+                turn_attribution: None,
                 turn_id: rolled_back_turn_id.clone(),
                 root_turn_id: None,
                 trace_id: None,
@@ -1636,6 +1637,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
+                root_turn_id: None,
                 turn_id: rolled_back_turn_id,
                 last_agent_message: None,
                 error: None,
@@ -1695,6 +1697,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
         }),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
+                turn_attribution: None,
                 turn_id: rolled_back_turn_id.clone(),
                 root_turn_id: None,
                 trace_id: None,
@@ -1731,6 +1734,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
+                root_turn_id: None,
                 turn_id: rolled_back_turn_id,
                 last_agent_message: None,
                 error: None,

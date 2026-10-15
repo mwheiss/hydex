@@ -428,7 +428,6 @@ fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
     .expect("projected history");
     let mut request = ResponsesApiRequest {
         model: "local-model".to_string(),
-        instructions: String::new(),
         input: projected,
         tools: None,
         tool_choice: "auto".to_string(),

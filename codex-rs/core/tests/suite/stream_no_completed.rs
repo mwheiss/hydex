@@ -139,6 +139,7 @@ async fn local_retry_preserves_omitted_temperature_after_early_close() {
     .await;
 
     let local_provider = ModelProviderInfo {
+        capabilities: None,
         gateway_oauth: None,
         model_catalog_url: None,
         name: "hydex-local".into(),

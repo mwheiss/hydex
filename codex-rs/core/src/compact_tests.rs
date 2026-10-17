@@ -792,9 +792,15 @@ fn build_compacted_history_assistant_state_appends_assistant_summary() {
     let expected = annotated(vec![
         user_message("first user message"),
         ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
+                annotations: None,
+                logprobs: None,
+
                 text: "summary text".to_string(),
             }],
             phase: None,
@@ -902,9 +908,15 @@ fn assistant_state_local_compaction_payload_is_raw_assistant_state() {
         annotated(vec![
             user_message("first user message"),
             ResponseItem::Message {
+                encrypted_content: None,
+                status: None,
+
                 id: None,
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
+                    annotations: None,
+                    logprobs: None,
+
                     text: "summary text".to_string(),
                 }],
                 phase: None,

@@ -15,6 +15,7 @@ use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
+#[cfg(test)]
 use crate::tools::spec_plan::ToolWireTarget;
 #[cfg(test)]
 use crate::tools::spec_plan::finalize_tool_router_for_wire;

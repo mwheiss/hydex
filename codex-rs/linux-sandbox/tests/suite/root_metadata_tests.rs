@@ -35,6 +35,10 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
     fs::write(private.join("sibling"), "sibling").unwrap();
     codex_utils_cargo_bin::copy_executable(&codex_linux_sandbox_exe(), &work.join("sandbox"))
         .unwrap();
+    // The nested root namespace can reject system executables whose ancestors
+    // are writable. Keep the packaged fallback beside the copied launcher.
+    fs::create_dir_all(work.join("codex-resources")).unwrap();
+    codex_utils_cargo_bin::copy_executable(&bwrap, &work.join("codex-resources/bwrap")).unwrap();
 
     let path_entry = |path: &str, access| {
         FileSystemSandboxEntry::new(

@@ -62,6 +62,9 @@ async fn primary_auto_compaction_without_offload_preserves_opaque_history() -> a
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
+
                     id: None,
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText {
@@ -77,16 +80,15 @@ async fn primary_auto_compaction_without_offload_preserves_opaque_history() -> a
     let step = session
         .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
         .await?;
-    let world_state = Arc::new(session.build_world_state_for_step(&step).await?);
     let mut client = session.services.model_client.new_session();
     run_auto_compact(
         &session,
         Arc::clone(&step),
         step,
         &mut client,
-        world_state,
         CompactionReason::ContextLimit,
         CompactionPhase::PreTurn,
+        None,
     )
     .await?;
     let body = request.single_request().body_json();
@@ -161,6 +163,9 @@ fn post_sampling_token_estimate_is_disabled_by_always_on_sinks() {
 
 fn function_call_item() -> ResponseItem {
     ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "shell".to_string(),
         namespace: None,

@@ -1787,6 +1787,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         config.http_client_factory(),
         config.workspace_routing_context(),
@@ -1797,6 +1798,9 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
     let mut client_session = client.new_session();
     let mut prompt = Prompt::default();
     prompt.input.push(ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {

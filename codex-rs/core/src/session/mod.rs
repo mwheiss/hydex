@@ -4322,7 +4322,11 @@ impl Session {
                             window_ids,
                             compaction_response_id: Some(compaction_response_id),
                             compaction_model_hash: model_info.comp_hash.clone(),
-                            remote_compaction_model: crate::compact::remote_compaction_model_provenance(turn_context.config.model_offload.provider.as_ref(), &model_info.slug),
+                            remote_compaction_model:
+                                crate::compact::remote_compaction_model_provenance(
+                                    turn_context.config.model_offload.provider.as_ref(),
+                                    &model_info.slug,
+                                ),
                             reviewer_compaction_hash,
                         },
                         started_item.map(|item| (turn_context, item)),
@@ -4398,13 +4402,17 @@ impl Session {
         }
         let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
         if let Some(snapshot) = world_state_baseline {
-            rollout_items.push(RolloutItem::WorldState(WorldStateItem::full(snapshot.into_object())));
+            rollout_items.push(RolloutItem::WorldState(WorldStateItem::full(
+                snapshot.into_object(),
+            )));
         }
         if let Some(reference_context_item) = reference_context_item {
             rollout_items.push(RolloutItem::TurnContext(reference_context_item));
         }
         // The frozen turn context must not override current settings in persisted metadata.
-        rollout_items.push(RolloutItem::EventMsg(thread_settings::applied_event(self).await));
+        rollout_items.push(RolloutItem::EventMsg(
+            thread_settings::applied_event(self).await,
+        ));
         if self.persist_rollout_items(&rollout_items).await
             && let Some(revision) = mcp_revision
         {

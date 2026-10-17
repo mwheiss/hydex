@@ -11414,6 +11414,10 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
             .config
             .features
             .enabled(Feature::ConcurrentReasoningSummaries),
+        turn_context
+            .config
+            .features
+            .enabled(Feature::OutputTokenReplay),
         /*attestation_provider*/ None,
         turn_context.config.http_client_factory(),
         turn_context.config.workspace_routing_context(),

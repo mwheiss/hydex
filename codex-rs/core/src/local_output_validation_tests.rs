@@ -249,15 +249,24 @@ fn validator_output_has_a_small_hard_limit() {
 #[test]
 fn validator_collector_rejects_additional_or_non_message_output_items() {
     let message = ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
+            annotations: None,
+            logprobs: None,
+
             text: r#"{"accept": true}"#.to_string(),
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };
     let function_call = ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "unexpected".to_string(),
         namespace: None,

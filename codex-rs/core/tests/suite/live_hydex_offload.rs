@@ -180,6 +180,7 @@ async fn live_local_offload_responses_turn_completes() {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         config.http_client_factory(),
         config.workspace_routing_context(),
@@ -189,6 +190,9 @@ async fn live_local_offload_responses_turn_completes() {
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut prompt = Prompt::default();
     prompt.input.push(ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -223,7 +227,7 @@ async fn live_local_offload_responses_turn_completes() {
             ResponseEvent::OutputTextDelta(delta) => output_text.push_str(&delta),
             ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
                 for item in content {
-                    if let ContentItem::OutputText { text } = item {
+                    if let ContentItem::OutputText { text, .. } = item {
                         output_text.push_str(&text);
                     }
                 }

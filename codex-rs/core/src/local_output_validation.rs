@@ -444,7 +444,7 @@ fn output_text_from_item(item: &ResponseItem) -> Option<String> {
     let text = content
         .iter()
         .filter_map(|content_item| match content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 Some(text.as_str())
             }
             ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => None,

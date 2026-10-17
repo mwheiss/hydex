@@ -525,6 +525,7 @@ pub(crate) fn finalize_tool_router_for_wire(
         model_info,
         &mut registry,
         search_exposure,
+        wire_target,
     )?;
 
     if let Some(exposure) = search_exposure {
@@ -798,7 +799,7 @@ fn build_model_visible_specs(
     let mut specs = Vec::new();
     for tool in registry.entries() {
         let exposure = tool.exposure;
-        if !is_directly_visible(turn_context, model_info, tool) {
+        if !is_directly_visible(turn_context, model_info, tool, wire_target) {
             continue;
         }
 
@@ -1048,6 +1049,7 @@ fn is_directly_visible(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
     tool: &RegisteredTool,
+    wire_target: ToolWireTarget,
 ) -> bool {
     tool.exposure.is_direct()
         && !is_hidden_by_code_mode_only(
@@ -1055,6 +1057,7 @@ fn is_directly_visible(
             model_info,
             &tool.runtime.tool_name(),
             tool.exposure,
+            wire_target,
         )
 }
 
@@ -1074,6 +1077,7 @@ fn prepare_function_description_prefixes(
     model_info: &ModelInfo,
     registry: &mut ToolRegistry,
     search_exposure: Option<ToolExposure>,
+    wire_target: ToolWireTarget,
 ) -> CodexResult<()> {
     let model_messages = ResolvedModelMessages::from_model(model_info);
     let prefixes = model_messages.functions_namespace_functions_description_prefixes();
@@ -1085,23 +1089,28 @@ fn prepare_function_description_prefixes(
         );
         let search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
         let search_visible = search_exposure.is_some_and(|exposure| {
-            !is_hidden_by_code_mode_only(turn_context, model_info, &search_name, exposure)
-                || (code_mode_enabled
-                    && registry
-                        .tool_policy
-                        .allows(&ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME))
-                    && turn_context
-                        .config
-                        .features
-                        .enabled(Feature::CodeModeToolSearch)
-                    && exposure.is_available_in_code_mode()
-                    && !is_excluded_from_code_mode(turn_context, &search_name))
+            !is_hidden_by_code_mode_only(
+                turn_context,
+                model_info,
+                &search_name,
+                exposure,
+                wire_target,
+            ) || (code_mode_enabled
+                && registry
+                    .tool_policy
+                    .allows(&ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME))
+                && turn_context
+                    .config
+                    .features
+                    .enabled(Feature::CodeModeToolSearch)
+                && exposure.is_available_in_code_mode()
+                && !is_excluded_from_code_mode(turn_context, &search_name))
         });
         available_tools.extend(
             registry
                 .entries()
                 .filter(|tool| {
-                    is_directly_visible(turn_context, model_info, tool)
+                    is_directly_visible(turn_context, model_info, tool, wire_target)
                         || (search_visible
                             && tool.exposure.is_deferred()
                             && tool.runtime.search_info().is_some())

@@ -1858,7 +1858,8 @@ async fn compact_current_model_for_local_reentry(
         None,
         route,
     )
-    .await.map(|_| ())
+    .await
+    .map(|_| ())
 }
 
 fn local_reentry_compaction_route(status: &AutoCompactTokenStatus) -> Option<AutoCompactRoute> {
@@ -2149,7 +2150,8 @@ async fn run_auto_compact_with_route(
                 reason,
                 phase,
             )
-            .await.map(|_| true);
+            .await
+            .map(|_| true);
         }
         if !should_use_remote_compact_task(turn_context.provider.as_ref())
             || turn_context.provider.capabilities().remote_compaction

@@ -174,6 +174,33 @@ mod skill_catalog_dedup;
 #[path = "scenarios_compaction_tests.rs"]
 mod compaction;
 
+// Keep scenario skill catalogs independent of the maintainer's user-level skills.
+// A fresh child process gives dirs::home_dir() an isolated user home without global mutation.
+fn run_skill_scenario_in_isolated_home(test_name: &str) -> bool {
+    const ISOLATED_ENV: &str = "CODEX_SKILL_SCENARIO_ISOLATED_HOME";
+    if std::env::var(ISOLATED_ENV).as_deref() == Ok(test_name) {
+        return false;
+    }
+    let fixture_user_root = TempDir::new().expect("isolated scenario user root");
+    let output =
+        std::process::Command::new(std::env::current_exe().expect("scenario test executable"))
+            .arg("--exact")
+            .arg(format!("suite::scenarios::{test_name}"))
+            .arg("--nocapture")
+            .env("HOME", fixture_user_root.path())
+            .env("USERPROFILE", fixture_user_root.path())
+            .env(ISOLATED_ENV, test_name)
+            .output()
+            .expect("isolated skill scenario should run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("running 1 test"),
+        "{test_name} failed with an isolated user root\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
@@ -615,6 +642,11 @@ async fn astra_switches_environments_for_the_rest_of_the_active_turn() -> Result
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn astra_kickoff_with_skills_plugins_and_remote_compaction() -> Result<()> {
+    if run_skill_scenario_in_isolated_home(
+        "astra_kickoff_with_skills_plugins_and_remote_compaction",
+    ) {
+        return Ok(());
+    }
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -730,6 +762,9 @@ async fn astra_kickoff_with_skills_plugins_and_remote_compaction() -> Result<()>
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn astra_plugin_policy_limits_visible_skills() -> Result<()> {
+    if run_skill_scenario_in_isolated_home("astra_plugin_policy_limits_visible_skills") {
+        return Ok(());
+    }
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1753,6 +1788,11 @@ text(result.tools[0].description);"#,
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn astra_refreshes_plugin_tools_and_skills_in_an_existing_thread() -> Result<()> {
+    if run_skill_scenario_in_isolated_home(
+        "astra_refreshes_plugin_tools_and_skills_in_an_existing_thread",
+    ) {
+        return Ok(());
+    }
     skip_if_no_network!(Ok(()));
     core_test_support::skip_if_remote!(Ok(()), "plugin and MCP fixtures use host-local paths");
 

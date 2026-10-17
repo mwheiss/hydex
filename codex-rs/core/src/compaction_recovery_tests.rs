@@ -8,6 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 fn user_text(text: &str) -> ResponseItem {
     ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -20,9 +23,15 @@ fn user_text(text: &str) -> ResponseItem {
 
 fn assistant_text(text: &str) -> ResponseItem {
     ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
+            annotations: None,
+            logprobs: None,
+
             text: text.to_string(),
         }],
         phase: None,

@@ -461,7 +461,13 @@ async fn run_compact_task_inner_impl(
                 {
                     return Err(err);
                 }
-                Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded | CodexErrorDetails::ResponseIncomplete(_)) => {
+                Err(e)
+                    if matches!(
+                        e.details(),
+                        CodexErrorDetails::SessionBudgetExceeded
+                            | CodexErrorDetails::ResponseIncomplete(_)
+                    ) =>
+                {
                     return Err(e);
                 }
                 Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
@@ -1027,9 +1033,15 @@ fn build_compacted_history_with_limit(
             ContextualUserFragment::into(CompactionSummary::new(summary_text))
         }
         ModelOffloadCompactionLocalHandoffRole::AssistantState => ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
             id: None,
             role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText { text: summary_text }],
+            content: vec![ContentItem::OutputText {
+                text: summary_text,
+                annotations: None,
+                logprobs: None,
+            }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         },

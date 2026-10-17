@@ -9,10 +9,15 @@ use codex_protocol::protocol::TokenUsage;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 
-#[test_case::test_case(CompactionTrigger::Auto; "optional ready adoption")]
-#[test_case::test_case(CompactionTrigger::Manual; "manual ready reuse")]
+#[test_case::test_case(CompactionTrigger::Auto, false; "optional ready adoption")]
+#[test_case::test_case(CompactionTrigger::Manual, false; "manual ready reuse")]
+#[test_case::test_case(CompactionTrigger::Auto, true; "offload local policy blocks background auto compaction")]
+#[test_case::test_case(CompactionTrigger::Manual, true; "offload local policy blocks background manual reuse")]
 #[tokio::test]
-async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: CompactionTrigger) {
+async fn cancelled_turn_skips_launch_but_preserves_existing_work(
+    trigger: CompactionTrigger,
+    local_compaction: bool,
+) {
     let phase = CompactionPhase::MidTurn;
     let server = responses::start_mock_server().await;
     let mut provider =
@@ -33,6 +38,19 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
                 config.chatgpt_base_url = server_uri;
                 config.features.enable(Feature::AsyncCompaction).unwrap();
                 config.features.disable(Feature::TokenBudget).unwrap();
+                if local_compaction {
+                    config.model_offload.enabled = true;
+                    config.model_offload.provider = Some(
+                        codex_model_provider_info::create_oss_provider_with_base_url(
+                            "http://127.0.0.1:11434/v1",
+                            codex_model_provider_info::WireApi::Responses,
+                        ),
+                    );
+                    config.model_offload.provider_id = Some("local".to_string());
+                    config.model_offload.model = Some("local-model".to_string());
+                    config.model_offload.compaction_policy =
+                        codex_config::config_toml::ModelOffloadCompactionPolicy::Local;
+                }
             },
         )
         .await;
@@ -92,6 +110,36 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
             .is_none()
     );
     assert_eq!(request.requests().len(), 0);
+
+    if local_compaction {
+        sess.services.model_client.seed_offload_ever_used(true);
+        maybe_start(
+            &sess,
+            &step,
+            &world_state,
+            phase,
+            &turn_cancellation,
+            &status,
+            (Some("routing".to_string()), auth),
+        )
+        .await;
+        assert!(
+            sess.state
+                .lock()
+                .await
+                .async_compaction
+                .last_attempt
+                .is_none()
+        );
+        assert_eq!(request.requests().len(), 0);
+        // Selecting primary compaction permits background work while inference stays offloaded.
+        sess.services
+            .model_client
+            .set_model_offload_compaction_runtime_override(Some(
+                codex_protocol::config_types::ModelOffloadCompactionRuntimeOverride::Primary,
+            ))
+            .expect("select primary compaction");
+    }
 
     // The same eligible work can launch on a live turn, then outlive its cancellation.
     maybe_start(
@@ -163,5 +211,12 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
         .collect::<Vec<_>>();
     assert_eq!(summaries, ["prepared-summary"]);
     assert_eq!(request.requests().len(), 1);
+    assert_eq!(
+        sess.reference_context_item()
+            .await
+            .expect("installed turn context")
+            .offload_ever_used,
+        local_compaction
+    );
     shutdown(&sess).await;
 }

@@ -1067,9 +1067,15 @@ fn build_compacted_history_with_limit(
             ContextualUserFragment::into(CompactionSummary::new(summary_text))
         }
         ModelOffloadCompactionLocalHandoffRole::AssistantState => ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
             id: None,
             role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText { text: summary_text }],
+            content: vec![ContentItem::OutputText {
+                text: summary_text,
+                annotations: None,
+                logprobs: None,
+            }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         },

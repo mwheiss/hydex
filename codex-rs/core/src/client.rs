@@ -444,6 +444,7 @@ pub struct ModelClientSession {
 /// Executes HTTP Responses requests without owning a turn's WebSocket state.
 pub(crate) struct ResponsesHttpExecutor<'a> {
     client: &'a ModelClient,
+    session: Option<&'a ModelClientSession>,
 }
 
 #[derive(Debug, Clone)]
@@ -2011,9 +2012,21 @@ impl ModelClientSession {
 
 impl<'a> ResponsesHttpExecutor<'a> {
     pub(crate) fn new(client: &'a ModelClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            session: None,
+        }
     }
 
+    fn new_for_session(session: &'a ModelClientSession) -> Self {
+        Self {
+            client: &session.client,
+            session: Some(session),
+        }
+    }
+}
+
+impl ModelClientSession {
     pub(crate) fn force_primary_for_responses_requests(&self) {
         self.force_primary_for_responses_requests
             .store(true, Ordering::Relaxed);
@@ -2161,6 +2174,9 @@ impl<'a> ResponsesHttpExecutor<'a> {
             | None => None,
         }
     }
+}
+
+impl ResponsesHttpExecutor<'_> {
     #[allow(clippy::too_many_arguments)]
     /// Builds shared Responses API transport options and request-body options.
     ///
@@ -2502,13 +2518,22 @@ impl ResponsesHttpExecutor<'_> {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let route = self.route_for_responses_request(responses_metadata);
+        // Background compaction stays on the primary route; foreground HTTP preserves its session override.
+        let route = self.session.map_or(ModelRequestRoute::Primary, |session| {
+            session.route_for_responses_request(responses_metadata)
+        });
         // Keep this at the shared local HTTP boundary: normal turns have richer compaction
         // preflight, but detached memory, local compaction, and validator calls must use the same
         // endpoint-resolved context before they can send a request.
         let local_context = if route.is_local_offload() {
             Some(
-                self.require_local_offload_context(&self.client.state.offload_context)
+                self.session
+                    .ok_or_else(|| {
+                        CodexErr::InvalidRequest(
+                            "Local offload requires a foreground session.".to_string(),
+                        )
+                    })?
+                    .require_local_offload_context(&self.client.state.offload_context)
                     .await?,
             )
         } else {
@@ -2594,7 +2619,9 @@ impl ResponsesHttpExecutor<'_> {
                 service_tier.clone(),
                 responses_metadata,
                 !route.is_local_offload(),
-                self.local_helper_temperature_for_request(route, responses_metadata),
+                self.session.and_then(|session| {
+                    session.local_helper_temperature_for_request(route, responses_metadata)
+                }),
                 include_internal,
             )?;
             self.client.set_guardian_metadata(
@@ -3190,7 +3217,7 @@ impl ModelClientSession {
                     }
                 }
 
-                ResponsesHttpExecutor::new(&self.client)
+                ResponsesHttpExecutor::new_for_session(self)
                     .stream_responses_http(
                         &self.turn_state,
                         /*expected_auth_owner*/ None,

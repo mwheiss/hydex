@@ -214,10 +214,14 @@ fn projected_recovery_message(
 ) -> ResponseItem {
     match projection {
         ModelOffloadCompactionRecoveryProjection::AssistantState => ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: recovered_text,
+                annotations: None,
+                logprobs: None,
             }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
@@ -233,6 +237,8 @@ fn projected_recovery_message(
 
 fn user_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -348,7 +354,9 @@ fn append_recovered_text(
 
 fn content_item_text(content: &ContentItem) -> Option<&str> {
     match content {
-        ContentItem::InputText { text } | ContentItem::OutputText { text } => Some(text.as_str()),
+        ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+            Some(text.as_str())
+        }
         ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => None,
     }
 }

@@ -5089,13 +5089,17 @@ impl Session {
         }
         let mut rollout_items = vec![RolloutItem::Compacted(Box::new(compacted_item))];
         if let Some(snapshot) = world_state_baseline {
-            rollout_items.push(RolloutItem::WorldState(WorldStateItem::full(snapshot.into_object())));
+            rollout_items.push(RolloutItem::WorldState(WorldStateItem::full(
+                snapshot.into_object(),
+            )));
         }
         if let Some(reference_context_item) = reference_context_item {
             rollout_items.push(RolloutItem::TurnContext(reference_context_item));
         }
         // The frozen turn context must not override current settings in persisted metadata.
-        rollout_items.push(RolloutItem::EventMsg(thread_settings::applied_event(self).await));
+        rollout_items.push(RolloutItem::EventMsg(
+            thread_settings::applied_event(self).await,
+        ));
         if self.persist_rollout_items(&rollout_items).await
             && let Some(revision) = mcp_revision
         {

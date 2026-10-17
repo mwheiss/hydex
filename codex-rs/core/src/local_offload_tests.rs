@@ -60,6 +60,8 @@ fn flattens_namespace_tools_for_local_wire_only() {
     );
 
     let item = ResponseItem::FunctionCall {
+        encrypted_content: Some("opaque-provider-content".to_string()),
+        status: Some("completed".to_string()),
         id: None,
         name: "ns__web__run".to_string(),
         namespace: None,
@@ -71,6 +73,8 @@ fn flattens_namespace_tools_for_local_wire_only() {
     assert_eq!(
         names.unflatten_response_item(item),
         ResponseItem::FunctionCall {
+            encrypted_content: Some("opaque-provider-content".to_string()),
+            status: Some("completed".to_string()),
             id: None,
             name: "run".to_string(),
             namespace: Some("web".to_string()),
@@ -82,6 +86,8 @@ fn flattens_namespace_tools_for_local_wire_only() {
     );
 
     let canonical_item = ResponseItem::FunctionCall {
+        encrypted_content: Some("opaque-provider-content".to_string()),
+        status: Some("completed".to_string()),
         id: None,
         name: "run".to_string(),
         namespace: Some("web".to_string()),
@@ -93,6 +99,8 @@ fn flattens_namespace_tools_for_local_wire_only() {
     assert_eq!(
         names.flatten_response_item(canonical_item),
         ResponseItem::FunctionCall {
+            encrypted_content: Some("opaque-provider-content".to_string()),
+            status: Some("completed".to_string()),
             id: None,
             name: "ns__web__run".to_string(),
             namespace: None,
@@ -122,6 +130,9 @@ fn flattens_mcp_namespace_without_delimiter_decoding() {
     assert_eq!(wire_tools[0]["name"], flattened);
     assert_eq!(
         names.unflatten_response_item(ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: flattened.to_string(),
             namespace: None,
@@ -131,6 +142,9 @@ fn flattens_mcp_namespace_without_delimiter_decoding() {
             encrypted_function_args: None,
         }),
         ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "search_events".to_string(),
             namespace: Some(namespace.to_string()),
@@ -179,6 +193,9 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
     assert_eq!(wire_tools[1]["name"], "ns__web__run");
     assert_eq!(
         names.unflatten_response_item(ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "ns__web__run__2".to_string(),
             namespace: None,
@@ -188,6 +205,9 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
             encrypted_function_args: None,
         }),
         ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "run".to_string(),
             namespace: Some("web".to_string()),
@@ -199,6 +219,9 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
     );
     assert_eq!(
         names.unflatten_response_item(ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "ns__web__run".to_string(),
             namespace: None,
@@ -208,6 +231,9 @@ fn ordinary_function_keeps_colliding_name_when_namespace_tool_comes_first() {
             encrypted_function_args: None,
         }),
         ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "ns__web__run".to_string(),
             namespace: None,
@@ -259,6 +285,9 @@ fn namespace_collision_assignment_is_independent_of_tool_order() {
 #[test]
 fn flattens_historical_namespace_call_when_tool_is_not_currently_advertised() {
     let canonical_call = ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "run".to_string(),
         namespace: Some("web".to_string()),
@@ -275,6 +304,9 @@ fn flattens_historical_namespace_call_when_tool_is_not_currently_advertised() {
     assert_eq!(
         request.input,
         vec![ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "ns__web__run".to_string(),
             namespace: None,
@@ -298,6 +330,9 @@ fn flattens_historical_namespace_call_when_tool_is_not_currently_advertised() {
 #[test]
 fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening() {
     let ordinary_call = ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "ns__web__run".to_string(),
         namespace: None,
@@ -307,6 +342,9 @@ fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening
         encrypted_function_args: None,
     };
     let canonical_namespace_call = ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "run".to_string(),
         namespace: Some("web".to_string()),
@@ -328,6 +366,9 @@ fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening
         vec![
             ordinary_call,
             ResponseItem::FunctionCall {
+                encrypted_content: None,
+                status: None,
+
                 id: None,
                 name: "ns__web__run__2".to_string(),
                 namespace: None,
@@ -386,6 +427,9 @@ fn records_unknown_and_malformed_local_tool_calls() {
     let (_, names) = create_tools_json_for_local_offload(&[ToolSpec::Function(function("known"))])
         .expect("local tools serialize");
     let known = ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "known".to_string(),
         namespace: None,
@@ -395,6 +439,9 @@ fn records_unknown_and_malformed_local_tool_calls() {
         encrypted_function_args: None,
     };
     let unknown_malformed = ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
         id: None,
         name: "missing".to_string(),
         namespace: None,

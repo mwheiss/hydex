@@ -16,6 +16,7 @@ use super::ensure_local_request_fits_effective_context;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
+use crate::client::ResponsesHttpExecutor;
 use crate::config::ModelOffloadConfig;
 use crate::config::ModelOffloadContextConfig;
 use crate::config::ModelOffloadValidationConfig;
@@ -225,6 +226,7 @@ fn test_model_client_with_local_offload_config_memory_mode_and_validation(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         codex_model_provider::WorkspaceRoutingContext::new(
@@ -270,6 +272,7 @@ fn test_model_client_with_local_offload_and_api_primary(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         codex_model_provider::WorkspaceRoutingContext::new(
@@ -325,6 +328,7 @@ async fn local_provider_advertised_context_overrides_configured_fallback() {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         codex_model_provider::WorkspaceRoutingContext::new(
@@ -379,6 +383,9 @@ fn local_request_guard_uses_effective_context_window() {
                 "follow the request".to_string(),
             )),
             ResponseItem::Message {
+                encrypted_content: None,
+                status: None,
+
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
@@ -3521,6 +3528,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         /*include_timing_metrics*/ false,
         Some("beta-feature".to_string()),
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         attestation_client.state.attestation_provider.clone(),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         codex_model_provider::WorkspaceRoutingContext::new(
@@ -3560,6 +3568,9 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         .expect("local client setup resolves");
     let prompt = Prompt {
         input: vec![ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "run".to_string(),
             namespace: Some("web".to_string()),
@@ -3582,8 +3593,9 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         .into(),
         ..Prompt::default()
     };
-    let options = client_session
+    let options = ResponsesHttpExecutor::new_for_session(&client_session)
         .build_responses_options(
+            &client_session.turn_state,
             &responses_metadata,
             Compression::None,
             /*use_responses_lite*/ false,
@@ -3641,6 +3653,9 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
     assert_eq!(
         &request.input[1..],
         &[ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
+
             id: None,
             name: "ns__web__run".to_string(),
             namespace: None,
@@ -3827,8 +3842,9 @@ async fn guardian_auto_review_local_route_omits_codex_control_plane_metadata() {
     let route = client.route_for_responses_request(&responses_metadata);
 
     assert!(route.is_local_offload());
-    let options = client_session
+    let options = ResponsesHttpExecutor::new_for_session(&client_session)
         .build_responses_options(
+            &client_session.turn_state,
             &responses_metadata,
             Compression::None,
             /*use_responses_lite*/ false,

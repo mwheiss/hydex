@@ -40,79 +40,31 @@ struct LocalOffloadCallMetrics {
 }
 
 impl LocalOffloadToolNameMap {
-    pub(crate) fn flatten_response_item(&self, item: ResponseItem) -> ResponseItem {
-        match item {
-            ResponseItem::FunctionCall {
-                id,
-                name,
-                namespace,
-                arguments,
-                call_id,
-                encrypted_function_args,
-                internal_chat_message_metadata_passthrough,
-            } => {
-                let canonical = ToolName::new(namespace.clone(), name.clone());
-                if let Some(flattened) = self.canonical_to_flattened.get(&canonical) {
-                    ResponseItem::FunctionCall {
-                        id,
-                        name: flattened.clone(),
-                        namespace: None,
-                        arguments,
-                        call_id,
-                        encrypted_function_args,
-                        internal_chat_message_metadata_passthrough,
-                    }
-                } else {
-                    ResponseItem::FunctionCall {
-                        id,
-                        name,
-                        namespace,
-                        arguments,
-                        call_id,
-                        encrypted_function_args,
-                        internal_chat_message_metadata_passthrough,
-                    }
-                }
+    pub(crate) fn flatten_response_item(&self, mut item: ResponseItem) -> ResponseItem {
+        if let ResponseItem::FunctionCall {
+            name, namespace, ..
+        } = &mut item
+        {
+            let canonical = ToolName::new(namespace.clone(), name.clone());
+            if let Some(flattened) = self.canonical_to_flattened.get(&canonical) {
+                *name = flattened.clone();
+                *namespace = None;
             }
-            item => item,
         }
+        item
     }
 
-    pub(crate) fn unflatten_response_item(&self, item: ResponseItem) -> ResponseItem {
-        match item {
-            ResponseItem::FunctionCall {
-                id,
-                name,
-                namespace,
-                arguments,
-                call_id,
-                encrypted_function_args,
-                internal_chat_message_metadata_passthrough,
-            } if namespace.is_none() => {
-                if let Some(canonical) = self.flattened_to_canonical.get(&name) {
-                    ResponseItem::FunctionCall {
-                        id,
-                        name: canonical.name.clone(),
-                        namespace: canonical.namespace.clone(),
-                        arguments,
-                        call_id,
-                        encrypted_function_args,
-                        internal_chat_message_metadata_passthrough,
-                    }
-                } else {
-                    ResponseItem::FunctionCall {
-                        id,
-                        name,
-                        namespace,
-                        arguments,
-                        call_id,
-                        encrypted_function_args,
-                        internal_chat_message_metadata_passthrough,
-                    }
-                }
-            }
-            item => item,
+    pub(crate) fn unflatten_response_item(&self, mut item: ResponseItem) -> ResponseItem {
+        if let ResponseItem::FunctionCall {
+            name, namespace, ..
+        } = &mut item
+            && namespace.is_none()
+            && let Some(canonical) = self.flattened_to_canonical.get(name)
+        {
+            *name = canonical.name.clone();
+            *namespace = canonical.namespace.clone();
         }
+        item
     }
 
     pub(crate) fn unflatten_response_item_with_telemetry(

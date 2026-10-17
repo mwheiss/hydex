@@ -67,6 +67,7 @@ pub(super) async fn maybe_start(
     }
     if !enabled(turn_context)
         || sess.work_budget().is_exhausted()
+        || sess.services.model_client.local_compaction_effective()
         || token_status.token_limit_reached
         || (matches!(phase, CompactionPhase::PostTurn)
             && token_status.turn_end_compaction_threshold_reached)

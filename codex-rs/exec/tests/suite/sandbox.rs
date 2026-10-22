@@ -180,18 +180,22 @@ async fn python_multiprocessing_lock_works_under_sandbox() {
         /*exclude_slash_tmp*/ true,
     );
 
+    // This inline Unix fixture must not depend on Python's default start method.
+    // Python 3.14 defaults to forkserver, which needs an importable main module.
     let python_code = r#"import multiprocessing
-from multiprocessing import Lock, Process
+
+context = multiprocessing.get_context("fork")
 
 def f(lock):
     with lock:
         print("Lock acquired in child process")
 
 if __name__ == '__main__':
-    lock = Lock()
-    p = Process(target=f, args=(lock,))
+    lock = context.Lock()
+    p = context.Process(target=f, args=(lock,))
     p.start()
     p.join()
+    assert p.exitcode == 0, p.exitcode
 "#;
 
     let command_cwd = AbsolutePathBuf::current_dir().expect("should be able to get current dir");

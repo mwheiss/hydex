@@ -2378,6 +2378,7 @@ async fn run_sampling_request(
         environments: step_context.environments.clone(),
         selected_capability_roots: step_context.selected_capability_roots.clone(),
         executor_capability_discovery: step_context.executor_capability_discovery.clone(),
+        executor_capability_discovery_v2: step_context.executor_capability_discovery_v2.clone(),
         mcp: Arc::clone(&step_context.mcp),
         tool_router: router,
         loaded_agents_md: step_context.loaded_agents_md.clone(),

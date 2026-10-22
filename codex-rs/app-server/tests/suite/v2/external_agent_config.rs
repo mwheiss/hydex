@@ -461,7 +461,9 @@ async fn external_agent_config_secondary_source_imports_session_and_plugin_end_t
 {
     let codex_home = TempDir::new()?;
     let source_home = secondary_external_agent_home(codex_home.path());
-    let project_root = codex_home.path().join("my-project");
+    // The temp root may itself contain punctuation. Keep this end-to-end fixture
+    // independent of decoding multiple punctuated path components.
+    let project_root = codex_home.path().join("project");
     std::fs::create_dir_all(&project_root)?;
 
     let encoded_project = project_root

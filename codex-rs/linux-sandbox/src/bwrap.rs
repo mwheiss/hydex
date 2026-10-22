@@ -428,6 +428,8 @@ fn create_bwrap_flags(
 ///    those writable roots so protected subpaths win.
 /// 6. Nested unreadable carveouts under a writable root are masked after that
 ///    root is bound, and unrelated unreadable roots are masked afterward.
+///    Explicitly readable directory descendants are rebound after their denied
+///    ancestor, while deeper unreadable masks still apply afterward.
 fn create_filesystem_args(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     cwd: &Path,
@@ -798,8 +800,33 @@ fn create_filesystem_args(
         .cloned()
         .collect();
     rootless_unreadable_roots.sort_by_key(|path| path_depth(path));
+    let readable_directory_roots: Vec<PathBuf> = file_system_sandbox_policy
+        .get_readable_roots_with_cwd(cwd)
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|root| root.is_dir())
+        .filter(|root| file_system_sandbox_policy.can_read_local_path_with_cwd(root, cwd))
+        .collect();
     for unreadable_root in rootless_unreadable_roots {
-        append_unreadable_root_args(&mut bwrap_args, &unreadable_root, &allowed_write_paths)?;
+        // A denied CODEX_HOME can contain the explicitly readable active arg0
+        // helper directory. Masking the parent last would erase that grant.
+        // Reuse the traversal-only mask and mount-target preparation used for
+        // writable descendants, then expose only the granted directories as
+        // read-only. Later, deeper deny masks must still win.
+        let readable_descendants: Vec<PathBuf> = readable_directory_roots
+            .iter()
+            .filter(|root| root.as_path() != unreadable_root && root.starts_with(&unreadable_root))
+            .cloned()
+            .collect();
+        let mut reopened_paths = allowed_write_paths.clone();
+        reopened_paths.extend(readable_descendants.iter().cloned());
+        append_unreadable_root_args(&mut bwrap_args, &unreadable_root, &reopened_paths)?;
+        for root in readable_descendants {
+            bwrap_args.args.push("--ro-bind".to_string());
+            bwrap_args.args.push(path_to_string(&root));
+            bwrap_args.args.push(path_to_string(&root));
+            append_daemon_socket_masks(&mut bwrap_args.args, &root, &daemon_directories)?;
+        }
     }
 
     if options.mask_wslg_distro

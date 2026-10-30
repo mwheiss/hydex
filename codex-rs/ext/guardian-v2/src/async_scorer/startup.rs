@@ -6,12 +6,17 @@ use std::sync::Arc;
 use codex_core::SharedModelsManager;
 use codex_core::config::Config;
 use codex_core::cyber_access_program::ApiKeyCyberAccessPrograms;
+use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_features::Feature;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_model_provider::ProviderAuthContext;
+use codex_model_provider::create_model_provider;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::SessionSource;
 
 use super::decisions::DecisionsCredential;
 use super::decisions::DecisionsError;
@@ -25,6 +30,9 @@ pub(super) fn decisions_sampler(
     input: &ThreadStartInput<'_, Config>,
     auth_manager: &Arc<AuthManager>,
 ) -> Option<DecisionsSampler> {
+    if input.config.model_offload.full_local_enabled() {
+        return None;
+    }
     use codex_agent_identity::ChatGptEnvironment;
     let auth_context = input.thread_store.get::<ProviderAuthContext>();
     let result = decisions_api_key(
@@ -107,7 +115,23 @@ pub(super) fn valid_implicit_decisions_key(key: &str) -> bool {
     !key.is_empty() && key.trim() == key && !codex_login::auth::is_fedramp_api_key(key)
 }
 
-pub(super) async fn sampler_config(input: &ThreadStartInput<'_, Config>) -> LunaSamplerConfig {
+pub(super) async fn sampler_config(input: &ThreadStartInput<'_, Config>) -> CodexResult<LunaSamplerConfig> {
+    if input.config.model_offload.full_local_enabled() {
+        let mut local_config = input.config.clone();
+        if local_config.model.is_none() {
+            local_config.model = input
+                .thread_store
+                .get::<codex_protocol::openai_models::ModelInfo>()
+                .map(|model| model.slug.clone());
+        }
+        return full_local_sampler_config(
+            &local_config,
+            input.session_source.clone(),
+            input.session_store.level_id().to_string(),
+            input.thread_store.level_id().to_string(),
+            input.extension_metrics.clone(),
+        );
+    }
     let inherit_parent_cyber_access_program =
         codex_core::RequiredCyberAccessPrograms::for_thread(input.thread_store).is_none();
     let luna_model = if let Some(catalog) = input.thread_store.get::<SharedModelsManager>() {
@@ -131,7 +155,8 @@ pub(super) async fn sampler_config(input: &ThreadStartInput<'_, Config>) -> Luna
         .thread_store
         .get::<codex_model_provider::ProviderAuthContext>()
         .expect("Core installs provider auth before starting Guardian");
-    LunaSamplerConfig {
+    Ok(LunaSamplerConfig {
+        local_model: None,
         api_key_cyber_access_programs: ApiKeyCyberAccessPrograms::from_config(input.config),
         inherit_parent_cyber_access_program,
         workspace_routing: input
@@ -157,5 +182,51 @@ pub(super) async fn sampler_config(input: &ThreadStartInput<'_, Config>) -> Luna
         luna_compaction_hash,
         max_input_tokens,
         metrics: input.extension_metrics.clone(),
-    }
+    })
+}
+
+/// Resolve only the explicitly configured local provider, without hosted credentials or routing.
+pub(super) fn full_local_sampler_config(
+    config: &Config,
+    session_source: SessionSource,
+    session_id: String,
+    thread_id: String,
+    metrics: Option<Arc<dyn ExtensionMetrics>>,
+) -> CodexResult<LunaSamplerConfig> {
+    let provider = config.model_offload.provider.clone().ok_or_else(|| {
+        CodexErr::InvalidRequest("Full local review requires a configured local provider.".into())
+    })?;
+    let max_input_tokens = config
+        .model_offload
+        .context
+        .context_window
+        .and_then(|window| usize::try_from(window).ok())
+        .filter(|window| *window > 0)
+        .unwrap_or(codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS);
+    Ok(LunaSamplerConfig {
+        local_model: Some(
+            config
+                .model_offload
+                .model
+                .clone()
+                .or_else(|| config.model.clone())
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest("Full local review requires a selected model.".into())
+                })?,
+        ),
+        provider: create_model_provider(provider, None),
+        api_key_cyber_access_programs: ApiKeyCyberAccessPrograms::Disabled,
+        inherit_parent_cyber_access_program: false,
+        workspace_routing: config.workspace_routing_context(),
+        http_client_factory: config.http_client_factory(),
+        agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
+        session_source,
+        session_id,
+        thread_id,
+        originator: None,
+        service_tier: None,
+        luna_compaction_hash: None,
+        max_input_tokens,
+        metrics,
+    })
 }

@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use codex_api::ResponsesApiRequest;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -287,11 +289,94 @@ pub(crate) fn transform_request_for_local_offload(
         "serialized local offload tool surface"
     );
     request.tools = Some(local_tools.into());
-    request.input = request
-        .input
-        .drain(..)
-        .map(|item| tool_names.flatten_response_item(item))
-        .collect();
+    let mut input = Vec::with_capacity(request.input.len());
+    for item in request.input.drain(..) {
+        let item = match item {
+            // Current tools and reasoning settings are already supplied on the
+            // request. These durable backend controls remain in canonical history.
+            ResponseItem::AdditionalTools { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
+            | ResponseItem::CompactionTrigger {} => continue,
+            ResponseItem::Reasoning {
+                id,
+                summary,
+                content,
+                encrypted_content: _,
+                ..
+            } if content.as_ref().is_none_or(Vec::is_empty) => {
+                let text = summary
+                    .into_iter()
+                    .map(|part| match part {
+                        codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                            text,
+                        } => text,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.trim().is_empty() {
+                    continue;
+                }
+                // A summary is readable context, not raw reasoning that a local
+                // model can reconstruct from another provider's ciphertext.
+                ResponseItem::Message {
+                    id,
+                    encrypted_content: None,
+                    status: None,
+                    role: "assistant".into(),
+                    content: vec![ContentItem::InputText {
+                        text: format!("Earlier assistant reasoning summary:\n{text}"),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+            }
+            ResponseItem::AgentMessage {
+                id,
+                author,
+                recipient,
+                content,
+                ..
+            } => {
+                let mut text = Vec::with_capacity(content.len());
+                for part in content {
+                    match part {
+                        AgentMessageInputContent::InputText { text: part } => text.push(part),
+                        AgentMessageInputContent::EncryptedContent { .. } => {
+                            return Err(<serde_json::Error as serde::ser::Error>::custom(
+                                "Local offload cannot consume an encrypted agent message without readable history.",
+                            ));
+                        }
+                    }
+                }
+                ResponseItem::Message {
+                    id,
+                    encrypted_content: None,
+                    status: None,
+                    role: "assistant".into(),
+                    content: vec![ContentItem::InputText {
+                        text: format!(
+                            "Agent message from {} to {}:\n{}",
+                            serde_json::to_string(&author)?,
+                            serde_json::to_string(&recipient)?,
+                            text.join("\n")
+                        ),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+            }
+            item => item,
+        };
+        input.push(tool_names.flatten_response_item(item));
+    }
+    request.input = input;
+    if let Some(reasoning) = request.reasoning.as_mut() {
+        reasoning.context = None;
+    }
+    request.include.retain(|field| {
+        field != "reasoning.encrypted_content" && field != "output.encrypted_content"
+    });
+    request.service_tier = None;
     Ok(tool_names)
 }
 

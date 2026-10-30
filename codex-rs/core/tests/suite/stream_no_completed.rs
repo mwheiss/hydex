@@ -169,6 +169,7 @@ async fn local_retry_preserves_omitted_temperature_after_early_close() {
         .with_config(move |config| {
             config.model_offload = ModelOffloadConfig {
                 enabled: true,
+                mode: codex_config::config_toml::ModelOffloadMode::Eligible,
                 provider_id: Some("hydex-local".to_string()),
                 provider: Some(local_provider),
                 model: Some("hydex-local-model".to_string()),

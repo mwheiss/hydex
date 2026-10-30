@@ -2088,3 +2088,34 @@ async fn memories_startup_uses_thread_runtime_and_keeps_custom_destinations_inde
     server.verify().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn memories_startup_full_local_overrides_primary_memory_route() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let local_provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    let request = run_memory_phase_one_model_request_test_with_config(
+        &server,
+        home,
+        startup_test_memories_config(),
+        move |config| {
+            config.model_offload.provider_id = Some("local".to_string());
+            config.model_offload.provider = Some(local_provider);
+            config.model_offload.model = Some("local-memory-model".to_string());
+            config.model_offload.memory_mode = ModelOffloadMemoryMode::Primary;
+            config.model_offload.enabled = true;
+            config.model_offload.mode = codex_config::config_toml::ModelOffloadMode::Full;
+            config.model_offload.context.context_window = Some(64_000);
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some("local-memory-model")
+    );
+    assert!(request.header("x-codex-turn-metadata").is_none());
+
+    Ok(())
+}

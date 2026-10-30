@@ -4361,6 +4361,7 @@ impl Session {
             executor_hook_sources,
             mcp,
             tool_router,
+            dynamic_tools,
             loaded_agents_md,
         }))
     }

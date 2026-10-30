@@ -580,6 +580,9 @@ pub struct ModelOffloadToml {
     /// Enables route-specific offload of eligible model inference requests.
     #[serde(default)]
     pub enabled: bool,
+    /// Full mode keeps every model request local and forbids primary inference fallback.
+    #[serde(default)]
+    pub mode: ModelOffloadMode,
     /// Key in `model_providers` identifying the local Responses-compatible provider.
     pub provider: Option<String>,
     /// Optional model id to send to the offload provider. When unset, Codex sends
@@ -598,6 +601,14 @@ pub struct ModelOffloadToml {
     /// Shallow sanity validation for completed local/offloaded model outputs.
     #[serde(default)]
     pub validation: ModelOffloadValidationToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOffloadMode {
+    #[default]
+    Eligible,
+    Full,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]

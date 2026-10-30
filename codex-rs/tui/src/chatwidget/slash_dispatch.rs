@@ -39,7 +39,7 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
-const OFFLOAD_USAGE: &str = "Usage: /offload [status|on|off|auto]";
+const OFFLOAD_USAGE: &str = "Usage: /offload [status|on|full|off|auto]";
 const COMPACTION_USAGE: &str = "Usage: /compaction [status|auto|local|primary]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to use /usage.";
 
@@ -163,6 +163,9 @@ impl ChatWidget {
         let configured = if offload.enabled { "on" } else { "off" };
         let override_text = match offload.runtime_override {
             Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn) => "forced on",
+            Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceFull) => {
+                "full local"
+            }
             Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff) => {
                 "forced off"
             }
@@ -188,6 +191,9 @@ impl ChatWidget {
 
     fn model_offload_compaction_status_text(&self) -> String {
         let offload = &self.config.model_offload;
+        if offload.full_local_enabled() {
+            return "Compaction: local (Full mode; primary compaction disabled)".to_string();
+        }
         let configured = match offload.compaction_policy {
             codex_config::config_toml::ModelOffloadCompactionPolicy::Local => "local",
             codex_config::config_toml::ModelOffloadCompactionPolicy::Primary => "primary",
@@ -229,11 +235,7 @@ impl ChatWidget {
         &mut self,
         runtime_override: codex_protocol::config_types::ModelOffloadRuntimeOverride,
     ) {
-        if matches!(
-            runtime_override,
-            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn
-        ) && !self.config.model_offload.can_route_local()
-        {
+        if runtime_override.effective_enabled() && !self.config.model_offload.can_route_local() {
             self.add_error_message(
                 "Cannot enable model offload: model_offload.provider is not configured or invalid."
                     .to_string(),
@@ -257,6 +259,12 @@ impl ChatWidget {
                 collaboration_mode: None,
             }));
         match runtime_override {
+            codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceFull => {
+                self.add_info_message(
+                    "Full local mode enabled. Model inference, review, memory and compaction stay local; primary inference fallback is disabled.".to_string(),
+                    None,
+                );
+            }
             codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn => {
                 let local_model = self
                     .config
@@ -1153,6 +1161,9 @@ impl ChatWidget {
                 "status" => self.add_model_offload_status_message(),
                 "on" => self.set_model_offload_override(
                     codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn,
+                ),
+                "full" => self.set_model_offload_override(
+                    codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceFull,
                 ),
                 "off" => self.set_model_offload_override(
                     codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff,

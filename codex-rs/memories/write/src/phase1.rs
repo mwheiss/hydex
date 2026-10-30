@@ -320,7 +320,7 @@ mod job {
             .await?;
 
         let output = StageOneOutput::parse(&result, config.memories.version)?;
-        if config.model_offload.memory_mode == ModelOffloadMemoryMode::Local {
+        if config.model_offload.effective_memory_mode() == ModelOffloadMemoryMode::Local {
             let validation_text = format!(
                 "{}\n{}",
                 output.rollout_summary,

@@ -38,6 +38,87 @@ fn request_with_input(input: Vec<ResponseItem>) -> ResponsesApiRequest {
 }
 
 #[test]
+fn local_offload_projects_backend_controls_and_agent_messages_without_mutating_history() {
+    let canonical = vec![
+        ResponseItem::AdditionalTools { id: None, role: "developer".into(), tools: Arc::from(vec![json!({"type":"function","name":"old-tool"})]) },
+        ResponseItem::ConfigurationUpdate { reasoning: codex_protocol::models::ConfigurationReasoning { effort: codex_protocol::openai_models::ReasoningEffort::Low } },
+        ResponseItem::CompactionTrigger {},
+        serde_json::from_value(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"Use the current tool."}]})).unwrap(),
+        ResponseItem::AgentMessage { id: None, author: "/root/peer".into(), recipient: "/root".into(),
+            content: vec![AgentMessageInputContent::InputText { text: "Peer evidence.".into() }],
+            internal_chat_message_metadata_passthrough: None },
+    ];
+    let original = canonical.clone();
+    let mut request = request_with_input(canonical.clone());
+    request.include = vec!["reasoning.encrypted_content".into()];
+    request.service_tier = Some("priority".into());
+    transform_request_for_local_offload(
+        &mut request,
+        &[ToolSpec::Function(function("current-tool"))],
+    )
+    .unwrap();
+    assert_eq!(canonical, original);
+    assert_eq!(request.input.len(), 2);
+    assert_eq!(request.input[0], original[3]);
+    let ResponseItem::Message { role, content, .. } = &request.input[1] else {
+        panic!("agent data must be a portable message")
+    };
+    assert_eq!(role, "assistant");
+    let serialized = serde_json::to_string(content).unwrap();
+    assert!(serialized.contains("/root/peer") && serialized.contains("Peer evidence."));
+    let tools = serde_json::to_value(request.tools.unwrap()).unwrap();
+    assert_eq!(tools[0]["name"], "current-tool");
+    assert_eq!(tools.as_array().unwrap().len(), 1);
+    assert!(request.include.is_empty());
+    assert!(request.service_tier.is_none());
+}
+
+#[test]
+fn local_offload_rejects_encrypted_agent_messages_instead_of_losing_context() {
+    let canonical = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root/peer".into(),
+        recipient: "/root".into(),
+        content: vec![AgentMessageInputContent::EncryptedContent {
+            encrypted_content: "opaque".into(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut request = request_with_input(vec![canonical.clone()]);
+    let error = transform_request_for_local_offload(&mut request, &[]).unwrap_err();
+    assert!(error.to_string().contains("encrypted agent message"));
+    assert!(matches!(canonical, ResponseItem::AgentMessage { .. }));
+}
+
+#[test]
+fn local_offload_preserves_readable_reasoning_summary_without_replaying_ciphertext() {
+    let canonical = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![
+            codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                text: "Prior check completed.".into(),
+            },
+        ],
+        content: None,
+        encrypted_content: Some("other-provider-ciphertext".into()),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut request = request_with_input(vec![canonical.clone()]);
+    transform_request_for_local_offload(&mut request, &[]).unwrap();
+    let body = serde_json::to_string(&request.input).unwrap();
+    assert!(body.contains("Prior check completed."));
+    assert!(!body.contains("other-provider-ciphertext"));
+    assert!(matches!(request.input[0], ResponseItem::Message { .. }));
+    assert!(matches!(
+        canonical,
+        ResponseItem::Reasoning {
+            encrypted_content: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn flattens_namespace_tools_for_local_wire_only() {
     let tools = vec![ToolSpec::Namespace(ResponsesApiNamespace {
         name: "web".to_string(),

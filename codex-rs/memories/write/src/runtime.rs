@@ -388,7 +388,7 @@ impl MemoryStartupContext {
         let session_source = config_snapshot.session_source;
         let session_id = SessionId::from(self.thread_id);
         let session_id_string = session_id.to_string();
-        let model_offload = match config.model_offload.memory_mode {
+        let model_offload = match config.model_offload.effective_memory_mode() {
             ModelOffloadMemoryMode::Local => config.model_offload.clone(),
             ModelOffloadMemoryMode::Off | ModelOffloadMemoryMode::Primary => {
                 ModelOffloadConfig::default()
@@ -450,7 +450,7 @@ impl MemoryStartupContext {
                 &responses_metadata,
                 (generation_attempts > 0)
                     .then_some(config.model_offload.validation.retry_temperature),
-                if config.model_offload.memory_mode == ModelOffloadMemoryMode::Local {
+                if config.model_offload.effective_memory_mode() == ModelOffloadMemoryMode::Local {
                     MemoryResponseCompletion::RequireCompleted
                 } else {
                     MemoryResponseCompletion::PreservePrimaryBehavior
@@ -458,7 +458,7 @@ impl MemoryStartupContext {
             )
             .await?;
 
-            if config.model_offload.memory_mode != ModelOffloadMemoryMode::Local {
+            if config.model_offload.effective_memory_mode() != ModelOffloadMemoryMode::Local {
                 return Ok((result, token_usage, None));
             }
 

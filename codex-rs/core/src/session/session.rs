@@ -465,14 +465,12 @@ impl SessionConfiguration {
                 });
         if let Some(model_offload_override) = updates.model_offload_override {
             let mut config = (*next_configuration.original_config_do_not_use).clone();
-            if matches!(
-                model_offload_override,
-                Some(ModelOffloadRuntimeOverride::ForceOn)
-            ) && !config.model_offload.can_route_local()
+            if model_offload_override.is_some_and(ModelOffloadRuntimeOverride::effective_enabled)
+                && !config.model_offload.can_route_local()
             {
                 return Err(ConstraintError::InvalidValue {
                     field_name: "model_offload.runtime_override",
-                    candidate: "force_on".to_string(),
+                    candidate: model_offload_override.map(|value| value.to_string()).unwrap_or_default(),
                     allowed:
                         "Cannot enable model offload: model_offload.provider is not configured or invalid."
                             .to_string(),

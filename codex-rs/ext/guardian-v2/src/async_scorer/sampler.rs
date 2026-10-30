@@ -45,6 +45,8 @@ const MAX_CONCURRENT_REQUESTS: usize = 16;
 
 /// Host-owned provider, authentication, and attribution for one Luna connection.
 pub struct LunaSamplerConfig {
+    /// Full local mode's model; absent for ordinary hosted classifier routing.
+    pub local_model: Option<String>,
     /// Provider and credentials selected for the owning thread.
     pub provider: SharedModelProvider,
     /// Provider and feature policy shared with ordinary model requests.
@@ -138,6 +140,9 @@ pub struct LunaSampler {
 }
 
 impl LunaSampler {
+    pub(super) fn is_full_local(&self) -> bool {
+        self.config.local_model.is_some()
+    }
     /// A checkpoint is reusable only when both models declare the same nonempty hash.
     pub(super) fn supports_parent_compaction(&self, parent_hash: Option<&str>) -> bool {
         parent_hash
@@ -224,11 +229,20 @@ impl LunaSampler {
     fn execution(
         &self,
         request: &LunaSamplingRequest,
-        input: Vec<ResponseItem>,
+        mut input: Vec<ResponseItem>,
         auth_owner_generation: Option<u64>,
     ) -> execution::SamplingExecution {
+        if self.is_full_local() {
+            // prepare_input's empty backend tool catalog is a hosted control,
+            // not classifier evidence. Local requests already disable tools.
+            input.retain(|item| !matches!(item, ResponseItem::AdditionalTools { .. }));
+        }
         let api_request = ResponsesApiRequest {
-            model: MODEL.to_owned(),
+            model: self
+                .config
+                .local_model
+                .clone()
+                .unwrap_or_else(|| MODEL.to_owned()),
             input,
             tools: None,
             tool_choice: "none".to_owned(),
@@ -237,7 +251,11 @@ impl LunaSampler {
             reasoning: Some(Reasoning {
                 effort: Some(request.reasoning_effort.clone()),
                 summary: None,
-                context: Some(ReasoningContext::AllTurns),
+                context: self
+                    .config
+                    .local_model
+                    .is_none()
+                    .then_some(ReasoningContext::AllTurns),
             }),
             store: false,
             stream: true,

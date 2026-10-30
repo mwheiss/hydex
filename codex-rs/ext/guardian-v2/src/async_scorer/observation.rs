@@ -217,6 +217,10 @@ impl GuardianV2Extension {
         };
         // Use the live reviewer, not the startup config or per-app reviewer overrides.
         let snapshot = thread.config_snapshot().await;
+        let mut routing_config = (*config).clone();
+        routing_config.model_offload.runtime_override = snapshot.model_offload_override;
+        routing_config.model = Some(snapshot.model.clone());
+        let config = Arc::new(routing_config);
         if snapshot.full_access
             || thread.approvals_reviewer_for_turn(input.turn_id).await == ApprovalsReviewer::User
         {
@@ -237,6 +241,66 @@ impl GuardianV2Extension {
             return;
         }
         input.thread_store.insert(GuardianV2Enabled);
+        let full_local = config.model_offload.full_local_enabled();
+        // Select from the current setting, including when Full changed after thread startup.
+        // Replacing the backend invalidates retained evidence and in-flight ownership.
+        // Keep its bounded admission pool while the route is unchanged.
+        let (sampler, reservation) = if full_local != sampler.is_full_local() {
+            let routed = if full_local {
+                super::startup::full_local_sampler_config(
+                    &config,
+                    snapshot.session_source.clone(),
+                    input.session_store.level_id().to_string(),
+                    thread_id.clone(),
+                    metrics.clone(),
+                )
+            } else {
+                super::startup::sampler_config(
+                    &codex_extension_api::ThreadStartInput {
+                        config: &config,
+                        session_source: &snapshot.session_source,
+                        persistent_thread_state_available: false,
+                        environments: &[],
+                        mcp_resource_client: None,
+                        extension_metrics: metrics.clone(),
+                        session_store: input.session_store,
+                        thread_store: input.thread_store,
+                    },
+                    manager.auth_manager(),
+                    Some(Arc::clone(&manager)),
+                )
+                .await
+            };
+            match routed {
+                Ok(routed) => {
+                    let sampler = Arc::new(LunaSampler::new(routed));
+                    let conversation = Arc::new(ConversationBackend::new(Arc::clone(&sampler)));
+                    input.thread_store.insert_arc(Arc::clone(&sampler));
+                    input.thread_store.insert_arc(Arc::clone(&conversation));
+                    let (_, reserved) = conversation.reserve(|| tool_call_index);
+                    match reserved {
+                        Ok(reserved) => (sampler, reserved),
+                        Err(_) => {
+                            score_progress.invalidate(tool_call_index);
+                            score_progress.fail_closed(sampled_at);
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    score_progress.invalidate(tool_call_index);
+                    score_progress.fail_closed(sampled_at);
+                    self.event_sink.emit_warning(ExtensionWarning {
+                        thread_id,
+                        turn_id: Some(turn_id),
+                        message: format!("Guardian local provider setup failed: {error}"),
+                    });
+                    return;
+                }
+            }
+        } else {
+            (sampler, reservation)
+        };
         let model_defaults = parent_model
             .as_ref()
             .and_then(|model| model.model_messages.as_ref())
@@ -389,9 +453,13 @@ impl GuardianV2Extension {
         let classification = Classification {
             reservation,
             classification_started_at,
-            decisions_sampler: input
-                .thread_store
-                .get::<super::decisions::DecisionsSampler>(),
+            decisions_sampler: if full_local {
+                None
+            } else {
+                input
+                    .thread_store
+                    .get::<super::decisions::DecisionsSampler>()
+            },
             guardian_config,
             score_progress,
             parent_model,

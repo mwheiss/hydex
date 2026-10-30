@@ -11448,6 +11448,7 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
         Vec::new(),
         crate::config::ModelOffloadConfig {
             enabled: true,
+            mode: codex_config::config_toml::ModelOffloadMode::Eligible,
             runtime_override: None,
             compaction_runtime_override: None,
             memory_mode: codex_config::config_toml::ModelOffloadMemoryMode::Local,

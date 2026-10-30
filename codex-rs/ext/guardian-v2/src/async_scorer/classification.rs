@@ -313,9 +313,10 @@ impl Classification {
             truncations.extend(std::mem::take(&mut context.truncations));
             super::metrics::record_section_costs(metrics.as_deref(), context.section_costs());
         }
-        let decisions_comparison_enabled = config
-            .features
-            .enabled(codex_features::Feature::GuardianV2DecisionsComparison);
+        let decisions_comparison_enabled = !config.model_offload.full_local_enabled()
+            && config
+                .features
+                .enabled(codex_features::Feature::GuardianV2DecisionsComparison);
         let mut decisions_task = None;
         let mut responses_duration = None;
         let mut failure_reason = "invalid_output";

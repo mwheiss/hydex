@@ -25,6 +25,7 @@ use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_config::config_toml::ModelOffloadCompactionPolicy;
 use codex_config::config_toml::ModelOffloadCompactionRecoveryProjection;
 use codex_config::config_toml::ModelOffloadMemoryMode;
+use codex_config::config_toml::ModelOffloadMode;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeConfig;
 use codex_config::config_toml::RealtimeToml;
@@ -14297,4 +14298,31 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
     assert!(warnings.is_empty());
 
     Ok(())
+}
+
+#[test]
+fn full_local_config_preserves_explicit_memory_off_and_override_precedence() {
+    let mut config = super::ModelOffloadConfig {
+        enabled: true,
+        mode: ModelOffloadMode::Full,
+        memory_mode: ModelOffloadMemoryMode::Primary,
+        ..Default::default()
+    };
+    assert!(config.full_local_enabled());
+    assert_eq!(
+        config.effective_memory_mode(),
+        ModelOffloadMemoryMode::Local
+    );
+    config.memory_mode = ModelOffloadMemoryMode::Off;
+    assert_eq!(config.effective_memory_mode(), ModelOffloadMemoryMode::Off);
+    for runtime in [
+        ModelOffloadRuntimeOverride::ForceOn,
+        ModelOffloadRuntimeOverride::ForceOff,
+    ] {
+        config.runtime_override = Some(runtime);
+        assert!(!config.full_local_enabled());
+    }
+    config.enabled = false;
+    config.runtime_override = Some(ModelOffloadRuntimeOverride::ForceFull);
+    assert!(config.full_local_enabled());
 }

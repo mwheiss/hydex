@@ -43,6 +43,8 @@ pub(crate) struct StepContext {
     pub(crate) mcp: Arc<McpBinding>,
     /// The finalized tool plan advertised and executed for this exact sampling request.
     pub(crate) tool_router: Arc<ToolRouter>,
+    /// Client tools captured with this step, including for its local wire projection.
+    pub(crate) dynamic_tools: Arc<[codex_protocol::dynamic_tools::DynamicToolSpec]>,
     /// The canonical AGENTS.md value observed with this environment snapshot.
     pub(crate) loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
 }

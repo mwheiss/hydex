@@ -33,7 +33,7 @@ pub fn start_memories_startup_task(
 ) {
     if config.ephemeral
         || !config.features.enabled(Feature::MemoryTool)
-        || config.model_offload.memory_mode == ModelOffloadMemoryMode::Off
+        || config.model_offload.effective_memory_mode() == ModelOffloadMemoryMode::Off
         || source.is_non_root_agent()
     {
         return;

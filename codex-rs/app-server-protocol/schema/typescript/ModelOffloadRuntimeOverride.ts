@@ -8,4 +8,4 @@
  * This is intentionally not a persisted TOML setting. `None` at the call site
  * means "use `model_offload.enabled` from config".
  */
-export type ModelOffloadRuntimeOverride = "force_on" | "force_off";
+export type ModelOffloadRuntimeOverride = "force_on" | "force_full" | "force_off";

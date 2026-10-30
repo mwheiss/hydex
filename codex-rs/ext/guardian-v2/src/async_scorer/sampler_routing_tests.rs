@@ -28,6 +28,134 @@ use std::time::Duration;
 
 type RoutingFuture<'a> = ModelProviderFuture<'a, std::io::Result<Option<WorkspaceRouting>>>;
 
+#[tokio::test]
+async fn full_local_classifier_uses_local_model_without_hosted_auth_or_prewarm() -> Result<()> {
+    let primary = wiremock::MockServer::start().await;
+    let local = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(402))
+        .expect(0)
+        .mount(&primary)
+        .await;
+    let response = responses::mount_sse_once(
+        &local,
+        responses::sse(vec![
+            ev_assistant_message("local-score", "low"),
+            ev_completed("local-score"),
+        ]),
+    )
+    .await;
+    let home = tempfile::TempDir::new()?;
+    let mut config = core_test_support::load_default_config_for_test(&home).await;
+    config.model_provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", primary.uri())));
+    config.model_offload.enabled = true;
+    config.model_offload.mode = codex_config::config_toml::ModelOffloadMode::Full;
+    config.model_offload.model = Some("local-review-model".into());
+    config.model_offload.provider = Some(
+        codex_model_provider_info::create_oss_provider_with_base_url(
+            &format!("{}/v1", local.uri()),
+            codex_model_provider_info::WireApi::Responses,
+        ),
+    );
+    let local_config = crate::async_scorer::startup::full_local_sampler_config(
+        &config,
+        codex_protocol::protocol::SessionSource::Exec,
+        "session-local".into(),
+        "thread-local".into(),
+        None,
+    )?;
+    assert!(local_config.provider.auth_manager().is_none());
+    let sampler = super::LunaSampler::new(local_config);
+    sampler.prewarm().await;
+    assert!(local.received_requests().await.unwrap().is_empty());
+    assert_eq!(sampler.sample(sample_request("turn-local")).await?, "low");
+    let request = response.single_request();
+    let body = request.body_json();
+    assert_eq!(body["model"], "local-review-model");
+    let input = body["input"].as_array().expect("classifier evidence");
+    assert!(!input.is_empty());
+    assert!(input.iter().all(|item| item["type"] == "message"));
+    assert!(body["reasoning"].get("context").is_none());
+    assert!(body["include"].as_array().is_none_or(Vec::is_empty));
+    assert!(
+        body.get("client_metadata")
+            .is_none_or(serde_json::Value::is_null)
+    );
+    assert!(
+        body.get("access_programs")
+            .is_none_or(serde_json::Value::is_null)
+    );
+    for name in [
+        "authorization",
+        "chatgpt-account-id",
+        "x-openai-subagent",
+        "x-codex-guardian",
+        "x-openai-internal-codex-responses-lite",
+    ] {
+        assert!(
+            request.header(name).is_none(),
+            "unexpected hosted header: {name}"
+        );
+    }
+    assert!(primary.received_requests().await.unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_local_classifier_requires_its_provider_and_respects_runtime_override() -> Result<()> {
+    let home = tempfile::TempDir::new()?;
+    let mut config = core_test_support::load_default_config_for_test(&home).await;
+    config.model_offload.enabled = true;
+    config.model_offload.mode = codex_config::config_toml::ModelOffloadMode::Full;
+    config.model_offload.provider = None;
+    let session = codex_extension_api::ExtensionData::new("session-local");
+    let thread = codex_extension_api::ExtensionData::new("thread-local");
+    let auth =
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("primary-must-stay-private"));
+    for runtime_override in [
+        None,
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceFull),
+    ] {
+        config.model_offload.runtime_override = runtime_override;
+        let input = codex_extension_api::ThreadStartInput {
+            config: &config,
+            session_source: &codex_protocol::protocol::SessionSource::Exec,
+            persistent_thread_state_available: false,
+            environments: &[],
+            mcp_resource_client: None,
+            extension_metrics: None,
+            session_store: &session,
+            thread_store: &thread,
+        };
+        let error = crate::async_scorer::startup::sampler_config(&input, auth.clone(), None)
+            .await
+            .err()
+            .expect("Full must require its local provider");
+        assert!(error.to_string().contains("configured local provider"));
+        assert!(crate::async_scorer::startup::decisions_sampler(&input, &auth).is_none());
+    }
+    config.model_offload.runtime_override =
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff);
+    let input = codex_extension_api::ThreadStartInput {
+        config: &config,
+        session_source: &codex_protocol::protocol::SessionSource::Exec,
+        persistent_thread_state_available: false,
+        environments: &[],
+        mcp_resource_client: None,
+        extension_metrics: None,
+        session_store: &session,
+        thread_store: &thread,
+    };
+    assert!(
+        crate::async_scorer::startup::sampler_config(&input, auth, None)
+            .await?
+            .local_model
+            .is_none()
+    );
+    Ok(())
+}
+
 struct UnavailableRouting;
 
 impl WorkspaceRoutingResolver for UnavailableRouting {
@@ -214,7 +342,8 @@ async fn idle_classifier_retains_the_owning_threads_workspace_binding() -> Resul
         .get::<codex_model_provider::WorkspaceRoutingContext>()
         .expect("Core seeds the owning thread's routing context before extensions start");
     let classifier =
-        crate::async_scorer::startup::sampler_config(&input, auth.clone(), /*manager*/ None).await;
+        crate::async_scorer::startup::sampler_config(&input, auth.clone(), /*manager*/ None)
+            .await?;
     classifier
         .provider
         .responses_api_provider(&owning_context)

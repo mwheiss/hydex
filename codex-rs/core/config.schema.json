@@ -3127,6 +3127,13 @@
         }
       ]
     },
+    "ModelOffloadMode": {
+      "enum": [
+        "eligible",
+        "full"
+      ],
+      "type": "string"
+    },
     "ModelOffloadToml": {
       "additionalProperties": false,
       "properties": {
@@ -3172,6 +3179,15 @@
             }
           ],
           "description": "Route used for memory generation. When unset, Hydex uses local memory generation only when model offload is effectively enabled."
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelOffloadMode"
+            }
+          ],
+          "default": "eligible",
+          "description": "Full mode keeps every model request local and forbids primary inference fallback."
         },
         "model": {
           "description": "Optional model id to send to the offload provider. When unset, Codex sends the currently selected model id.",
@@ -8714,6 +8730,7 @@
         },
         "enabled": false,
         "memory_mode": null,
+        "mode": "eligible",
         "model": null,
         "provider": null,
         "validation": {

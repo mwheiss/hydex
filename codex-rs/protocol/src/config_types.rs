@@ -63,13 +63,14 @@ pub enum AutoCompactTokenLimitScope {
 #[strum(serialize_all = "snake_case")]
 pub enum ModelOffloadRuntimeOverride {
     ForceOn,
+    ForceFull,
     ForceOff,
 }
 
 impl ModelOffloadRuntimeOverride {
     pub fn effective_enabled(self) -> bool {
         match self {
-            Self::ForceOn => true,
+            Self::ForceOn | Self::ForceFull => true,
             Self::ForceOff => false,
         }
     }

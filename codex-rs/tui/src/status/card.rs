@@ -1026,6 +1026,9 @@ fn format_model_offload(config: &Config) -> Option<String> {
         "off"
     };
     let source = match offload.runtime_override {
+        Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceFull) => {
+            "full local; primary inference disabled"
+        }
         Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOn) => {
             "forced by --offload"
         }

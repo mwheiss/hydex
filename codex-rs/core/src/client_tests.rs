@@ -225,6 +225,7 @@ fn test_model_client_with_local_offload_config_memory_mode_and_validation(
         Vec::new(),
         ModelOffloadConfig {
             enabled: true,
+            mode: codex_config::config_toml::ModelOffloadMode::Eligible,
             runtime_override: None,
             compaction_runtime_override: None,
             memory_mode,
@@ -271,6 +272,7 @@ fn test_model_client_with_local_offload_and_api_primary(
         Vec::new(),
         ModelOffloadConfig {
             enabled: true,
+            mode: codex_config::config_toml::ModelOffloadMode::Eligible,
             runtime_override: None,
             compaction_runtime_override: None,
             memory_mode: ModelOffloadMemoryMode::Local,
@@ -327,6 +329,7 @@ async fn local_provider_advertised_context_overrides_configured_fallback() {
         Vec::new(),
         ModelOffloadConfig {
             enabled: true,
+            mode: codex_config::config_toml::ModelOffloadMode::Eligible,
             runtime_override: None,
             compaction_runtime_override: None,
             memory_mode: ModelOffloadMemoryMode::Local,
@@ -2826,6 +2829,7 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
         Vec::new(),
         ModelOffloadConfig {
             enabled: true,
+            mode: codex_config::config_toml::ModelOffloadMode::Eligible,
             runtime_override: None,
             compaction_runtime_override: None,
             memory_mode: ModelOffloadMemoryMode::Local,
@@ -3720,6 +3724,93 @@ async fn runtime_force_on_requires_resolved_offload_provider() {
 }
 
 #[tokio::test]
+async fn full_local_routes_internal_and_unclassified_requests_without_primary_setup() {
+    for source in [
+        SessionSource::Exec,
+        SessionSource::Internal(InternalSessionSource::Guardian),
+        SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
+    ] {
+        let client = test_model_client_with_local_offload_config_and_memory_mode(
+            source,
+            ModelOffloadCompactionPolicy::Primary,
+            ModelOffloadMemoryMode::Primary,
+        );
+        client
+            .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceFull))
+            .unwrap();
+        let mut metadata = test_responses_metadata_for_client(
+            &client,
+            Some("full-local"),
+            "full-local-window".into(),
+            None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+        let session = client.new_session();
+        session.force_primary_for_responses_requests();
+        for kind in [
+            None,
+            Some(CodexResponsesRequestKind::Turn),
+            Some(CodexResponsesRequestKind::Memory),
+            Some(CodexResponsesRequestKind::CompactionRecovery),
+            Some(CodexResponsesRequestKind::Prewarm),
+            Some(CodexResponsesRequestKind::LocalOutputValidation),
+        ] {
+            metadata.request_kind = kind;
+            assert!(
+                session
+                    .route_for_responses_request(&metadata)
+                    .is_local_offload(),
+                "{kind:?}"
+            );
+        }
+        assert!(session.local_offload_enabled_for_turns());
+        assert_eq!(
+            client.effective_model_offload_compaction_policy(),
+            ModelOffloadCompactionPolicy::Local
+        );
+        assert!(
+            client
+                .current_client_setup(super::ClientRouting::Workspace)
+                .await
+                .is_err()
+        );
+        assert!(client.prewarm_auth().await.is_ok());
+        let local = client
+            .current_client_setup_for_route(super::ModelRequestRoute::LocalOffload)
+            .await
+            .unwrap();
+        assert!(local.auth.is_none());
+        assert!(local.agent_identity_telemetry.is_none());
+    }
+}
+
+#[test]
+fn full_local_requires_a_provider_and_can_return_to_eligible_or_primary_routing() {
+    let missing = test_model_client(SessionSource::Exec);
+    assert!(
+        missing
+            .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceFull))
+            .is_err()
+    );
+    let client = test_model_client_with_local_offload(SessionSource::Internal(
+        InternalSessionSource::Guardian,
+    ));
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceFull))
+        .unwrap();
+    assert!(client.full_local_offload_enabled());
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOn))
+        .unwrap();
+    assert!(!client.full_local_offload_enabled());
+    assert!(!client.local_offload_enabled_for_turns());
+    client
+        .set_model_offload_runtime_override(Some(ModelOffloadRuntimeOverride::ForceOff))
+        .unwrap();
+    assert!(!client.effective_model_offload_enabled());
+}
+
+#[tokio::test]
 async fn runtime_force_on_routes_eligible_turn_local() {
     let client = test_model_client_with_local_offload_config(
         SessionSource::Exec,
@@ -3970,3 +4061,27 @@ async fn compaction_runtime_override_updates_effective_policy_with_offload_guard
 }
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
+
+#[tokio::test]
+async fn full_local_missing_provider_does_not_degrade_to_primary() {
+    let mut client = test_model_client(SessionSource::Exec);
+    let state = std::sync::Arc::get_mut(&mut client.state).expect("unique client state");
+    state.offload_configured_enabled = true;
+    state.offload_configured_full = true;
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        Some("missing-local"),
+        "missing-local-window".into(),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let route = client.route_for_responses_request(&metadata);
+    assert!(route.is_local_offload());
+    assert!(client.current_client_setup_for_route(route).await.is_err());
+    assert!(
+        client
+            .current_client_setup(super::ClientRouting::Workspace)
+            .await
+            .is_err()
+    );
+}

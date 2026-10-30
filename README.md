@@ -106,6 +106,24 @@ wire APIs for local offload.
 
 ## Runtime Controls
 
+For credit-independent model inference, set `enabled = true` and `mode = "full"`
+in `[model_offload]`, select **Full** in the desktop offload menu, or use
+`/offload full` in the TUI. Full routes ordinary turns, review, memory, compaction,
+and other model helpers to the configured local Responses provider. It disables
+primary inference fallback and primary prewarm. Existing encrypted compaction
+checkpoints are reconstructed from retained cleartext history locally; they are
+never sent to a hosted recovery model in Full mode.
+
+The desktop's Full selection allows local turn submission when hosted credits
+are exhausted. Hosted and remote composers retain their normal admission checks.
+Account balances and approval decisions are unchanged. Hosted-only services
+remain subject to their own availability; Full does not provide them locally.
+If the local endpoint is unavailable or usable history cannot be reconstructed,
+the turn reports a local error instead of spending hosted credits.
+
+`mode = "eligible"` is the default. On retains eligible offload, Off uses primary
+routing, and Auto follows the configured `enabled` and `mode` settings.
+
 Process-level flags apply to interactive and exec sessions:
 
 ```bash

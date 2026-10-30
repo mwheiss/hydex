@@ -2088,7 +2088,9 @@ impl Session {
                 .set_model_offload_runtime_override(model_offload_override)
                 .map_err(|err| ConstraintError::InvalidValue {
                     field_name: "model_offload.runtime_override",
-                    candidate: "force_on".to_string(),
+                    candidate: model_offload_override
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
                     allowed: err.to_string(),
                     requirement_source: codex_config::RequirementSource::Unknown,
                 })?;

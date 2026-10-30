@@ -1613,6 +1613,13 @@ pub(crate) async fn maybe_recover_remote_compaction_for_local_route(
         return Ok(false);
     }
 
+    if client_session.full_local_offload_enabled() {
+        // Encrypted checkpoints require their hosted provider to decrypt. Rebuild
+        // from retained cleartext history locally before attempting any recovery.
+        promote_retro_local_history_before_local_sampling(sess, turn_context).await?;
+        return Ok(true);
+    }
+
     let producing_model = sess.active_remote_compaction_model().await;
     let recovery_model = resolve_remote_compaction_recovery_model(
         &turn_context.config.model_offload.compaction_recovery.model,
@@ -2104,20 +2111,24 @@ async fn run_auto_compact_with_route(
         return Ok(true);
     }
 
-    let use_remote = match route {
-        AutoCompactRoute::Policy => should_use_remote_compact_task_with_offload_policy(
-            turn_context.provider.as_ref(),
-            sess.services.model_client.offload_ever_used(),
-            client_session.local_offload_enabled_for_turns(),
-            client_session.effective_model_offload_compaction_policy(),
-        ),
-        AutoCompactRoute::ForcePrimaryRemote => {
-            if !should_use_remote_compact_task(turn_context.provider.as_ref()) {
-                return Err(CodexErr::InvalidRequest(
+    let use_remote = if client_session.full_local_offload_enabled() {
+        false
+    } else {
+        match route {
+            AutoCompactRoute::Policy => should_use_remote_compact_task_with_offload_policy(
+                turn_context.provider.as_ref(),
+                sess.services.model_client.offload_ever_used(),
+                client_session.local_offload_enabled_for_turns(),
+                client_session.effective_model_offload_compaction_policy(),
+            ),
+            AutoCompactRoute::ForcePrimaryRemote => {
+                if !should_use_remote_compact_task(turn_context.provider.as_ref()) {
+                    return Err(CodexErr::InvalidRequest(
                     "Cannot enable model offload for this oversized thread: primary remote compaction is unavailable.".to_string(),
                 ));
+                }
+                true
             }
-            true
         }
     };
     if !use_remote

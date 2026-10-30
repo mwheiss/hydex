@@ -1730,6 +1730,7 @@ async fn local_offload_401_does_not_trigger_primary_auth_recovery() {
     };
     let offload_config = ModelOffloadConfig {
         enabled: true,
+        mode: codex_config::config_toml::ModelOffloadMode::Eligible,
         runtime_override: None,
         compaction_runtime_override: None,
         memory_mode: codex_config::config_toml::ModelOffloadMemoryMode::Local,

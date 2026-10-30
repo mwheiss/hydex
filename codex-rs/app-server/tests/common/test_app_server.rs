@@ -183,7 +183,13 @@ impl TestAppServer {
             environment: TestAppServerEnvironment::Auto,
             program: None,
             env_overrides: Vec::new(),
-            args: vec![DISABLE_PLUGIN_STARTUP_TASKS_ARG.to_string()],
+            // The standalone server exposes this test-only flag in debug builds.
+            // Release integration tests exercise the normal startup tasks.
+            args: if cfg!(debug_assertions) {
+                vec![DISABLE_PLUGIN_STARTUP_TASKS_ARG.to_string()]
+            } else {
+                Vec::new()
+            },
             exec_server_delay: None,
             mock_chatgpt_backend: false,
         }

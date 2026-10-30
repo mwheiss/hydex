@@ -2053,6 +2053,8 @@ async fn untraced_http_stream_releases_completed_output_before_response_ends() {
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
         /*last_response_tx*/ None,
+        /*local_tool_names*/ None,
+        /*local_output_byte_limit*/ None,
     );
 
     assert!(matches!(
@@ -2163,12 +2165,13 @@ async fn local_response_stream_enforces_aggregate_output_limit() {
         Ok(ResponseEvent::OutputTextDelta("abcd".to_string())),
         Ok(ResponseEvent::OutputTextDelta("e".to_string())),
     ]);
-    let (mut stream, _) = super::map_response_events(
+    let mut stream = super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        /*last_response_tx*/ None,
         /*local_tool_names*/ None,
         Some(4),
     );
@@ -2195,12 +2198,13 @@ async fn local_response_stream_counts_completed_only_output() {
     let item = output_message("1", "completed-only output");
     let item_bytes = super::serialized_response_item_bytes(&item).expect("serialize response item");
     let api_stream = futures::stream::iter([Ok(ResponseEvent::OutputItemDone(item))]);
-    let (mut stream, _) = super::map_response_events(
+    let mut stream = super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        /*last_response_tx*/ None,
         /*local_tool_names*/ None,
         Some(item_bytes - 1),
     );
@@ -2233,12 +2237,13 @@ async fn local_response_stream_does_not_double_count_deltas_and_completed_items(
             end_turn: Some(true),
         }),
     ]);
-    let (mut stream, _) = super::map_response_events(
+    let mut stream = super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        /*last_response_tx*/ None,
         /*local_tool_names*/ None,
         Some(item_bytes),
     );
@@ -2268,12 +2273,13 @@ async fn response_stream_without_local_limit_preserves_primary_behavior() {
             end_turn: Some(true),
         }),
     ]);
-    let (mut stream, _) = super::map_response_events(
+    let mut stream = super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        /*last_response_tx*/ None,
         /*local_tool_names*/ None,
         /*local_output_byte_limit*/ None,
     );

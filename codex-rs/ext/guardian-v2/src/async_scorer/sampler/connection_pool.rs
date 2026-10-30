@@ -148,6 +148,9 @@ impl ConnectionPool {
     }
 
     fn start_refill(self: &Arc<Self>, guard: OwnedMutexGuard<()>) -> Option<JoinHandle<()>> {
+        if self.config.local_model.is_some() {
+            return None;
+        }
         let mut retry_after = self
             .retry_after
             .lock()
@@ -353,6 +356,28 @@ impl ConnectionPool {
     }
 
     async fn client_setup(&self) -> Result<ClientSetup, LunaSamplerError> {
+        if self.config.local_model.is_some() {
+            let provider = self
+                .config
+                .provider
+                .api_provider()
+                .await
+                .map_err(LunaSamplerError::Provider)?;
+            let auth = self
+                .config
+                .provider
+                .api_auth()
+                .await
+                .map_err(LunaSamplerError::Provider)?;
+            let key = ResponsesConnectionKey::new(&provider, None);
+            return Ok(ClientSetup {
+                provider,
+                auth,
+                key,
+                redirect_policy: ClientRedirectPolicy::Default,
+                auth_changes: None,
+            });
+        }
         let mut auth_changes = self
             .config
             .provider
@@ -402,6 +427,9 @@ impl ConnectionPool {
         thread_id: &str,
         request_kind: RequestMode,
     ) -> Result<HeaderMap, LunaSamplerError> {
+        if self.config.local_model.is_some() {
+            return Ok(HeaderMap::new());
+        }
         let mut headers = build_session_headers(
             Some(self.config.session_id.clone()),
             Some(thread_id.to_owned()),
@@ -431,6 +459,9 @@ impl ConnectionPool {
         Ok(headers)
     }
     async fn responses_request_kind(&self) -> RequestMode {
+        if self.config.local_model.is_some() {
+            return RequestMode::Regular;
+        }
         let provider = self.config.provider.info();
         if self
             .config
@@ -560,8 +591,18 @@ impl ConnectionLease {
                     client.stream_request(
                         request.clone(),
                         ResponsesOptions {
-                            session_id: Some(self.pool.config.session_id.clone()),
-                            thread_id: Some(self.thread_id.clone()),
+                            session_id: self
+                                .pool
+                                .config
+                                .local_model
+                                .is_none()
+                                .then(|| self.pool.config.session_id.clone()),
+                            thread_id: self
+                                .pool
+                                .config
+                                .local_model
+                                .is_none()
+                                .then(|| self.thread_id.clone()),
                             extra_headers: self
                                 .pool
                                 .headers(&self.thread_id, self.request_kind)

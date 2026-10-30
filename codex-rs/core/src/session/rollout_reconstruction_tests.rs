@@ -1536,7 +1536,7 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
         },
     ]);
     let rollout_items = vec![
-        RolloutItem::Compacted(CompactedItem {
+        RolloutItem::Compacted(Box::new(CompactedItem {
             message: String::new(),
             replacement_history: Some(remote_history.clone()),
             retained_context: None,
@@ -1550,7 +1550,7 @@ async fn reconstruct_history_primary_branch_keeps_remote_compaction_model() {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
         RolloutItem::ResponseItem(user_message("primary continuation").into()),
     ];
 
@@ -1582,7 +1582,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
     }];
     let rolled_back_turn_id = "rolled-back-turn".to_string();
     let rollout_items = vec![
-        RolloutItem::Compacted(CompactedItem {
+        RolloutItem::Compacted(Box::new(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(old_remote_history.clone())),
             retained_context: None,
@@ -1596,7 +1596,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
                 turn_attribution: None,
@@ -1618,7 +1618,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
                 ..Default::default()
             },
         )),
-        RolloutItem::Compacted(CompactedItem {
+        RolloutItem::Compacted(Box::new(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(new_remote_history)),
             retained_context: None,
@@ -1632,7 +1632,7 @@ async fn reconstruct_history_uses_surviving_remote_checkpoint_after_rollback() {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
                 root_turn_id: None,
@@ -1678,7 +1678,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
     let rolled_back_turn_id = "rolled-back-retro-local-turn".to_string();
     let rollout_items = vec![
         RolloutItem::ResponseItem(readable_source.clone().into()),
-        RolloutItem::Compacted(CompactedItem {
+        RolloutItem::Compacted(Box::new(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(old_remote_history.clone())),
             retained_context: None,
@@ -1692,7 +1692,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
                 turn_attribution: None,
@@ -1715,7 +1715,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
             },
         )),
         RolloutItem::ResponseItem(user_message("rolled-back readable state").into()),
-        RolloutItem::Compacted(CompactedItem {
+        RolloutItem::Compacted(Box::new(CompactedItem {
             message: String::new(),
             replacement_history: Some(annotated(new_remote_history)),
             retained_context: None,
@@ -1729,7 +1729,7 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
                 root_turn_id: None,
@@ -1765,7 +1765,7 @@ async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_activ
         encrypted_content: "active encrypted remote state".to_string(),
         internal_chat_message_metadata_passthrough: None,
     }];
-    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+    let rollout_items = vec![RolloutItem::Compacted(Box::new(CompactedItem {
         message: String::new(),
         replacement_history: Some(annotated(vec![ResponseItem::Compaction {
             id: None,
@@ -1783,7 +1783,7 @@ async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_activ
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
-    })];
+    }))];
 
     let err = reconstruct_retro_local_history_from_rollout(
         &turn_context,

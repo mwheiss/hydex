@@ -2145,7 +2145,9 @@ impl Session {
                 .set_model_offload_runtime_override(model_offload_override)
                 .map_err(|err| ConstraintError::InvalidValue {
                     field_name: "model_offload.runtime_override",
-                    candidate: "force_on".to_string(),
+                    candidate: model_offload_override
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
                     allowed: err.to_string(),
                     requirement_source: codex_config::RequirementSource::Unknown,
                 })?;
@@ -4153,8 +4155,9 @@ impl Session {
             if inventory_changed || discovery_recovered {
                 self.mark_mcp_runtime_dirty();
             }
-            let extension_data =
-                Arc::new(codex_extension_api::ExtensionData::new(turn_context.sub_id.clone()));
+            let extension_data = Arc::new(codex_extension_api::ExtensionData::new(
+                turn_context.sub_id.clone(),
+            ));
             extension_data.insert_arc(Arc::clone(&settings.model_info));
             if let Some(snapshots) = &executor_capability_discovery_v2 {
                 extension_data.insert(snapshots.clone());

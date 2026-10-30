@@ -265,6 +265,7 @@ impl Default for GhostSnapshotConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelOffloadConfig {
     pub enabled: bool,
+    pub mode: codex_config::config_toml::ModelOffloadMode,
     pub runtime_override: Option<ModelOffloadRuntimeOverride>,
     pub compaction_runtime_override: Option<ModelOffloadCompactionRuntimeOverride>,
     pub memory_mode: ModelOffloadMemoryMode,
@@ -279,6 +280,22 @@ pub struct ModelOffloadConfig {
 }
 
 impl ModelOffloadConfig {
+    pub fn effective_memory_mode(&self) -> ModelOffloadMemoryMode {
+        if self.full_local_enabled() && self.memory_mode != ModelOffloadMemoryMode::Off {
+            ModelOffloadMemoryMode::Local
+        } else {
+            self.memory_mode
+        }
+    }
+
+    pub fn full_local_enabled(&self) -> bool {
+        match self.runtime_override {
+            Some(ModelOffloadRuntimeOverride::ForceFull) => true,
+            Some(_) => false,
+            None => self.enabled && self.mode == codex_config::config_toml::ModelOffloadMode::Full,
+        }
+    }
+
     pub fn effective_enabled(&self) -> bool {
         self.runtime_override
             .map(ModelOffloadRuntimeOverride::effective_enabled)
@@ -294,6 +311,7 @@ impl Default for ModelOffloadConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            mode: codex_config::config_toml::ModelOffloadMode::Eligible,
             runtime_override: None,
             compaction_runtime_override: None,
             memory_mode: ModelOffloadMemoryMode::Primary,
@@ -2988,6 +3006,7 @@ fn resolve_model_offload_config(
 
     Ok(ModelOffloadConfig {
         enabled: offload.enabled,
+        mode: offload.mode,
         runtime_override,
         compaction_runtime_override: None,
         memory_mode,

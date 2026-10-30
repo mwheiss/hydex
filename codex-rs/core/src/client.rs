@@ -227,6 +227,7 @@ struct ModelClientState {
     workspace_routing: WorkspaceRoutingContext,
     offload_provider: Option<SharedModelProvider>,
     offload_configured_enabled: bool,
+    offload_configured_full: bool,
     offload_runtime_override: AtomicU8,
     offload_model: Option<String>,
     offload_compaction_policy: ModelOffloadCompactionPolicy,
@@ -371,6 +372,7 @@ pub struct ModelClient {
 const OFFLOAD_OVERRIDE_UNSET: u8 = 0;
 const OFFLOAD_OVERRIDE_FORCE_ON: u8 = 1;
 const OFFLOAD_OVERRIDE_FORCE_OFF: u8 = 2;
+const OFFLOAD_OVERRIDE_FORCE_FULL: u8 = 3;
 const COMPACTION_OVERRIDE_CONFIGURED: u8 = 0;
 const COMPACTION_OVERRIDE_LOCAL: u8 = 1;
 const COMPACTION_OVERRIDE_PRIMARY: u8 = 2;
@@ -379,6 +381,7 @@ fn encode_offload_runtime_override(runtime_override: Option<ModelOffloadRuntimeO
     match runtime_override {
         None => OFFLOAD_OVERRIDE_UNSET,
         Some(ModelOffloadRuntimeOverride::ForceOn) => OFFLOAD_OVERRIDE_FORCE_ON,
+        Some(ModelOffloadRuntimeOverride::ForceFull) => OFFLOAD_OVERRIDE_FORCE_FULL,
         Some(ModelOffloadRuntimeOverride::ForceOff) => OFFLOAD_OVERRIDE_FORCE_OFF,
     }
 }
@@ -386,6 +389,7 @@ fn encode_offload_runtime_override(runtime_override: Option<ModelOffloadRuntimeO
 fn decode_offload_runtime_override(value: u8) -> Option<ModelOffloadRuntimeOverride> {
     match value {
         OFFLOAD_OVERRIDE_FORCE_ON => Some(ModelOffloadRuntimeOverride::ForceOn),
+        OFFLOAD_OVERRIDE_FORCE_FULL => Some(ModelOffloadRuntimeOverride::ForceFull),
         OFFLOAD_OVERRIDE_FORCE_OFF => Some(ModelOffloadRuntimeOverride::ForceOff),
         _ => None,
     }
@@ -728,6 +732,8 @@ impl ModelClient {
                 workspace_routing,
                 offload_provider,
                 offload_configured_enabled: model_offload.enabled,
+                offload_configured_full: model_offload.mode
+                    == codex_config::config_toml::ModelOffloadMode::Full,
                 offload_runtime_override: AtomicU8::new(encode_offload_runtime_override(
                     model_offload.runtime_override,
                 )),
@@ -906,7 +912,7 @@ impl ModelClient {
         &self,
         runtime_override: Option<ModelOffloadRuntimeOverride>,
     ) -> CodexResult<()> {
-        if matches!(runtime_override, Some(ModelOffloadRuntimeOverride::ForceOn))
+        if runtime_override.is_some_and(ModelOffloadRuntimeOverride::effective_enabled)
             && self.state.offload_provider.is_none()
         {
             return Err(CodexErr::InvalidRequest(
@@ -930,7 +936,15 @@ impl ModelClient {
     pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
         self.effective_model_offload_enabled()
             && self.state.offload_provider.is_some()
-            && self.session_source_allows_local_offload()
+            && (self.full_local_offload_enabled() || self.session_source_allows_local_offload())
+    }
+
+    pub(crate) fn full_local_offload_enabled(&self) -> bool {
+        match self.model_offload_runtime_override() {
+            Some(ModelOffloadRuntimeOverride::ForceFull) => true,
+            Some(_) => false,
+            None => self.state.offload_configured_enabled && self.state.offload_configured_full,
+        }
     }
 
     pub(crate) fn model_offload_compaction_runtime_override(
@@ -965,6 +979,9 @@ impl ModelClient {
     }
 
     pub(crate) fn requested_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        if self.full_local_offload_enabled() {
+            return ModelOffloadCompactionPolicy::Local;
+        }
         match self.model_offload_compaction_runtime_override() {
             Some(ModelOffloadCompactionRuntimeOverride::Local) => {
                 ModelOffloadCompactionPolicy::Local
@@ -977,6 +994,9 @@ impl ModelClient {
     }
 
     pub(crate) fn effective_model_offload_compaction_policy(&self) -> ModelOffloadCompactionPolicy {
+        if self.full_local_offload_enabled() {
+            return ModelOffloadCompactionPolicy::Local;
+        }
         if self.local_offload_enabled_for_turns() && self.offload_ever_used() {
             self.requested_model_offload_compaction_policy()
         } else {
@@ -1283,6 +1303,17 @@ impl ModelClient {
         temperature: Option<f64>,
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
+        // Offload uses the portable Responses wire format. Keep the owning
+        // model's metadata and canonical history unchanged for primary requests.
+        let local_wire_model = (!include_codex_metadata).then(|| {
+            let mut model = model_info.clone();
+            model.use_responses_lite = false;
+            model.supports_reasoning_effort_updates = false;
+            model.support_verbosity = false;
+            model.supports_image_detail_original = false;
+            model
+        });
+        let model_info = local_wire_model.as_ref().unwrap_or(model_info);
         let mut input = prompt.get_formatted_input_for_request(model_info);
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
@@ -1459,6 +1490,11 @@ impl ModelClient {
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
     async fn current_client_setup(&self, routing: ClientRouting) -> Result<CurrentClientSetup> {
+        if self.full_local_offload_enabled() {
+            return Err(CodexErr::InvalidRequest(
+                "Full local mode cannot call a primary-provider endpoint. Use a local Responses workflow.".to_string(),
+            ));
+        }
         if let Some((manager, mode)) = &self.runtime_auth {
             let selected = codex_model_provider::select_runtime_auth(
                 manager,
@@ -1756,6 +1792,9 @@ impl ModelClient {
     }
 
     pub(crate) async fn prewarm_auth(&self) -> Result<()> {
+        if self.full_local_offload_enabled() {
+            return Ok(());
+        }
         self.current_client_setup(ClientRouting::Workspace)
             .await
             .map(|_| ())
@@ -1776,6 +1815,9 @@ impl ModelClient {
         &self,
         responses_metadata: &CodexResponsesMetadata,
     ) -> ModelRequestRoute {
+        if self.full_local_offload_enabled() {
+            return ModelRequestRoute::LocalOffload;
+        }
         if self.memory_request_should_route_local(responses_metadata) {
             return ModelRequestRoute::LocalOffload;
         }
@@ -2035,11 +2077,16 @@ impl ModelClientSession {
     pub(crate) fn primary_forced_for_responses_requests(&self) -> bool {
         self.force_primary_for_responses_requests
             .load(Ordering::Relaxed)
+            && !self.client.full_local_offload_enabled()
     }
 
     pub(crate) fn local_offload_enabled_for_turns(&self) -> bool {
-        !self.primary_forced_for_responses_requests()
+        (!self.primary_forced_for_responses_requests() || self.full_local_offload_enabled())
             && self.client.local_offload_enabled_for_turns()
+    }
+
+    pub(crate) fn full_local_offload_enabled(&self) -> bool {
+        self.client.full_local_offload_enabled()
     }
 
     pub(crate) async fn effective_local_offload_context(
@@ -2108,7 +2155,7 @@ impl ModelClientSession {
         &self,
         responses_metadata: &CodexResponsesMetadata,
     ) -> ModelRequestRoute {
-        if self.primary_forced_for_responses_requests() {
+        if self.primary_forced_for_responses_requests() && !self.full_local_offload_enabled() {
             return ModelRequestRoute::Primary;
         }
         self.client.route_for_responses_request(responses_metadata)
@@ -3118,7 +3165,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<()> {
-        if !self.client.responses_websocket_enabled() {
+        if self.full_local_offload_enabled() || !self.client.responses_websocket_enabled() {
             return Ok(());
         }
         if self.is_websocket_prewarmed().await {

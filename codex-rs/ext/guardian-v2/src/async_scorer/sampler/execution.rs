@@ -245,7 +245,10 @@ impl SamplingExecution {
                 }
             };
             // Omitted programs need no auth lookup, which can refresh credentials.
-            self.request.access_programs = match self.cyber_access_program {
+            self.request.access_programs = match self
+                .cyber_access_program
+                .filter(|_| self.config.local_model.is_none())
+            {
                 None => None,
                 Some(program) => {
                     let auth = tokio::select! {
@@ -297,7 +300,8 @@ impl SamplingExecution {
             {
                 client_metadata.insert("parent_response_id".to_owned(), parent_response_id.clone());
             }
-            self.request.client_metadata = Some(client_metadata);
+            self.request.client_metadata =
+                self.config.local_model.is_none().then_some(client_metadata);
             let stream = match tokio::select! {
                 biased;
                 _ = &mut owner_changed => return Err(account_changed_error()),

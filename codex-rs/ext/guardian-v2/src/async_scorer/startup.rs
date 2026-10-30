@@ -6,6 +6,7 @@ use std::sync::Arc;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::cyber_access_program::ApiKeyCyberAccessPrograms;
+use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_features::Feature;
@@ -13,6 +14,9 @@ use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::SessionSource;
 
 use super::decisions::DecisionsError;
 use super::decisions::DecisionsSampler;
@@ -25,6 +29,9 @@ pub(super) fn decisions_sampler(
     input: &ThreadStartInput<'_, Config>,
     auth_manager: &AuthManager,
 ) -> Option<DecisionsSampler> {
+    if input.config.model_offload.full_local_enabled() {
+        return None;
+    }
     use codex_http_client::ClientRouteClass;
     let result = decisions_api_key(
         &input.config.model_provider_id,
@@ -80,7 +87,23 @@ pub(super) async fn sampler_config(
     input: &ThreadStartInput<'_, Config>,
     auth_manager: Arc<AuthManager>,
     manager: Option<Arc<ThreadManager>>,
-) -> LunaSamplerConfig {
+) -> CodexResult<LunaSamplerConfig> {
+    if input.config.model_offload.full_local_enabled() {
+        let mut local_config = input.config.clone();
+        if local_config.model.is_none() {
+            local_config.model = input
+                .thread_store
+                .get::<codex_protocol::openai_models::ModelInfo>()
+                .map(|model| model.slug.clone());
+        }
+        return full_local_sampler_config(
+            &local_config,
+            input.session_source.clone(),
+            input.session_store.level_id().to_string(),
+            input.thread_store.level_id().to_string(),
+            input.extension_metrics.clone(),
+        );
+    }
     let luna_model = if let Some(thread_manager) = manager {
         let mut model_config = input.config.to_models_manager_config();
         model_config.model_context_window = None;
@@ -102,7 +125,8 @@ pub(super) async fn sampler_config(
                 )
             });
     let luna_compaction_hash = luna_model.and_then(|model| model.comp_hash);
-    LunaSamplerConfig {
+    Ok(LunaSamplerConfig {
+        local_model: None,
         api_key_cyber_access_programs: ApiKeyCyberAccessPrograms::from_config(input.config),
         workspace_routing: input
             .thread_store
@@ -127,5 +151,50 @@ pub(super) async fn sampler_config(
         luna_compaction_hash,
         max_input_tokens,
         metrics: input.extension_metrics.clone(),
-    }
+    })
+}
+
+/// Resolve only the explicitly configured local provider, without hosted credentials or routing.
+pub(super) fn full_local_sampler_config(
+    config: &Config,
+    session_source: SessionSource,
+    session_id: String,
+    thread_id: String,
+    metrics: Option<Arc<dyn ExtensionMetrics>>,
+) -> CodexResult<LunaSamplerConfig> {
+    let provider = config.model_offload.provider.clone().ok_or_else(|| {
+        CodexErr::InvalidRequest("Full local review requires a configured local provider.".into())
+    })?;
+    let max_input_tokens = config
+        .model_offload
+        .context
+        .context_window
+        .and_then(|window| usize::try_from(window).ok())
+        .filter(|window| *window > 0)
+        .unwrap_or(codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS);
+    Ok(LunaSamplerConfig {
+        local_model: Some(
+            config
+                .model_offload
+                .model
+                .clone()
+                .or_else(|| config.model.clone())
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest("Full local review requires a selected model.".into())
+                })?,
+        ),
+        provider: create_model_provider(provider, None),
+        api_key_cyber_access_programs: ApiKeyCyberAccessPrograms::Disabled,
+        workspace_routing: config.workspace_routing_context(),
+        http_client_factory: config.http_client_factory(),
+        agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
+        session_source,
+        session_id,
+        thread_id,
+        originator: None,
+        service_tier: None,
+        luna_compaction_hash: None,
+        max_input_tokens,
+        metrics,
+    })
 }

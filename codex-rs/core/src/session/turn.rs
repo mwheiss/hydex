@@ -2605,6 +2605,7 @@ async fn run_sampling_request(
                 &step_context.mcp,
                 step_context.extension_data.as_ref(),
                 prepared_recommendations,
+                step_context.dynamic_tools.as_ref(),
                 wire_target,
             ))
             .or_cancel(&cancellation_token)
@@ -2614,6 +2615,7 @@ async fn run_sampling_request(
     let step_context = Arc::new(StepContext {
         turn: Arc::clone(&step_context.turn),
         extension_data: Arc::clone(&step_context.extension_data),
+        dynamic_tools: Arc::clone(&step_context.dynamic_tools),
         preempt: step_context.preempt.clone(),
         realtime: step_context.realtime.clone(),
         settings: Arc::clone(&step_context.settings),
@@ -3746,6 +3748,7 @@ async fn try_run_sampling_request(
     } else {
         None
     };
+    let has_output_schema = prompt.output_schema.is_some();
     let mut resampling = crate::guardian::ResponseResampling::new(&sess);
     let prompt = Arc::new(prompt);
     let interrupt_at_boundary = SamplingInterrupt::enabled(&turn_context);
@@ -4056,7 +4059,7 @@ async fn try_run_sampling_request(
                 if client_session.validates_completed_output_for(responses_metadata) {
                     validate_completed_local_sampling_item(
                         &turn_context,
-                        prompt,
+                        has_output_schema,
                         &item,
                         client_session.local_offload_context_window(),
                     )?;
@@ -4622,11 +4625,12 @@ async fn try_run_sampling_request(
 
 fn validate_completed_local_sampling_item(
     turn_context: &TurnContext,
-    prompt: &Prompt,
+    has_output_schema: bool,
     item: &ResponseItem,
     local_context_window: Option<i64>,
 ) -> CodexResult<()> {
-    let Some((kind, candidate)) = local_sampling_validation_candidate(prompt, item) else {
+    let Some((kind, candidate)) = local_sampling_validation_candidate(has_output_schema, item)
+    else {
         return Ok(());
     };
     match cheap_validate_local_output_with_context(
@@ -4643,11 +4647,11 @@ fn validate_completed_local_sampling_item(
 }
 
 fn local_sampling_validation_candidate(
-    prompt: &Prompt,
+    has_output_schema: bool,
     item: &ResponseItem,
 ) -> Option<(LocalOutputKind, String)> {
     if let Some(text) = raw_assistant_output_text_from_item(item) {
-        let kind = if prompt.output_schema.is_some() {
+        let kind = if has_output_schema {
             LocalOutputKind::StructuredOutput
         } else {
             LocalOutputKind::FinalText

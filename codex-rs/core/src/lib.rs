@@ -4,6 +4,8 @@
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// The pinned compiler needs extra query depth for the extended async request graph.
+#![recursion_limit = "256"]
 
 mod apply_patch;
 mod apps;

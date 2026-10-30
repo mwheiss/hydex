@@ -209,10 +209,7 @@ fn test_model_info_with_context_window(context_window: Option<i64>) -> ModelInfo
 #[test]
 fn local_sampling_validation_candidate_classifies_final_text() {
     assert_eq!(
-        local_sampling_validation_candidate(
-            &Prompt::default(),
-            &assistant_output_text("ordinary final text"),
-        ),
+        local_sampling_validation_candidate(false, &assistant_output_text("ordinary final text"),),
         Some((
             LocalOutputKind::FinalText,
             "ordinary final text".to_string()
@@ -228,7 +225,10 @@ fn local_sampling_validation_candidate_classifies_structured_output() {
     };
 
     assert_eq!(
-        local_sampling_validation_candidate(&prompt, &assistant_output_text(r#"{"ok":true}"#)),
+        local_sampling_validation_candidate(
+            prompt.output_schema.is_some(),
+            &assistant_output_text(r#"{"ok":true}"#)
+        ),
         Some((
             LocalOutputKind::StructuredOutput,
             r#"{"ok":true}"#.to_string()
@@ -239,8 +239,7 @@ fn local_sampling_validation_candidate_classifies_structured_output() {
 #[test]
 fn local_sampling_validation_candidate_classifies_tool_calls() {
     assert_eq!(
-        local_sampling_validation_candidate(&Prompt::default(), &function_call_item())
-            .map(|(kind, _)| kind),
+        local_sampling_validation_candidate(false, &function_call_item()).map(|(kind, _)| kind),
         Some(LocalOutputKind::ToolCalls)
     );
 }
@@ -251,7 +250,7 @@ async fn local_sampling_validation_rejects_broken_final_text() {
 
     let err = validate_completed_local_sampling_item(
         &turn_context,
-        &Prompt::default(),
+        false,
         &assistant_output_text("<think>hidden scratch</think>"),
         /*local_context_window*/ None,
     )

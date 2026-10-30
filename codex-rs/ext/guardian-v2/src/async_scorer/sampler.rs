@@ -421,7 +421,9 @@ impl LunaSampler {
             .map(|envelope| (envelope.item, envelope.metadata))
             .unzip();
         let mut execution = self.execution(&sampling, input, auth_owner_generation);
-        execution.request.include = vec!["reasoning.encrypted_content".to_owned()];
+        if !self.is_full_local() {
+            execution.request.include = vec!["reasoning.encrypted_content".to_owned()];
+        }
         let mut telemetry = telemetry::SamplingTelemetry::new(
             self.config.metrics.clone(),
             sampling.pending_score.clone(),

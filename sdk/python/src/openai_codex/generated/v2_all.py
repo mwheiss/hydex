@@ -2835,6 +2835,7 @@ class ModelOffloadCompactionRuntimeOverride(Enum):
 
 class ModelOffloadRuntimeOverride(Enum):
     force_on = "force_on"
+    force_full = "force_full"
     force_off = "force_off"
 
 

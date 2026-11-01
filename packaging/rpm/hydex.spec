@@ -2,7 +2,11 @@
 %{!?hydex_plugin_baseline:%global hydex_plugin_baseline unknown}
 %{!?hydex_codex_sha256:%global hydex_codex_sha256 unknown}
 %{!?hydex_code_mode_host_sha256:%global hydex_code_mode_host_sha256 unknown}
-%{!?hydex_package_release:%global hydex_package_release 2}
+%{!?hydex_package_release:%global hydex_package_release 3}
+
+# Runtime components are validated immutable inputs. Keep their recorded hashes.
+%global debug_package %{nil}
+%global __strip /bin/true
 
 Name:           hydex
 Version:        %{hydex_version}
@@ -104,6 +108,9 @@ EOF
 %{_datadir}/hydex/build-info
 
 %changelog
+* Mon Nov 02 2026 Michael W. Heiss <mheiss@users.noreply.github.com> - %{version}-3
+- Preserve prebuilt runtime bytes and their provenance hashes
+
 * Mon Sep 07 2026 Michael W. Heiss <mheiss@users.noreply.github.com> - %{version}-2
 - Add Codex and Hydex command aliases and provider metadata
 

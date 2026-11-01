@@ -906,9 +906,6 @@ fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
 #[test]
 fn should_use_remote_compact_task_for_azure_provider() {
     let provider = ModelProviderInfo {
-        credential_file: None,
-        location: None,
-        project_id: None,
         capabilities: None,
         gateway_oauth: None,
         model_catalog_url: None,
@@ -999,9 +996,6 @@ fn remote_compaction_model_provenance_requires_configured_local_provider() {
 #[test]
 fn offload_compaction_policy_preserves_remote_until_local_offload_is_used() {
     let provider = ModelProviderInfo {
-        credential_file: None,
-        location: None,
-        project_id: None,
         capabilities: None,
         gateway_oauth: None,
         model_catalog_url: None,

@@ -1,6 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -28,6 +29,24 @@ fn typed_values_can_be_inserted_replaced_and_removed() {
     );
     assert_eq!(data.get::<String>(), None);
     assert_eq!(data.get::<u64>().as_deref(), Some(&42));
+}
+
+#[test]
+fn shared_attachment_preserves_identity_and_replaced_ownership() {
+    let data = ExtensionData::new("routing-backend");
+    let first = Arc::new(Mutex::new(1));
+    assert!(data.insert_arc(Arc::clone(&first)).is_none());
+    let retained = data.get::<Mutex<i32>>().expect("shared attachment");
+    assert!(Arc::ptr_eq(&first, &retained));
+    *first.lock().unwrap() = 2;
+    assert_eq!(*retained.lock().unwrap(), 2);
+
+    let second = Arc::new(Mutex::new(3));
+    let previous = data
+        .insert_arc(Arc::clone(&second))
+        .expect("previous backend ownership");
+    assert!(Arc::ptr_eq(&previous, &first));
+    assert!(Arc::ptr_eq(&data.get::<Mutex<i32>>().unwrap(), &second));
 }
 
 #[test]

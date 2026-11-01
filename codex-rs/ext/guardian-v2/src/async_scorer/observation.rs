@@ -268,7 +268,7 @@ impl GuardianV2Extension {
                     input.thread_store.insert_arc(Arc::clone(&conversation));
                     let (_, reserved) = conversation.reserve(|| tool_call_index);
                     match reserved {
-                        Ok(reserved) => (sampler, reserved),
+                        Ok(reserved) => (sampler, Some(reserved)),
                         Err(_) => {
                             score_progress.invalidate(tool_call_index);
                             score_progress.fail_closed(sampled_at);

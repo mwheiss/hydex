@@ -392,7 +392,6 @@ fn active_remote_compaction_checkpoint(
             | RolloutItem::RetainedContext(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::TokenUsageRecord(_)
-            | RolloutItem::DynamicToolsUpdated { .. }
             | RolloutItem::InterAgentCommunicationMetadata { .. } => {
                 if let Some(active_segment) = active_segment.as_mut() {
                     active_segment.include_rollout_index(index);
@@ -512,7 +511,6 @@ fn materialize_rollout_items(
             | RolloutItem::WorldState(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::TokenUsageRecord(_)
-            | RolloutItem::DynamicToolsUpdated { .. }
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::SessionMeta(_) => {}
         }

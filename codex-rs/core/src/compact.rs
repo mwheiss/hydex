@@ -1093,7 +1093,7 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
     phase: CompactionPhase,
-    defer_output: bool,
+    _defer_output: bool,
 ) -> CodexResult<CompactionResponse> {
     sess.set_server_reasoning_included(turn_context.model_info().use_responses_lite)
         .await;

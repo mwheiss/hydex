@@ -301,7 +301,6 @@ pub(crate) fn transform_request_for_local_offload(
                 id,
                 summary,
                 content,
-                encrypted_content: _,
                 ..
             } if content.as_ref().is_none_or(Vec::is_empty) => {
                 let text = summary

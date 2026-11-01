@@ -101,10 +101,10 @@ use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
+use codex_history::ResponseItemEnvelope;
 use codex_hooks::ModelRequestHookEvent::PostModelRequest;
 use codex_hooks::ModelRequestHookEvent::PreModelRequest;
 use codex_hooks::ModelRequestStatus;
-use codex_history::ResponseItemEnvelope;
 use codex_login::CodexAuth;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::ResponseItemId;
@@ -2372,7 +2372,6 @@ async fn run_sampling_request(
                 &step_context.mcp,
                 step_context.extension_data.as_ref(),
                 prepared_recommendations,
-                step_context.dynamic_tools.as_ref(),
                 wire_target,
             ))
             .or_cancel(&cancellation_token)
@@ -2382,16 +2381,14 @@ async fn run_sampling_request(
     let step_context = Arc::new(StepContext {
         turn: Arc::clone(&step_context.turn),
         extension_data: Arc::clone(&step_context.extension_data),
-        dynamic_tools: Arc::clone(&step_context.dynamic_tools),
         preempt: step_context.preempt.clone(),
         realtime: step_context.realtime.clone(),
         settings: Arc::clone(&step_context.settings),
         token_budget: step_context.token_budget.clone(),
         session_telemetry: step_context.session_telemetry.clone(),
         environments: step_context.environments.clone(),
-        selected_capability_roots: step_context.selected_capability_roots.clone(),
-        executor_capability_discovery: step_context.executor_capability_discovery.clone(),
-        executor_capability_discovery_v2: step_context.executor_capability_discovery_v2.clone(),
+        inherited_environments: step_context.inherited_environments.clone(),
+        executor_hook_sources: step_context.executor_hook_sources.clone(),
         mcp: Arc::clone(&step_context.mcp),
         tool_router: router,
         loaded_agents_md: step_context.loaded_agents_md.clone(),
@@ -2617,7 +2614,6 @@ pub(crate) async fn built_tools(
         mcp,
         step_store,
         prepared_recommendations,
-        dynamic_tools,
         ToolWireTarget::Primary,
     )
     .await
@@ -2632,7 +2628,6 @@ async fn built_tools_for_wire(
     mcp: &Arc<codex_mcp::McpBinding>,
     step_store: &ExtensionData,
     prepared_recommendations: PreparedToolRecommendations,
-    dynamic_tools: &[codex_protocol::dynamic_tools::DynamicToolSpec],
     wire_target: ToolWireTarget,
 ) -> CodexResult<Arc<ToolRouter>> {
     let all_mcp_tools = mcp.tools();

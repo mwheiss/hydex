@@ -1533,7 +1533,11 @@ impl ModelClient {
                 return None;
             }
         };
-        let transport = match client_setup.build_api_transport("models") {
+        let transport = match self.build_api_transport(
+            &client_setup.api_provider,
+            "models",
+            client_setup.redirect_policy,
+        ) {
             Ok(transport) => transport,
             Err(err) => {
                 debug!(error = %err, "local offload context discovery could not build client");

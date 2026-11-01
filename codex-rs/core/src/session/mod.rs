@@ -4049,7 +4049,7 @@ impl Session {
             let extension_data = Arc::new(codex_extension_api::ExtensionData::new(
                 turn_context.sub_id.clone(),
             ));
-            extension_data.insert_arc(Arc::clone(&settings.model_info));
+            extension_data.insert(settings.model_info.as_ref().clone());
             if let Some(snapshots) = &executor_capability_discovery_v2 {
                 extension_data.insert(snapshots.clone());
             }
@@ -4156,7 +4156,6 @@ impl Session {
             executor_hook_sources,
             mcp,
             tool_router,
-            dynamic_tools,
             loaded_agents_md,
         }))
     }

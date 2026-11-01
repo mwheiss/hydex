@@ -175,7 +175,23 @@ if [[ ${#built_packages[@]} -ne 1 ]]; then
 fi
 
 package_path="${script_dir}/$(basename "${built_packages[0]}")"
-install -m 0644 "${built_packages[0]}" "${package_path}"
+built_package="${built_packages[0]}"
+payload_digests="$(rpm -qp --qf '[%{FILENAMES}\t%{FILEDIGESTS}\n]' "${built_package}")"
+payload_root="$(rpm --eval '%{_libexecdir}')/hydex"
+while IFS=$'\t' read -r relative_path input_path; do
+  expected_digest="$(sha256sum "${input_path}" | cut -d' ' -f1)"
+  actual_digest="$(awk -F '\t' -v name="${payload_root}/${relative_path}" '$1 == name { print $2 }' <<< "${payload_digests}")"
+  if [[ "${actual_digest}" != "${expected_digest}" ]]; then
+    echo "RPM changed prebuilt runtime component ${relative_path}: ${actual_digest} != ${expected_digest}" >&2
+    exit 2
+  fi
+done < <(printf '%s\t%s\n' \
+  bin/codex "${codex_binary}" \
+  bin/codex-code-mode-host "${code_mode_host_binary}" \
+  codex-path/rg "${rg_binary}" \
+  codex-resources/bwrap "${bwrap_binary}")
+
+install -m 0644 "${built_package}" "${package_path}"
 package_sha256="$(sha256sum "${package_path}" | cut -d' ' -f1)"
 payload_format="$(rpm -qp --qf '%{PAYLOADFORMAT}' "${package_path}")"
 payload_compressor="$(rpm -qp --qf '%{PAYLOADCOMPRESSOR}' "${package_path}")"
@@ -228,8 +244,13 @@ if [[ "${rhel_major}" == 7 ]]; then
       rpm -Uvh --test /tmp/hydex.rpm
       rpm -Uvh /tmp/hydex.rpm
       test "$(codex --version)" = "codex-cli '"${package_version}"'"
+      test "$(hydex --version)" = "codex-cli '"${package_version}"'"
       codex --help | grep -q -- "--offload"
       codex --help | grep -q -- "--no-offload"
+      hydex --help | grep -q -- "--offload"
+      hydex --help | grep -q -- "--no-offload"
+      codex-code-mode-host --help >/dev/null
+      hydex-code-mode-host --help >/dev/null
     '
 fi
 

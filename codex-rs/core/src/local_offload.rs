@@ -5,8 +5,12 @@ use std::collections::HashSet;
 use codex_api::ResponsesApiRequest;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
+use codex_tools::LoadableToolSpec;
 use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ResponsesApiTool;
+use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_string::approx_token_count;
@@ -22,6 +26,7 @@ pub(crate) struct LocalOffloadToolNameMap {
     flattened_to_canonical: HashMap<String, ToolName>,
     canonical_to_flattened: HashMap<ToolName, String>,
     local_wire_tool_names: HashSet<String>,
+    local_tool_search: bool,
     request_metrics: LocalOffloadRequestToolMetrics,
     call_metrics: Arc<LocalOffloadCallMetrics>,
 }
@@ -42,7 +47,65 @@ struct LocalOffloadCallMetrics {
 }
 
 impl LocalOffloadToolNameMap {
-    pub(crate) fn flatten_response_item(&self, mut item: ResponseItem) -> ResponseItem {
+    pub(crate) fn flatten_response_item(&self, item: ResponseItem) -> ResponseItem {
+        let mut item = match item {
+            ResponseItem::ToolSearchCall {
+                id,
+                call_id: Some(call_id),
+                status,
+                arguments,
+                ..
+            } => ResponseItem::FunctionCall {
+                encrypted_content: None,
+                id,
+                call_id,
+                status,
+                name: TOOL_SEARCH_TOOL_NAME.to_string(),
+                namespace: None,
+                arguments: arguments.to_string(),
+                encrypted_function_args: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::ToolSearchCall { arguments, .. } => {
+                local_discovery_message(format!("Earlier tool discovery request: {arguments}"))
+            }
+            ResponseItem::ToolSearchOutput {
+                id, call_id, tools, ..
+            } => {
+                // Schemas are in the tools field. Keep history compact rather than repeating
+                // those schemas in every projected discovery result as well.
+                let names = tools
+                    .into_iter()
+                    .filter_map(|tool| serde_json::from_value::<LoadableToolSpec>(tool).ok())
+                    .flat_map(|tool| local_function_names(&ToolSpec::from(tool)))
+                    .filter_map(|name| {
+                        self.canonical_to_flattened.get(&name).cloned().or_else(|| {
+                            self.local_wire_tool_names
+                                .contains(&name.name)
+                                .then_some(name.name)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let output = serde_json::json!({
+                    "loaded_tools": names,
+                    "message": "Matching tools are now available for direct function calls."
+                })
+                .to_string();
+                if let Some(call_id) = call_id {
+                    ResponseItem::FunctionCallOutput {
+                        id,
+                        call_id: Some(call_id),
+                        name: None,
+                        namespace: None,
+                        output: FunctionCallOutputPayload::from_text(output),
+                        internal_chat_message_metadata_passthrough: None,
+                    }
+                } else {
+                    local_discovery_message(output)
+                }
+            }
+            item => item,
+        };
         if let ResponseItem::FunctionCall {
             name, namespace, ..
         } = &mut item
@@ -56,7 +119,29 @@ impl LocalOffloadToolNameMap {
         item
     }
 
-    pub(crate) fn unflatten_response_item(&self, mut item: ResponseItem) -> ResponseItem {
+    pub(crate) fn unflatten_response_item(&self, item: ResponseItem) -> ResponseItem {
+        let mut item = match item {
+            ResponseItem::FunctionCall {
+                name,
+                namespace: None,
+                id,
+                call_id,
+                status,
+                arguments,
+                ..
+            } if self.local_tool_search && name == TOOL_SEARCH_TOOL_NAME => {
+                return ResponseItem::ToolSearchCall {
+                    encrypted_content: None,
+                    id,
+                    call_id: Some(call_id),
+                    status,
+                    execution: "client".to_string(),
+                    arguments: serde_json::from_str(&arguments).unwrap_or(Value::String(arguments)),
+                    internal_chat_message_metadata_passthrough: None,
+                };
+            }
+            item => item,
+        };
         if let ResponseItem::FunctionCall {
             name, namespace, ..
         } = &mut item
@@ -117,6 +202,84 @@ impl LocalOffloadToolNameMap {
     }
 }
 
+fn local_discovery_message(text: String) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        encrypted_content: None,
+        status: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn local_function_names(spec: &ToolSpec) -> Vec<ToolName> {
+    match spec {
+        ToolSpec::Function(function) => vec![ToolName::plain(function.name.clone())],
+        ToolSpec::Namespace(namespace) => namespace
+            .tools
+            .iter()
+            .filter_map(|tool| match tool {
+                ResponsesApiNamespaceTool::Function(function) => Some(ToolName::namespaced(
+                    namespace.name.clone(),
+                    function.name.clone(),
+                )),
+                ResponsesApiNamespaceTool::Custom(_) => None,
+            })
+            .collect(),
+        ToolSpec::ToolSearch { .. } => vec![ToolName::plain(TOOL_SEARCH_TOOL_NAME)],
+        ToolSpec::WebSearch { .. } | ToolSpec::Freeform(_) => Vec::new(),
+    }
+}
+
+fn local_tools_with_discoveries(
+    tools: &[ToolSpec],
+    input: &[ResponseItem],
+) -> Result<Vec<ToolSpec>, serde_json::Error> {
+    let mut result = tools.to_vec();
+    let mut seen = tools
+        .iter()
+        .flat_map(local_function_names)
+        .map(ToolName::with_default_namespace)
+        .collect::<HashSet<_>>();
+    // Current declarations win; otherwise retain the latest discovered schema once.
+    for item in input.iter().rev() {
+        let ResponseItem::ToolSearchOutput { tools, .. } = item else {
+            continue;
+        };
+        for tool in tools.iter().rev() {
+            let mut spec =
+                ToolSpec::from(serde_json::from_value::<LoadableToolSpec>(tool.clone())?);
+            match &mut spec {
+                ToolSpec::Function(function) => {
+                    if !seen.insert(ToolName::plain(function.name.clone()).with_default_namespace())
+                    {
+                        continue;
+                    }
+                }
+                ToolSpec::Namespace(namespace) => {
+                    namespace.tools.retain(|tool| {
+                        let ResponsesApiNamespaceTool::Function(function) = tool else {
+                            return false;
+                        };
+                        seen.insert(
+                            ToolName::namespaced(namespace.name.clone(), function.name.clone())
+                                .with_default_namespace(),
+                        )
+                    });
+                    if namespace.tools.is_empty() {
+                        continue;
+                    }
+                }
+                _ => unreachable!("loadable specs contain only functions and namespaces"),
+            }
+            result.push(spec);
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 pub(crate) fn create_tools_json_for_local_offload(
     tools: &[ToolSpec],
@@ -128,6 +291,10 @@ fn create_tools_json_for_local_offload_with_input(
     tools: &[ToolSpec],
     input: &[ResponseItem],
 ) -> Result<(Vec<Value>, LocalOffloadToolNameMap), serde_json::Error> {
+    let tools = local_tools_with_discoveries(tools, input)?;
+    let local_tool_search = tools
+        .iter()
+        .any(|tool| matches!(tool, ToolSpec::ToolSearch { .. }));
     let mut flattened_to_canonical = HashMap::new();
     let mut canonical_to_flattened = HashMap::new();
     let mut used_names = tools
@@ -149,7 +316,7 @@ fn create_tools_json_for_local_offload_with_input(
         _ => None,
     }));
     let mut canonical_namespace_names = BTreeSet::new();
-    for tool in tools {
+    for tool in &tools {
         if let ToolSpec::Namespace(namespace) = tool {
             for namespace_tool in &namespace.tools {
                 let ResponsesApiNamespaceTool::Function(function) = namespace_tool else {
@@ -185,11 +352,13 @@ fn create_tools_json_for_local_offload_with_input(
     let mut namespace_tools_before_flattening = 0usize;
     let mut special_hosted_specs_removed_locally = 0usize;
 
-    for tool in tools {
+    for tool in &tools {
         match tool {
             ToolSpec::Function(function) => {
                 ordinary_direct_tools += 1;
-                local_tools.push(ToolSpec::Function(function.clone()));
+                let mut function = function.clone();
+                function.defer_loading = None;
+                local_tools.push(ToolSpec::Function(function));
             }
             ToolSpec::Namespace(namespace) => {
                 for namespace_tool in &namespace.tools {
@@ -206,6 +375,7 @@ fn create_tools_json_for_local_offload_with_input(
                     );
                     let mut flattened_function = function.clone();
                     flattened_function.name = flattened_name;
+                    flattened_function.defer_loading = None;
                     if !namespace.description.trim().is_empty() {
                         flattened_function.description = format!(
                             "{}\n\n{}",
@@ -215,7 +385,21 @@ fn create_tools_json_for_local_offload_with_input(
                     local_tools.push(ToolSpec::Function(flattened_function));
                 }
             }
-            ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } | ToolSpec::Freeform(_) => {
+            ToolSpec::ToolSearch {
+                description,
+                parameters,
+                ..
+            } => {
+                local_tools.push(ToolSpec::Function(ResponsesApiTool {
+                    name: TOOL_SEARCH_TOOL_NAME.to_string(),
+                    description: description.clone(),
+                    strict: false,
+                    defer_loading: None,
+                    parameters: parameters.clone(),
+                    output_schema: None,
+                }));
+            }
+            ToolSpec::WebSearch { .. } | ToolSpec::Freeform(_) => {
                 special_hosted_specs_removed_locally += 1;
             }
         }
@@ -254,6 +438,7 @@ fn create_tools_json_for_local_offload_with_input(
             flattened_to_canonical,
             canonical_to_flattened,
             local_wire_tool_names,
+            local_tool_search,
             request_metrics: LocalOffloadRequestToolMetrics {
                 ordinary_direct_tools,
                 namespace_tools_before_flattening,

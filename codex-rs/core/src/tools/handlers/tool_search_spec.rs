@@ -10,6 +10,7 @@ const MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES: usize = 512 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolSearchSourceListing {
     Include,
+    NamesOnly,
     Omit,
 }
 
@@ -32,7 +33,7 @@ pub(crate) fn create_tool_search_tool(
     ]);
 
     let source_section = match source_listing {
-        ToolSearchSourceListing::Include => {
+        ToolSearchSourceListing::Include | ToolSearchSourceListing::NamesOnly => {
             let mut source_descriptions = BTreeMap::new();
             for source in searchable_sources {
                 source_descriptions
@@ -71,6 +72,7 @@ pub(crate) fn create_tool_search_tool(
                     rendered.push_str(&name);
 
                     if let Some(description) = description
+                        && source_listing == ToolSearchSourceListing::Include
                         && description_budget >= 2
                     {
                         rendered.push_str(": ");
@@ -172,6 +174,23 @@ mod tests {
         assert!(!description.contains("You have access to tools from the following sources"));
         assert!(!description.contains("Google Drive"));
         assert!(description.contains("use this tool (`tool_search`) to search"));
+    }
+
+    #[test]
+    fn local_discovery_lists_sources_without_repeating_their_large_descriptions() {
+        let ToolSpec::ToolSearch { description, .. } = create_tool_search_tool(
+            &[ToolSearchSourceInfo {
+                name: "Calendar".to_string(),
+                description: Some("large connector documentation".repeat(40_000)),
+            }],
+            8,
+            ToolSearchSourceListing::NamesOnly,
+        ) else {
+            panic!("expected tool search spec")
+        };
+        assert!(description.contains("- Calendar"));
+        assert!(!description.contains("large connector documentation"));
+        assert!(description.len() < 1_000);
     }
 
     #[test]

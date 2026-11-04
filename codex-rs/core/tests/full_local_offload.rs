@@ -3,6 +3,7 @@ use codex_config::config_toml::ModelOffloadMemoryMode;
 use codex_core::TurnInputRequest;
 use codex_core::config::ModelOffloadConfig;
 use codex_core::config::ModelOffloadContextConfig;
+use codex_features::Feature;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_protocol::protocol::EventMsg;
@@ -10,8 +11,10 @@ use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -109,6 +112,97 @@ async fn full_local_completes_with_an_exhausted_primary_provider() -> Result<()>
     assert_eq!(
         compact_response.single_request().body_json()["model"],
         LOCAL_MODEL
+    );
+    assert!(
+        primary_server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.method.as_str() != "POST")
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_local_discovers_tools_with_plain_function_calls_and_no_primary_requests() -> Result<()>
+{
+    let primary_server = MockServer::start().await;
+    let local_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(402))
+        .expect(0)
+        .mount(&primary_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": LOCAL_MODEL, "context_window": 200_000}]
+        })))
+        .mount(&local_server)
+        .await;
+    let response = mount_sse_sequence(
+        &local_server,
+        vec![
+            sse(vec![
+                ev_response_created("discover"),
+                ev_function_call(
+                    "find-wait",
+                    "tool_search",
+                    r#"{"query":"wait_agent","limit":1}"#,
+                ),
+                ev_completed("discover"),
+            ]),
+            completed_response("after-discovery"),
+        ],
+    )
+    .await;
+    let mut offload = model_offload_config(&local_server, true);
+    offload.mode = codex_config::config_toml::ModelOffloadMode::Full;
+    let test = test_codex()
+        .with_model_info_override("gpt-5.2", |model| {
+            model.tool_mode = Some(codex_protocol::openai_models::ToolMode::Direct);
+            model.supports_search_tool = false;
+        })
+        .with_config(move |config| {
+            config.model_offload = offload;
+            config.features.enable(Feature::Collab).unwrap();
+            config.features.disable(Feature::MultiAgentV2).unwrap();
+        })
+        .build_with_auto_env(&primary_server)
+        .await?;
+    test.submit_turn("Find the tool for waiting on an agent. Do not start an agent.")
+        .await?;
+    let requests = response.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].body_json();
+    assert!(
+        first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["type"] == "function" && tool["name"] == "tool_search")
+    );
+    assert!(!first.to_string().contains("ns__functions__wait_agent"));
+    let second = requests[1].body_json();
+    assert!(second["tools"].as_array().unwrap().iter().any(|tool| {
+        tool["name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("__wait_agent"))
+    }));
+    let output = second["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "find-wait")
+        .expect("client discovery returned a portable function output");
+    assert!(output["output"].as_str().unwrap().contains("loaded_tools"));
+    assert!(
+        second["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["type"] != "tool_search_call" && item["type"] != "tool_search_output")
     );
     assert!(
         primary_server

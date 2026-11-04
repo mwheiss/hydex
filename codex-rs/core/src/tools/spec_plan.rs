@@ -451,9 +451,6 @@ pub(crate) fn finalize_tool_router_for_wire(
     hosted_specs.retain(|spec| registry.tool_policy.allows(&ToolName::plain(spec.name())));
     let deferred_tool_search_enabled =
         deferred_tool_search_enabled(turn_context, model_info, wire_target);
-    if wire_target == ToolWireTarget::LocalOffload {
-        expose_deferred_tools_directly(&mut registry);
-    }
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
     enforce_strict_3p_tools(turn_context, model_info, &mut registry);
     let tool_mode = effective_tool_mode(turn_context, model_info);
@@ -537,6 +534,7 @@ pub(crate) fn finalize_tool_router_for_wire(
             &mut registry,
             tool_search_handler_cache,
             exposure,
+            wire_target,
         );
     }
 
@@ -642,16 +640,6 @@ pub(crate) fn finalize_tool_router_for_wire(
     ))
 }
 
-fn expose_deferred_tools_directly(registry: &mut ToolRegistry) {
-    for tool in registry.entries_mut() {
-        tool.exposure = match tool.exposure {
-            ToolExposure::Deferred => ToolExposure::Direct,
-            ToolExposure::DeferredModelOnly => ToolExposure::DirectModelOnly,
-            exposure => exposure,
-        };
-    }
-}
-
 fn trace_local_tool_router_surface(registry: &ToolRegistry, model_visible_specs: &[ToolSpec]) {
     let deferred_tools = registry
         .entries()
@@ -699,14 +687,22 @@ fn trace_local_tool_router_surface(registry: &ToolRegistry, model_visible_specs:
         })
         .count();
 
-    if deferred_tools != 0 {
+    let has_local_discovery = model_visible_specs.iter().any(
+        |spec| matches!(spec, ToolSpec::ToolSearch { execution, .. } if execution == "client"),
+    );
+    let executable_deferred_tools_without_model_visible_discovery_route = if has_local_discovery {
+        0
+    } else {
+        deferred_tools
+    };
+    if executable_deferred_tools_without_model_visible_discovery_route != 0 {
         tracing::error!(
-            executable_deferred_tools_without_model_visible_discovery_route = deferred_tools,
+            executable_deferred_tools_without_model_visible_discovery_route,
             "local tool reachability invariant violated"
         );
     }
     debug_assert_eq!(
-        deferred_tools, 0,
+        executable_deferred_tools_without_model_visible_discovery_route, 0,
         "local routers cannot leave executable deferred tools without a discovery route"
     );
     tracing::debug!(
@@ -714,7 +710,7 @@ fn trace_local_tool_router_surface(registry: &ToolRegistry, model_visible_specs:
         hidden_tools,
         special_hosted_specs_removed_locally,
         tools_present_in_router_absent_from_local_request,
-        executable_deferred_tools_without_model_visible_discovery_route = deferred_tools,
+        executable_deferred_tools_without_model_visible_discovery_route,
         "built local offload tool router"
     );
 }
@@ -902,7 +898,9 @@ fn deferred_tool_search_enabled(
     model_info: &ModelInfo,
     wire_target: ToolWireTarget,
 ) -> bool {
-    wire_target == ToolWireTarget::Primary && search_tool_enabled(turn_context, model_info)
+    // Local discovery runs in the client and is projected to an ordinary function tool.
+    // Expanding every deferred schema upfront can exhaust even a fresh local context.
+    wire_target == ToolWireTarget::LocalOffload || search_tool_enabled(turn_context, model_info)
 }
 
 pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
@@ -1825,6 +1823,7 @@ fn append_tool_search_executor(
     registry: &mut ToolRegistry,
     tool_search_handler_cache: &ToolSearchHandlerCache,
     exposure: ToolExposure,
+    wire_target: ToolWireTarget,
 ) {
     let source_listing = if turn_context
         .config
@@ -1832,6 +1831,8 @@ fn append_tool_search_executor(
         .enabled(Feature::DeferredToolWorldState)
     {
         ToolSearchSourceListing::Omit
+    } else if wire_target == ToolWireTarget::LocalOffload {
+        ToolSearchSourceListing::NamesOnly
     } else {
         ToolSearchSourceListing::Include
     };

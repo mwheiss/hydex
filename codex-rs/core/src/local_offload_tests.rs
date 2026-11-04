@@ -467,7 +467,7 @@ fn historical_ordinary_call_reserves_name_before_historical_namespace_flattening
 }
 
 #[test]
-fn drops_hosted_tool_specs_for_local_wire() {
+fn projects_client_search_as_a_function_and_drops_hosted_tool_specs() {
     let tools = vec![
         ToolSpec::Function(function("plain")),
         ToolSpec::ToolSearch {
@@ -489,17 +489,103 @@ fn drops_hosted_tool_specs_for_local_wire() {
     let (wire_tools, names) =
         create_tools_json_for_local_offload(&tools).expect("local tools serialize");
 
-    assert_eq!(wire_tools.len(), 1);
+    assert_eq!(wire_tools.len(), 2);
     assert_eq!(wire_tools[0]["name"], "plain");
+    assert_eq!(wire_tools[1]["name"], "tool_search");
+    assert_eq!(wire_tools[1]["type"], "function");
     assert_eq!(
         names.request_metrics,
         LocalOffloadRequestToolMetrics {
             ordinary_direct_tools: 1,
             namespace_tools_before_flattening: 0,
-            flattened_functions: 1,
-            special_hosted_specs_removed_locally: 2,
+            flattened_functions: 2,
+            special_hosted_specs_removed_locally: 1,
             collision_renamed_tools: 0,
         }
+    );
+}
+
+#[test]
+fn local_tool_discovery_round_trips_calls_and_loads_only_selected_schemas() {
+    let search = ToolSpec::ToolSearch {
+        execution: "client".to_string(),
+        description: "Discover tools on demand.".to_string(),
+        parameters: serde_json::from_value(json!({"type": "object"})).unwrap(),
+    };
+    let visible = vec![ToolSpec::Function(function("plain")), search];
+    let (initial, initial_names) = create_tools_json_for_local_offload(&visible).unwrap();
+    assert_eq!(initial.len(), 2);
+    let local_call: ResponseItem = serde_json::from_value(json!({
+        "type": "function_call", "name": "tool_search", "call_id": "find-tool",
+        "arguments": "{\"query\":\"calendar timezone\",\"limit\":1}"
+    }))
+    .unwrap();
+    let canonical_call = initial_names.unflatten_response_item(local_call.clone());
+    assert!(matches!(&canonical_call, ResponseItem::ToolSearchCall {
+        execution, arguments, ..
+    } if execution == "client" && arguments["query"] == "calendar timezone"));
+    let projected_call =
+        serde_json::to_value(initial_names.flatten_response_item(canonical_call.clone())).unwrap();
+    assert_eq!(projected_call["call_id"], "find-tool");
+    assert_eq!(projected_call["type"], "function_call");
+    assert_eq!(
+        serde_json::from_str::<Value>(projected_call["arguments"].as_str().unwrap()).unwrap(),
+        json!({"query": "calendar timezone", "limit": 1})
+    );
+
+    let mut selected = function("get_timezone");
+    selected.defer_loading = Some(true);
+    let discovered = serde_json::to_value(codex_tools::LoadableToolSpec::Namespace(
+        ResponsesApiNamespace {
+            name: "calendar".to_string(),
+            description: "Calendar tools.".to_string(),
+            tools: vec![ResponsesApiNamespaceTool::Function(selected)],
+        },
+    ))
+    .unwrap();
+    let canonical_output: ResponseItem = serde_json::from_value(json!({
+        "type": "tool_search_output", "call_id": "find-tool", "status": "completed",
+        "execution": "client", "tools": [discovered]
+    }))
+    .unwrap();
+    let canonical = vec![canonical_call, canonical_output.clone(), canonical_output];
+    let original = canonical.clone();
+    let mut request = request_with_input(canonical);
+    let names = transform_request_for_local_offload(&mut request, &visible).unwrap();
+    let tools: Value = serde_json::to_value(request.tools.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        tools.as_array().unwrap().len(),
+        3,
+        "repeated discoveries must not duplicate schemas"
+    );
+    let loaded = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "ns__calendar__get_timezone")
+        .unwrap();
+    assert!(loaded.get("defer_loading").is_none());
+    assert!(request.input.iter().all(|item| matches!(
+        item,
+        ResponseItem::FunctionCall { .. } | ResponseItem::FunctionCallOutput { .. }
+    )));
+    let output = serde_json::to_value(&request.input[1]).unwrap();
+    let result: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        result["loaded_tools"],
+        json!(["ns__calendar__get_timezone"])
+    );
+    assert!(!output.to_string().contains("parameters"));
+    assert!(matches!(original[1], ResponseItem::ToolSearchOutput { .. }));
+    let call: ResponseItem = serde_json::from_value(json!({
+        "type": "function_call", "name": "ns__calendar__get_timezone", "call_id": "use-tool",
+        "arguments": "{}"
+    }))
+    .unwrap();
+    assert!(
+        matches!(names.unflatten_response_item(call), ResponseItem::FunctionCall {
+        name, namespace: Some(namespace), ..
+    } if name == "get_timezone" && namespace == "calendar")
     );
 }
 

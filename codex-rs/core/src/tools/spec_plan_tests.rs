@@ -1600,7 +1600,7 @@ async fn code_mode_tool_search_respects_exclusions_and_requires_deferred_tools()
 }
 
 #[tokio::test]
-async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
+async fn local_offload_discovers_deferred_tools_without_expanding_the_catalog() {
     let inputs = || ToolPlanInputs {
         tool_runtimes: vec![
             mcp_runtime(
@@ -1647,31 +1647,15 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
         ToolWireTarget::LocalOffload,
     )
     .await;
-    local.assert_visible_lacks(&["tool_search"]);
-    assert_eq!(
-        local.namespace_function_names("mcp__searchable"),
-        &["lookup"]
-    );
-    assert_eq!(
-        local.namespace_function_names("mcp__model_only"),
-        &["inspect"]
-    );
-    assert_eq!(local.namespace_function_names("dynamic"), &["run"]);
+    local.assert_visible_contains(&["tool_search"]);
+    local.assert_visible_lacks(&["mcp__searchable", "mcp__model_only", "dynamic"]);
     assert_eq!(
         local.exposure(&ToolName::namespaced("mcp__searchable", "lookup").to_string()),
-        ToolExposure::Direct
+        ToolExposure::Deferred
     );
     assert_eq!(
         local.exposure(&ToolName::namespaced("mcp__model_only", "inspect").to_string()),
-        ToolExposure::DirectModelOnly
-    );
-    assert!(
-        local
-            .exposures
-            .values()
-            .all(|exposure| !exposure.is_deferred()),
-        "local router must not retain deferred tools: {:?}",
-        local.exposures
+        ToolExposure::DeferredModelOnly
     );
 
     let (wire_tools, _) = create_tools_json_for_local_offload(&local.visible_specs)
@@ -1680,14 +1664,15 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
-    assert!(wire_names.contains(&"ns__mcp__searchable__lookup"));
-    assert!(wire_names.contains(&"ns__mcp__model_only__inspect"));
-    assert!(wire_names.contains(&"ns__dynamic__run"));
+    assert!(wire_names.contains(&"tool_search"));
+    assert!(!wire_names.contains(&"ns__mcp__searchable__lookup"));
+    assert!(!wire_names.contains(&"ns__mcp__model_only__inspect"));
+    assert!(!wire_names.contains(&"ns__dynamic__run"));
+    assert!(wire_tools.iter().all(|tool| tool["type"] == "function"));
     let ToolSpec::Freeform(exec) = local.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
         panic!("expected code mode exec tool");
     };
-    // Upstream keeps catalog guidance stable across catalog changes. Local offload must
-    // still declare every callable nested tool without advertising hosted tool search.
+    // Nested tools stay callable through the runtime catalog, without eager descriptions.
     assert!(!exec.description.contains("await tools.tool_search("));
     for tool_name in [
         ToolName::namespaced("mcp__searchable", "lookup"),
@@ -1695,8 +1680,53 @@ async fn local_offload_exposes_deferred_tools_without_hosted_tool_search() {
     ] {
         let name = codex_tools::code_mode_name_for_tool_name(&tool_name);
         assert_eq!(local.code_mode_tool_names.get(&name), Some(&tool_name));
-        assert!(exec.description.contains(&format!("### `{name}`")));
+        assert!(!exec.description.contains(&format!("### `{name}`")));
     }
+}
+
+#[tokio::test]
+async fn local_offload_large_catalog_fits_a_fresh_context_without_hosted_search_support() {
+    let description = "Connector instructions and input documentation. ".repeat(80);
+    let tool_runtimes = (0..392)
+        .map(|index| {
+            let mut info = mcp_tool("large-catalog", "mcp__catalog", &format!("lookup_{index}"));
+            info.tool.description = Some(description.clone().into());
+            info.namespace_description = Some(description.clone());
+            RegisteredTool {
+                runtime: Arc::new(McpHandler::new(info).unwrap()),
+                exposure: ToolExposure::Deferred,
+                model_spec: None,
+            }
+        })
+        .collect();
+    let local = probe_with_wire_target(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = false;
+            })
+        },
+        ToolPlanInputs {
+            tool_runtimes,
+            ..Default::default()
+        },
+        ToolWireTarget::LocalOffload,
+    )
+    .await;
+    local.assert_visible_contains(&["tool_search"]);
+    local.assert_visible_lacks(&["mcp__catalog"]);
+    for index in 0..392 {
+        assert_eq!(
+            local.exposure(
+                &ToolName::namespaced("mcp__catalog", format!("lookup_{index}")).to_string()
+            ),
+            ToolExposure::Deferred
+        );
+    }
+    let (wire, _) = create_tools_json_for_local_offload(&local.visible_specs).unwrap();
+    assert!(
+        serde_json::to_vec(&wire).unwrap().len() < 16_000,
+        "the initial local schema must stay small even with hundreds of enabled tools"
+    );
 }
 
 #[tokio::test]
@@ -3145,7 +3175,7 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 }
 
 #[tokio::test]
-async fn local_offload_exposes_v1_multi_agent_tools_directly() {
+async fn local_offload_keeps_v1_multi_agent_tools_discoverable() {
     let plan = probe_with_wire_target(
         |turn| {
             update_turn_settings_for_test(turn, |settings| {
@@ -3159,8 +3189,8 @@ async fn local_offload_exposes_v1_multi_agent_tools_directly() {
     )
     .await;
 
-    plan.assert_visible_lacks(&["tool_search"]);
-    plan.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
+    plan.assert_visible_contains(&["tool_search"]);
+    plan.assert_visible_lacks(&[MULTI_AGENT_V1_NAMESPACE]);
     for tool_name in [
         "spawn_agent",
         "send_input",
@@ -3170,7 +3200,7 @@ async fn local_offload_exposes_v1_multi_agent_tools_directly() {
     ] {
         assert_eq!(
             plan.exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name).to_string()),
-            ToolExposure::Direct
+            ToolExposure::Deferred
         );
     }
 
@@ -3179,7 +3209,7 @@ async fn local_offload_exposes_v1_multi_agent_tools_directly() {
     assert!(
         wire_tools
             .iter()
-            .any(|tool| { tool["name"] == format!("ns__{MULTI_AGENT_V1_NAMESPACE}__spawn_agent") })
+            .any(|tool| tool["name"] == "tool_search" && tool["type"] == "function")
     );
 }
 

@@ -238,6 +238,14 @@ fn local_tools_with_discoveries(
     input: &[ResponseItem],
 ) -> Result<Vec<ToolSpec>, serde_json::Error> {
     let mut result = tools.to_vec();
+    // Compaction, validators and disabled discovery routes must retain their current tool
+    // surface. Historical search results do not authorize tools in a tool-free request.
+    if !tools
+        .iter()
+        .any(|tool| matches!(tool, ToolSpec::ToolSearch { execution, .. } if execution == "client"))
+    {
+        return Ok(result);
+    }
     let mut seen = tools
         .iter()
         .flat_map(local_function_names)

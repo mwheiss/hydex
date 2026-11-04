@@ -550,6 +550,13 @@ fn local_tool_discovery_round_trips_calls_and_loads_only_selected_schemas() {
     .unwrap();
     let canonical = vec![canonical_call, canonical_output.clone(), canonical_output];
     let original = canonical.clone();
+    let mut tool_free = request_with_input(canonical.clone());
+    transform_request_for_local_offload(&mut tool_free, &[]).unwrap();
+    assert_eq!(
+        serde_json::to_value(tool_free.tools.unwrap()).unwrap(),
+        json!([]),
+        "history must not re-enable tools during local compaction or disabled discovery"
+    );
     let mut request = request_with_input(canonical);
     let names = transform_request_for_local_offload(&mut request, &visible).unwrap();
     let tools: Value = serde_json::to_value(request.tools.as_ref().unwrap()).unwrap();

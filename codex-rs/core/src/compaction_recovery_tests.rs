@@ -48,6 +48,7 @@ fn response_stream(events: Vec<CodexResult<ResponseEvent>>) -> crate::ResponseSt
     }
     drop(tx_event);
     crate::ResponseStream {
+        routing_affinity: Default::default(),
         rx_event,
         interrupt: None,
         consumer_dropped: CancellationToken::new(),

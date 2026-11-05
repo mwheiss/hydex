@@ -100,6 +100,9 @@ async fn live_local_offload_responses_turn_completes() {
         .unwrap_or_else(|_| DEFAULT_LLAMA_SERVER_BASE_URL.to_string());
     let local_model = discover_llama_server_model(&base_url).await;
     let local_provider = ModelProviderInfo {
+        credential_file: None,
+        location: None,
+        project_id: None,
         capabilities: None,
         name: "llama-server".into(),
         gateway_oauth: None,

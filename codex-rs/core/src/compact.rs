@@ -1132,7 +1132,7 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Arc<Prompt>,
     phase: CompactionPhase,
-    defer_output: bool,
+    _defer_output: bool,
 ) -> CodexResult<CompactionResponse> {
     let turn_context = step_context.turn.as_ref();
     let mut includes_reasoning = turn_context.model_info().use_responses_lite;

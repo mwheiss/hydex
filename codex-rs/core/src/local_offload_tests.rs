@@ -520,7 +520,7 @@ fn local_tool_discovery_round_trips_calls_and_loads_only_selected_schemas() {
         "arguments": "{\"query\":\"calendar timezone\",\"limit\":1}"
     }))
     .unwrap();
-    let canonical_call = initial_names.unflatten_response_item(local_call.clone());
+    let canonical_call = initial_names.unflatten_response_item(local_call);
     assert!(matches!(&canonical_call, ResponseItem::ToolSearchCall {
         execution, arguments, ..
     } if execution == "client" && arguments["query"] == "calendar timezone"));

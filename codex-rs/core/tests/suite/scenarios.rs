@@ -1620,7 +1620,8 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             configure_scenario_catalog(config);
-            config.model_reasoning_effort = Some(ReasoningEffort::Medium);
+            config.model_reasoning_effort =
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium);
             config.include_environment_context = false;
             for feature in [
                 Feature::Collab,

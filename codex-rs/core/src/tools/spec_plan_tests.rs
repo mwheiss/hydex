@@ -1696,6 +1696,7 @@ async fn local_offload_large_catalog_fits_a_fresh_context_without_hosted_search_
                 runtime: Arc::new(McpHandler::new(info).unwrap()),
                 exposure: ToolExposure::Deferred,
                 model_spec: None,
+                native_review: Default::default(),
             }
         })
         .collect();

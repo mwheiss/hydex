@@ -2470,6 +2470,7 @@ async fn run_sampling_request(
         environments: step_context.environments.clone(),
         inherited_environments: step_context.inherited_environments.clone(),
         executor_hook_sources: step_context.executor_hook_sources.clone(),
+        serving_assessment: step_context.serving_assessment.clone(),
         mcp: Arc::clone(&step_context.mcp),
         tool_router: router,
         loaded_agents_md: step_context.loaded_agents_md.clone(),

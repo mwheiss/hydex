@@ -5,7 +5,9 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::AgentMessageContent;
+use codex_protocol::openai_models::CatalogModel;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Arc;
@@ -176,8 +178,8 @@ fn function_call_item() -> ResponseItem {
     }
 }
 
-fn test_model_info_with_context_window(context_window: Option<i64>) -> ModelInfo {
-    serde_json::from_value(json!({
+fn test_model_info_with_context_window(context_window: Option<i64>) -> CatalogModel {
+    let model: ModelInfo = serde_json::from_value(json!({
         "slug": "gpt-test",
         "display_name": "gpt-test",
         "description": "desc",
@@ -203,7 +205,11 @@ fn test_model_info_with_context_window(context_window: Option<i64>) -> ModelInfo
         "auto_compact_token_limit": null,
         "experimental_supported_tools": []
     }))
-    .expect("deserialize test model info")
+    .expect("deserialize test model info");
+    CatalogModel {
+        model: Arc::new(model),
+        origin: ModelOrigin::Synthetic,
+    }
 }
 
 #[test]

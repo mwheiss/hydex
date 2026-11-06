@@ -2098,6 +2098,8 @@ async fn incomplete_response_traces_attempted_call_without_streaming_it() -> any
             attempt,
             test_model_provider(),
             /*last_response_tx*/ None,
+            /*local_tool_names*/ None,
+            /*local_output_byte_limit*/ None,
         );
         assert!(matches!(stream.next().await, Some(Err(_))));
         assert!(stream.next().await.is_none());

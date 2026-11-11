@@ -455,8 +455,10 @@ fn materialize_rollout_items(
     initial_guardian_history: Option<&codex_history::GuardianHistoryCheckpoint>,
     rollout_items: &[RolloutItem],
 ) -> MaterializedRolloutHistory {
-    let mut history =
-        ContextManager::for_session(&turn_context.session_source, &turn_context.config.features);
+    let mut history = ContextManager::for_session(
+        turn_context.root_capabilities_restricted,
+        &turn_context.config.features,
+    );
     history.replace_annotated(initial_history);
     history.restore_review_context(
         initial_retained_context,

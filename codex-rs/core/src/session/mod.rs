@@ -4665,8 +4665,10 @@ impl Session {
                     }
                     // Volatile sections must refresh in the new window even if their
                     // previous messages and comparison state survived in the suffix.
-                    for section_id in reset_world_state_sections {
-                        world_state_baseline.remove_section(section_id);
+                    if let Some(baseline) = world_state_baseline.as_mut() {
+                        for section_id in reset_world_state_sections {
+                            baseline.remove_section(section_id);
+                        }
                     }
                     // Prefix replacement already retains all edits in the live suffix.
                     let input_goal_ids = Default::default();

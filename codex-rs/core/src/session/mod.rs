@@ -4995,10 +4995,13 @@ impl Session {
                     }
                 }
                 CompactedHistoryInstallation::Prefix(prefix) => {
+                    let Some(world_state_baseline) = world_state_baseline else {
+                        return false;
+                    };
                     let Some(replacement) = prefix.assemble_replacement(
                         &mut state,
                         items,
-                        world_state_baseline.expect("prefix compaction captures a world-state baseline"),
+                        world_state_baseline,
                         self.services.model_client.auth_owner(),
                     ) else {
                         return false;

@@ -160,8 +160,8 @@ impl ConnectionPool {
     }
 
     fn start_refill(self: &Arc<Self>, guard: OwnedMutexGuard<()>) -> Option<JoinHandle<()>> {
-        // Runtime sources must be reauthenticated when a classification is admitted.
-        if self.config.provider.runtime_auth().is_some() {
+        // Reauthenticate runtime sources and never prefill a local model pool.
+        if self.config.provider.runtime_auth().is_some() || self.config.local_model.is_some() {
             return None;
         }
         let mut retry_after = self
@@ -385,12 +385,18 @@ impl ConnectionPool {
     async fn client_setup(&self) -> Result<ClientSetup, LunaSamplerError> {
         let setup = codex_model_provider::resolve_request(
             self.config.provider.as_ref(),
-            Some(ProviderAuthScope {
-                agent_identity_policy: self.config.agent_identity_policy,
-                session_source: self.config.session_source.clone(),
-                agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
-            }),
-            Some(&self.config.workspace_routing),
+            self.config
+                .local_model
+                .is_none()
+                .then(|| ProviderAuthScope {
+                    agent_identity_policy: self.config.agent_identity_policy,
+                    session_source: self.config.session_source.clone(),
+                    agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
+                }),
+            self.config
+                .local_model
+                .is_none()
+                .then_some(&self.config.workspace_routing),
             self.config.http_client_factory.clone(),
         )
         .await
@@ -425,6 +431,9 @@ impl ConnectionPool {
         thread_id: &str,
         request_kind: RequestMode,
     ) -> Result<HeaderMap, LunaSamplerError> {
+        if self.config.local_model.is_some() {
+            return Ok(HeaderMap::new());
+        }
         let mut headers = build_session_headers(
             Some(self.config.session_id.clone()),
             Some(thread_id.to_owned()),
@@ -454,6 +463,9 @@ impl ConnectionPool {
         Ok(headers)
     }
     fn responses_request_kind(&self, auth: Option<&CodexAuth>) -> RequestMode {
+        if self.config.local_model.is_some() {
+            return RequestMode::Regular;
+        }
         let provider = self.config.provider.info();
         if auth.is_some_and(CodexAuth::uses_codex_backend)
             && provider.is_openai()
@@ -646,8 +658,18 @@ impl ConnectionLease {
                     client.stream_request(
                         request.clone(),
                         ResponsesOptions {
-                            session_id: Some(self.pool.config.session_id.clone()),
-                            thread_id: Some(self.thread_id.clone()),
+                            session_id: self
+                                .pool
+                                .config
+                                .local_model
+                                .is_none()
+                                .then(|| self.pool.config.session_id.clone()),
+                            thread_id: self
+                                .pool
+                                .config
+                                .local_model
+                                .is_none()
+                                .then(|| self.thread_id.clone()),
                             extra_headers: self
                                 .pool
                                 .headers(&self.thread_id, self.request_kind)

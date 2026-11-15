@@ -629,6 +629,19 @@ pub struct ThreadSettingsOverrides {
     /// Updated model slug. When set, the model info is derived automatically.
     pub model: Option<String>,
 
+    /// Runtime override for local model offload.
+    ///
+    /// Use `Some(Some(_))` to set a runtime override, `Some(None)` to clear it
+    /// and follow config, or `None` to leave the existing value unchanged.
+    pub model_offload_override: Option<Option<crate::config_types::ModelOffloadRuntimeOverride>>,
+
+    /// Runtime override for local/primary compaction routing.
+    ///
+    /// Use `Some(Some(_))` to set a runtime override, `Some(None)` to clear it
+    /// and follow config, or `None` to leave the existing value unchanged.
+    pub model_offload_compaction_override:
+        Option<Option<crate::config_types::ModelOffloadCompactionRuntimeOverride>>,
+
     /// Updated reasoning effort (honored only for reasoning-capable models).
     ///
     /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear the
@@ -2539,6 +2552,13 @@ pub struct ThreadSettingsSnapshot {
     /// Thread-owned plugin selection, retained even when a plugin is unavailable.
     #[serde(default)]
     pub disabled_plugin_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_offload_override: Option<crate::config_types::ModelOffloadRuntimeOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_offload_compaction_override:
+        Option<crate::config_types::ModelOffloadCompactionRuntimeOverride>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -3701,6 +3721,8 @@ pub struct TurnContextItem {
     /// Optional so newer readers also accept its future removal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<ReasoningSummaryConfig>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offload_ever_used: bool,
 }
 
 impl<'de> Deserialize<'de> for TurnContextItem {
@@ -3730,6 +3752,8 @@ impl<'de> Deserialize<'de> for TurnContextItem {
             cyber_access_program: Option<CyberAccessProgram>,
             effort: Option<ReasoningEffortConfig>,
             summary: Option<ReasoningSummaryConfig>,
+            #[serde(default)]
+            offload_ever_used: bool,
         }
 
         let wire = Wire::deserialize(deserializer)?;
@@ -3776,6 +3800,7 @@ impl<'de> Deserialize<'de> for TurnContextItem {
             cyber_access_program: wire.cyber_access_program,
             effort: wire.effort,
             summary: wire.summary,
+            offload_ever_used: wire.offload_ever_used,
         })
     }
 }
@@ -6695,6 +6720,13 @@ mod tests {
             "summary": "none",
         });
         let item: TurnContextItem = serde_json::from_value(legacy.clone())?;
+        assert!(!item.offload_ever_used);
+        let mut offloaded = legacy.clone();
+        offloaded["offload_ever_used"] = json!(true);
+        let restored: TurnContextItem = serde_json::from_value(offloaded)?;
+        assert!(restored.offload_ever_used);
+        assert_eq!(serde_json::to_value(&restored)?["offload_ever_used"], true);
+
         let profile = PermissionProfile::from_runtime_permissions(
             &file_system,
             NetworkSandboxPolicy::Enabled,

@@ -75,6 +75,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         window_id: Some(window_id.clone()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        remote_compaction_model: None,
         resume_metadata: None,
     }))];
 

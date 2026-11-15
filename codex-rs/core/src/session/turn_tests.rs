@@ -1,13 +1,112 @@
 use super::*;
+use crate::config::ModelOffloadContextConfig;
+use crate::session::tests::update_turn_settings_for_test;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::AgentMessageContent;
+use codex_protocol::openai_models::CatalogModel;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::sync::Arc;
 use tracing_subscriber::prelude::*;
 
 struct RewriteAgentMessageContributor;
+
+#[tokio::test]
+async fn primary_auto_compaction_without_offload_preserves_opaque_history() -> anyhow::Result<()> {
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+    use codex_login::CodexAuth;
+    use codex_model_provider_info::ModelProviderCapabilities;
+    use codex_model_provider_info::ModelProviderInfo;
+    use core_test_support::responses;
+
+    let server = responses::start_mock_server().await;
+    let request = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("primary-summary", "primary summary"),
+            responses::ev_completed("primary-compaction"),
+        ]),
+    )
+    .await;
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.name = "compatible-primary".to_string();
+    provider.supports_websockets = false;
+    provider.capabilities = Some(ModelProviderCapabilities {
+        remote_compaction: Some(RemoteCompactionSupport::Unsupported),
+        ..Default::default()
+    });
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("test-primary-key"),
+        Vec::new(),
+        move |config| {
+            config.model_provider = provider;
+            config.model_offload = Default::default();
+        },
+    )
+    .await;
+    assert!(
+        !session
+            .services
+            .model_client
+            .local_offload_enabled_for_turns()
+    );
+    session
+        .replace_history(
+            vec![
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: "primary-readable-encrypted-state".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
+
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue primary work".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+            None,
+        )
+        .await;
+    let step = session
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await?;
+    let mut client = session.services.model_client.new_session();
+    run_auto_compact(
+        &session,
+        Arc::clone(&step),
+        step,
+        &mut client,
+        CompactionReason::ContextLimit,
+        CompactionPhase::PreTurn,
+        None,
+    )
+    .await?;
+    let body = request.single_request().body_json();
+    assert!(
+        body["input"]
+            .as_array()
+            .expect("primary input")
+            .iter()
+            .any(|item| {
+                item["type"] == "compaction"
+                    && item["encrypted_content"] == "primary-readable-encrypted-state"
+            })
+    );
+    assert!(!session.services.model_client.offload_ever_used());
+    Ok(())
+}
 
 impl TurnItemContributor for RewriteAgentMessageContributor {
     fn contribute<'a>(
@@ -62,6 +161,271 @@ fn post_sampling_token_estimate_is_disabled_by_always_on_sinks() {
         tracing::callsite::DefaultCallsite::new(&METADATA);
 
     assert!(tracing::Subscriber::register_callsite(&subscriber, &METADATA).is_never());
+}
+
+fn function_call_item() -> ResponseItem {
+    ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
+
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call-1".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+        encrypted_function_args: None,
+    }
+}
+
+fn test_model_info_with_context_window(context_window: Option<i64>) -> CatalogModel {
+    let model: ModelInfo = serde_json::from_value(json!({
+        "slug": "gpt-test",
+        "display_name": "gpt-test",
+        "description": "desc",
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [
+            {"effort": "medium", "description": "medium"}
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": 1,
+        "upgrade": null,
+        "base_instructions": "base instructions",
+        "model_messages": null,
+        "supports_reasoning_summaries": false,
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": null,
+        "truncation_policy": {"mode": "bytes", "limit": 10000},
+        "supports_parallel_tool_calls": false,
+        "supports_image_detail_original": false,
+        "context_window": context_window,
+        "auto_compact_token_limit": null,
+        "experimental_supported_tools": []
+    }))
+    .expect("deserialize test model info");
+    CatalogModel {
+        model: Arc::new(model),
+        origin: ModelOrigin::Synthetic,
+    }
+}
+
+#[test]
+fn local_sampling_validation_candidate_classifies_final_text() {
+    assert_eq!(
+        local_sampling_validation_candidate(false, &assistant_output_text("ordinary final text"),),
+        Some((
+            LocalOutputKind::FinalText,
+            "ordinary final text".to_string()
+        ))
+    );
+}
+
+#[test]
+fn local_sampling_validation_candidate_classifies_structured_output() {
+    let prompt = Prompt {
+        output_schema: Some(json!({"type": "object"})),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        local_sampling_validation_candidate(
+            prompt.output_schema.is_some(),
+            &assistant_output_text(r#"{"ok":true}"#)
+        ),
+        Some((
+            LocalOutputKind::StructuredOutput,
+            r#"{"ok":true}"#.to_string()
+        ))
+    );
+}
+
+#[test]
+fn local_sampling_validation_candidate_classifies_tool_calls() {
+    assert_eq!(
+        local_sampling_validation_candidate(false, &function_call_item()).map(|(kind, _)| kind),
+        Some(LocalOutputKind::ToolCalls)
+    );
+}
+
+#[tokio::test]
+async fn local_sampling_validation_rejects_broken_final_text() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+
+    let err = validate_completed_local_sampling_item(
+        &turn_context,
+        false,
+        &assistant_output_text("<think>hidden scratch</think>"),
+        /*local_context_window*/ None,
+    )
+    .expect_err("reasoning leakage should reject local final text");
+
+    assert!(
+        err.to_string().contains("failed sanity validation"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn offload_context_window_200000_derives_auto_compact_thresholds() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    });
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context = ModelOffloadContextConfig {
+        context_window: Some(200_000),
+        ..Default::default()
+    };
+
+    let thresholds = select_auto_compact_thresholds(
+        &turn_context,
+        &turn_context.config.model_offload.context,
+        /*use_local_thresholds*/ true,
+    );
+
+    assert_eq!(thresholds.auto_compact_token_limit, Some(180_000));
+    assert_eq!(thresholds.effective_context_window, Some(190_000));
+}
+
+#[tokio::test]
+async fn offload_explicit_auto_compact_limit_is_clamped_to_local_90_percent() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    });
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context = ModelOffloadContextConfig {
+        context_window: Some(200_000),
+        auto_compact_token_limit: Some(250_000),
+        ..Default::default()
+    };
+
+    let thresholds = select_auto_compact_thresholds(
+        &turn_context,
+        &turn_context.config.model_offload.context,
+        /*use_local_thresholds*/ true,
+    );
+
+    assert_eq!(thresholds.auto_compact_token_limit, Some(180_000));
+    assert_eq!(thresholds.effective_context_window, Some(190_000));
+}
+
+#[tokio::test]
+async fn offload_threshold_selector_preserves_no_offload_model_behavior() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(Some(128_000)));
+    });
+    let config = Arc::make_mut(&mut turn_context.config);
+    config.model_context_window = None;
+    config.model_offload.context = ModelOffloadContextConfig {
+        context_window: Some(200_000),
+        ..Default::default()
+    };
+
+    let thresholds = select_auto_compact_thresholds(
+        &turn_context,
+        &turn_context.config.model_offload.context,
+        /*use_local_thresholds*/ false,
+    );
+
+    assert_eq!(thresholds.auto_compact_token_limit, Some(115_200));
+    assert_eq!(thresholds.effective_context_window, Some(121_600));
+}
+
+#[tokio::test]
+async fn offload_ever_used_alone_does_not_apply_local_auto_compact_thresholds() {
+    let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context
+        .context_window = Some(200_000);
+    session.services.model_client.seed_offload_ever_used(true);
+
+    assert!(session.services.model_client.offload_ever_used());
+    assert!(
+        !session
+            .services
+            .model_client
+            .local_offload_enabled_for_turns()
+    );
+    assert!(!local_offload_context_applies_to_auto_compaction(
+        &turn_context.config.model_offload.context,
+        session
+            .services
+            .model_client
+            .local_offload_enabled_for_turns(),
+    ));
+    assert_eq!(
+        auto_compact_thresholds(
+            &turn_context,
+            &turn_context.config.model_offload.context,
+            session
+                .services
+                .model_client
+                .local_offload_enabled_for_turns(),
+        ),
+        select_auto_compact_thresholds(
+            &turn_context,
+            &turn_context.config.model_offload.context,
+            /*use_local_thresholds*/ false,
+        )
+    );
+}
+
+#[tokio::test]
+async fn turn_forced_primary_uses_primary_auto_compact_thresholds() {
+    let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn_context.config)
+        .model_offload
+        .context
+        .context_window = Some(200_000);
+    session.services.model_client.seed_offload_ever_used(true);
+
+    let client_session = session.services.model_client.new_session();
+    client_session.force_primary_for_responses_requests();
+
+    assert!(!client_session.local_offload_enabled_for_turns());
+    assert_eq!(
+        auto_compact_thresholds(
+            &turn_context,
+            &turn_context.config.model_offload.context,
+            client_session.local_offload_enabled_for_turns()
+        ),
+        select_auto_compact_thresholds(
+            &turn_context,
+            &turn_context.config.model_offload.context,
+            /*use_local_thresholds*/ false,
+        )
+    );
+}
+
+#[tokio::test]
+async fn offload_threshold_selector_does_not_require_global_model_context_window() {
+    let (_session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        settings.model_info = Arc::new(test_model_info_with_context_window(None));
+    });
+    let config = Arc::make_mut(&mut turn_context.config);
+    config.model_context_window = None;
+    config.model_offload.context = ModelOffloadContextConfig {
+        context_window: Some(200_000),
+        ..Default::default()
+    };
+
+    let thresholds = select_auto_compact_thresholds(
+        &turn_context,
+        &turn_context.config.model_offload.context,
+        /*use_local_thresholds*/ true,
+    );
+
+    assert_eq!(thresholds.auto_compact_token_limit, Some(180_000));
+    assert_eq!(thresholds.effective_context_window, Some(190_000));
 }
 
 #[tokio::test]

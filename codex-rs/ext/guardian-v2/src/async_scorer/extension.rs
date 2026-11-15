@@ -69,7 +69,24 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             );
             let scoring_enabled = policy.scoring_enabled();
             let sampler_config =
-                super::startup::sampler_config(&input, self.thread_manager.upgrade()).await;
+                match super::startup::sampler_config(&input, self.thread_manager.upgrade()).await {
+                    Ok(config) => config,
+                    Err(error) => {
+                        input
+                            .thread_store
+                            .get_or_init(|| {
+                                GuardianV2ScoreProgress::new(input.extension_metrics.clone())
+                            })
+                            .fail_closed(std::time::SystemTime::now());
+                        input.thread_store.insert(GuardianV2Enabled);
+                        self.event_sink.emit_warning(ExtensionWarning {
+                            thread_id,
+                            turn_id: None,
+                            message: format!("Guardian local provider setup failed: {error}"),
+                        });
+                        return;
+                    }
+                };
 
             if scoring_enabled && guardian_config.transcript.include_images {
                 input

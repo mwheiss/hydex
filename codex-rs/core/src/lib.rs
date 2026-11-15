@@ -4,6 +4,8 @@
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// The pinned compiler needs extra query depth for the extended async request graph.
+#![recursion_limit = "256"]
 
 mod apply_patch;
 mod apps;
@@ -30,6 +32,7 @@ pub use codex_protocol::turn_input::TurnInputRequest;
 pub use codex_protocol::turn_input::TurnInputSubmission;
 pub use codex_protocol::turn_input::TurnStartOptions;
 pub use responses_metadata::CodexResponsesMetadata;
+pub use turn_metadata::detached_local_output_validation_responses_metadata;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
 mod thread_input;
@@ -108,6 +111,9 @@ mod hook_environment_executor;
 mod hook_mcp_executor;
 mod hook_runtime;
 mod image_preparation;
+mod local_offload;
+mod local_offload_context;
+pub mod local_output_validation;
 pub(crate) mod mcp;
 mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
@@ -278,6 +284,8 @@ pub use code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider;
 pub use codex_prompts::REVIEW_PROMPT;
 pub use codex_runtime_agent_instance::resolve_installation_id;
 pub use compact::content_items_to_text;
+pub(crate) mod compaction_recovery;
+pub(crate) mod compaction_recovery_cache;
 pub use current_time::SleepFuture;
 pub use current_time::TimeFuture;
 pub use current_time::TimeProvider;

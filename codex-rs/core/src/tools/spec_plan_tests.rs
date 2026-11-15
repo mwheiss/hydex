@@ -43,6 +43,7 @@ use crate::WaitForEnvironmentToolConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::environment_selection::EnvironmentAttachment;
 use crate::environment_selection::TurnEnvironmentState;
+use crate::local_offload::create_tools_json_for_local_offload;
 use crate::responses_metadata::TurnToolFunctionInfo;
 use crate::responses_metadata::TurnToolNamespacesInfo;
 use crate::responses_metadata::TurnToolSource;
@@ -59,6 +60,7 @@ use crate::tools::registry::RegisteredTool;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
+use crate::tools::spec_plan::ToolWireTarget;
 use crate::tools::spec_plan::append_source_tools;
 use crate::tools::spec_plan::build_core_tool_registry;
 
@@ -214,15 +216,29 @@ async fn probe_with(
     configure_turn: impl FnOnce(&mut TurnContext),
     inputs: ToolPlanInputs,
 ) -> ToolPlanProbe {
+    probe_with_wire_target(configure_turn, inputs, ToolWireTarget::Primary).await
+}
+
+async fn probe_with_wire_target(
+    configure_turn: impl FnOnce(&mut TurnContext),
+    inputs: ToolPlanInputs,
+    wire_target: ToolWireTarget,
+) -> ToolPlanProbe {
     let (_session, mut turn) = make_session_and_context().await;
     configure_turn(&mut turn);
-    ToolPlanProbe::from_router(plan_with_model(&turn, turn.model_info(), inputs))
+    ToolPlanProbe::from_router(plan_with_model(
+        &turn,
+        turn.model_info(),
+        inputs,
+        wire_target,
+    ))
 }
 
 fn plan_with_model(
     turn: &TurnContext,
     model_info: &ModelInfo,
     inputs: ToolPlanInputs,
+    wire_target: ToolWireTarget,
 ) -> ToolRouter {
     let mcp = codex_mcp::McpBinding::empty(mcp_config_for_test(&turn.config));
     let mut registry = build_core_tool_registry(
@@ -232,6 +248,7 @@ fn plan_with_model(
         &mcp,
         inputs.tool_suggest_candidates.as_ref(),
         inputs.wait_for_environment_tool_config.as_ref(),
+        wire_target,
     );
     let hosted_specs = append_source_tools(
         turn,
@@ -240,6 +257,7 @@ fn plan_with_model(
         inputs.tool_runtimes,
         inputs.extension_tool_executors,
         &inputs.dynamic_tools,
+        wire_target,
     );
     ToolRouter::from_registry(
         turn,
@@ -247,6 +265,7 @@ fn plan_with_model(
         registry,
         hosted_specs,
         &Default::default(),
+        wire_target,
     )
 }
 
@@ -543,6 +562,7 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
                 "dynamic_echo",
                 /*defer_loading*/ false,
             )],
+            ToolWireTarget::Primary,
         );
         assert!(!hosted.is_empty(), "exercise hosted tool filtering too");
         let router = ToolRouter::from_registry(
@@ -551,6 +571,7 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
             registry,
             hosted,
             &Default::default(),
+            ToolWireTarget::Primary,
         );
         let plan = ToolPlanProbe::from_router(router);
         match allowed {
@@ -1147,14 +1168,17 @@ async fn environment_tools_follow_the_step_context() {
             mcp.as_ref(),
             /*tool_suggest_candidates*/ None,
             /*wait_for_environment_tool_config*/ None,
+            ToolWireTarget::Primary,
         ),
         super::hosted_model_tool_specs(
             turn.as_ref(),
             turn.model_info(),
-            turn.config.web_search_mode.value(),
+            (turn.as_ref()).config.web_search_mode.value(),
             &[],
+            ToolWireTarget::Primary,
         ),
         &Default::default(),
+        ToolWireTarget::Primary,
     ));
 
     plan.assert_visible_contains(&["exec_command", "apply_patch", "view_image"]);
@@ -1583,6 +1607,137 @@ async fn code_mode_tool_search_respects_exclusions_and_requires_deferred_tools()
 }
 
 #[tokio::test]
+async fn local_offload_discovers_deferred_tools_without_expanding_the_catalog() {
+    let inputs = || ToolPlanInputs {
+        tool_runtimes: vec![
+            mcp_runtime(
+                "searchable",
+                "mcp__searchable",
+                "lookup",
+                ToolExposure::Deferred,
+            ),
+            mcp_runtime(
+                "model_only",
+                "mcp__model_only",
+                "inspect",
+                ToolExposure::DeferredModelOnly,
+            ),
+        ],
+        dynamic_tools: vec![dynamic_tool(
+            Some("dynamic"),
+            "run",
+            /*defer_loading*/ true,
+        )],
+        ..ToolPlanInputs::default()
+    };
+
+    let primary = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+        },
+        inputs(),
+    )
+    .await;
+    primary.assert_visible_contains(&["tool_search"]);
+    primary.assert_visible_lacks(&["mcp__searchable", "mcp__model_only", "dynamic"]);
+
+    let local = probe_with_wire_target(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+        },
+        inputs(),
+        ToolWireTarget::LocalOffload,
+    )
+    .await;
+    local.assert_visible_contains(&["tool_search"]);
+    local.assert_visible_lacks(&["mcp__searchable", "mcp__model_only", "dynamic"]);
+    assert_eq!(
+        local.exposure(&ToolName::namespaced("mcp__searchable", "lookup").to_string()),
+        ToolExposure::Deferred
+    );
+    assert_eq!(
+        local.exposure(&ToolName::namespaced("mcp__model_only", "inspect").to_string()),
+        ToolExposure::DeferredModelOnly
+    );
+
+    let (wire_tools, _) = create_tools_json_for_local_offload(&local.visible_specs)
+        .expect("local tool surface should serialize");
+    let wire_names = wire_tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(wire_names.contains(&"tool_search"));
+    assert!(!wire_names.contains(&"ns__mcp__searchable__lookup"));
+    assert!(!wire_names.contains(&"ns__mcp__model_only__inspect"));
+    assert!(!wire_names.contains(&"ns__dynamic__run"));
+    assert!(wire_tools.iter().all(|tool| tool["type"] == "function"));
+    let ToolSpec::Freeform(exec) = local.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+        panic!("expected code mode exec tool");
+    };
+    // Nested tools stay callable through the runtime catalog, without eager descriptions.
+    assert!(!exec.description.contains("await tools.tool_search("));
+    for tool_name in [
+        ToolName::namespaced("mcp__searchable", "lookup"),
+        ToolName::namespaced("dynamic", "run"),
+    ] {
+        let name = codex_tools::code_mode_name_for_tool_name(&tool_name);
+        assert_eq!(local.code_mode_tool_names.get(&name), Some(&tool_name));
+        assert!(!exec.description.contains(&format!("### `{name}`")));
+    }
+}
+
+#[tokio::test]
+async fn local_offload_large_catalog_fits_a_fresh_context_without_hosted_search_support() {
+    let description = "Connector instructions and input documentation. ".repeat(80);
+    let tool_runtimes = (0..392)
+        .map(|index| {
+            let mut info = mcp_tool("large-catalog", "mcp__catalog", &format!("lookup_{index}"));
+            info.tool.description = Some(description.clone().into());
+            info.namespace_description = Some(description.clone());
+            RegisteredTool {
+                runtime: Arc::new(McpHandler::new(info).unwrap()),
+                exposure: ToolExposure::Deferred,
+                model_spec: None,
+                native_review: Default::default(),
+            }
+        })
+        .collect();
+    let local = probe_with_wire_target(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = false;
+            })
+        },
+        ToolPlanInputs {
+            tool_runtimes,
+            ..Default::default()
+        },
+        ToolWireTarget::LocalOffload,
+    )
+    .await;
+    local.assert_visible_contains(&["tool_search"]);
+    local.assert_visible_lacks(&["mcp__catalog"]);
+    for index in 0..392 {
+        assert_eq!(
+            local.exposure(
+                &ToolName::namespaced("mcp__catalog", format!("lookup_{index}")).to_string()
+            ),
+            ToolExposure::Deferred
+        );
+    }
+    let (wire, _) = create_tools_json_for_local_offload(&local.visible_specs).unwrap();
+    assert!(
+        serde_json::to_vec(&wire).unwrap().len() < 16_000,
+        "the initial local schema must stay small even with hundreds of enabled tools"
+    );
+}
+
+#[tokio::test]
 async fn tool_namespaces_info_is_opt_in_and_tracks_mcp_exposure() {
     for (enabled, use_responses_lite) in [(false, true), (true, false), (true, true)] {
         let plan = probe_with(
@@ -1670,6 +1825,7 @@ async fn candidate_model_plan_leaves_selected_model_and_inventory_unchanged() {
         &turn,
         turn.model_info(),
         ToolPlanInputs::default(),
+        ToolWireTarget::Primary,
     ));
     let mut candidate_model = selected_model.as_ref().clone();
     candidate_model.tool_mode = Some(ToolMode::CodeModeOnly);
@@ -1679,6 +1835,7 @@ async fn candidate_model_plan_leaves_selected_model_and_inventory_unchanged() {
         &turn,
         &candidate_model,
         ToolPlanInputs::default(),
+        ToolWireTarget::Primary,
     ));
 
     candidate.assert_visible_contains(&["exec", "wait"]);
@@ -1707,6 +1864,7 @@ async fn candidate_model_plan_leaves_selected_model_and_inventory_unchanged() {
             &turn,
             turn.model_info(),
             ToolPlanInputs::default(),
+            ToolWireTarget::Primary,
         )),
         selected,
     );
@@ -1735,6 +1893,7 @@ async fn strict_namespace_ownership_requires_tool_namespace_inventory_opt_in() {
             step_context.mcp.as_ref(),
             /*tool_suggest_candidates*/ None,
             /*wait_for_environment_tool_config*/ None,
+            ToolWireTarget::Primary,
         );
         let runtimes = [
             ("first", "lookup", ToolExposure::Direct),
@@ -1759,6 +1918,7 @@ async fn strict_namespace_ownership_requires_tool_namespace_inventory_opt_in() {
             runtimes,
             Vec::new(),
             &[],
+            ToolWireTarget::Primary,
         );
         let result = super::finalize_tool_router(
             step_context.turn.as_ref(),
@@ -1997,6 +2157,7 @@ async fn strict_tool_collisions_reject_external_and_synthetic_duplicates() {
             step_context.mcp.as_ref(),
             inputs.tool_suggest_candidates.as_ref(),
             inputs.wait_for_environment_tool_config.as_ref(),
+            ToolWireTarget::Primary,
         );
         let hosted_specs = append_source_tools(
             step_context.turn.as_ref(),
@@ -2005,6 +2166,7 @@ async fn strict_tool_collisions_reject_external_and_synthetic_duplicates() {
             inputs.tool_runtimes,
             inputs.extension_tool_executors,
             &inputs.dynamic_tools,
+            ToolWireTarget::Primary,
         );
 
         let error = super::finalize_tool_router(
@@ -2274,6 +2436,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
         first_step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
         /*wait_for_environment_tool_config*/ None,
+        ToolWireTarget::Primary,
     );
     let first_tool = mcp_runtime("first", "mcp__first", "lookup", ToolExposure::Deferred);
     first_registry.register_external_with_exposure(first_tool.runtime, first_tool.exposure);
@@ -2286,8 +2449,10 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
             first_step_context.turn.model_info(),
             first_step_context.turn.config.web_search_mode.value(),
             &[],
+            ToolWireTarget::Primary,
         ),
         &cache,
+        ToolWireTarget::Primary,
     );
     let first_plan = ToolPlanProbe::from_router(first_router);
 
@@ -2309,6 +2474,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
         second_step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
         /*wait_for_environment_tool_config*/ None,
+        ToolWireTarget::Primary,
     );
     let second_tool = mcp_runtime("second", "mcp__second", "lookup", ToolExposure::Deferred);
     second_registry.register_external_with_exposure(second_tool.runtime, second_tool.exposure);
@@ -2321,8 +2487,10 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
             second_step_context.turn.model_info(),
             second_step_context.turn.config.web_search_mode.value(),
             &[],
+            ToolWireTarget::Primary,
         ),
         &cache,
+        ToolWireTarget::Primary,
     );
     let second_plan = ToolPlanProbe::from_router(second_router);
 
@@ -2370,6 +2538,7 @@ async fn tool_search_cache_rebuilds_when_deferred_world_state_changes() {
             step_context.mcp.as_ref(),
             /*tool_suggest_candidates*/ None,
             /*wait_for_environment_tool_config*/ None,
+            ToolWireTarget::Primary,
         );
         let tool = mcp_runtime(
             "calendar",
@@ -2387,8 +2556,10 @@ async fn tool_search_cache_rebuilds_when_deferred_world_state_changes() {
                 step_context.turn.model_info(),
                 step_context.turn.config.web_search_mode.value(),
                 &[],
+                ToolWireTarget::Primary,
             ),
             &cache,
+            ToolWireTarget::Primary,
         );
         let plan = ToolPlanProbe::from_router(router);
         let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
@@ -3015,6 +3186,45 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 }
 
 #[tokio::test]
+async fn local_offload_keeps_v1_multi_agent_tools_discoverable() {
+    let plan = probe_with_wire_target(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+            set_feature(turn, Feature::Collab, /*enabled*/ true);
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        },
+        ToolPlanInputs::default(),
+        ToolWireTarget::LocalOffload,
+    )
+    .await;
+
+    plan.assert_visible_contains(&["tool_search"]);
+    plan.assert_visible_lacks(&[MULTI_AGENT_V1_NAMESPACE]);
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        assert_eq!(
+            plan.exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name).to_string()),
+            ToolExposure::Deferred
+        );
+    }
+
+    let (wire_tools, _) = create_tools_json_for_local_offload(&plan.visible_specs)
+        .expect("local collaboration tools should serialize");
+    assert!(
+        wire_tools
+            .iter()
+            .any(|tool| tool["name"] == "tool_search" && tool["type"] == "function")
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_can_use_configured_tool_namespace() {
     let namespaced = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
@@ -3396,6 +3606,51 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     )
     .await;
     standalone_web_search.assert_visible_lacks(&["web_search"]);
+
+    let hydex_configured_primary_web_search = probe_with(
+        |turn| {
+            set_web_search_mode(turn, WebSearchMode::Live);
+            update_config(turn, |config| {
+                config.model_offload.enabled = true;
+            });
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            ..Default::default()
+        },
+    )
+    .await;
+    hydex_configured_primary_web_search.assert_visible_contains(&["web_search"]);
+    assert_eq!(
+        hydex_configured_primary_web_search.namespace_function_names("web"),
+        &[] as &[String]
+    );
+
+    let hydex_offload_web_search = probe_with_wire_target(
+        |turn| {
+            set_web_search_mode(turn, WebSearchMode::Live);
+            update_config(turn, |config| {
+                config.model_offload.enabled = true;
+            });
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            ..Default::default()
+        },
+        ToolWireTarget::LocalOffload,
+    )
+    .await;
+    hydex_offload_web_search.assert_visible_lacks(&["web_search"]);
+    assert_eq!(
+        hydex_offload_web_search.namespace_function_names("web"),
+        &["run".to_string()][..]
+    );
 
     let bedrock_cached_web_search = probe(|turn| {
         use_bedrock_provider(turn);

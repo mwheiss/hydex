@@ -1163,8 +1163,11 @@ fi
     );
 
     let cwd = AbsolutePathBuf::try_from(subdir.as_path()).expect("cwd should be absolute");
+    // The retargeting attack needs its private fixture parent writable even
+    // when TMPDIR is disk-backed outside the automatically granted /tmp root.
+    let fixture_root = AbsolutePathBuf::try_from(tmpdir.path()).expect("fixture root");
     let permission_profile = PermissionProfile::workspace_write_with(
-        std::slice::from_ref(&cwd),
+        &[cwd.clone(), fixture_root],
         NetworkSandboxPolicy::Enabled,
         /*exclude_tmpdir_env_var*/ false,
         /*exclude_slash_tmp*/ false,
@@ -1487,6 +1490,79 @@ async fn sandbox_reenables_writable_subpaths_under_unreadable_parents() {
 
     assert_eq!(output.exit_code, 0);
     assert_eq!(output.stdout.text.trim(), "allowed");
+}
+
+#[tokio::test]
+async fn sandbox_reenables_read_only_directories_under_unreadable_parents() {
+    if should_skip_bwrap_tests().await {
+        return;
+    }
+
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let blocked = fixture.path().join("blocked");
+    let allowed = blocked.join("helpers/session");
+    std::fs::create_dir_all(&allowed).expect("create readable descendant");
+    std::fs::write(allowed.join("note.txt"), "public").expect("seed readable file");
+    std::fs::write(allowed.join("secret.txt"), "nested secret").expect("seed nested denial");
+    std::fs::write(blocked.join("private.txt"), "private").expect("seed sibling denial");
+    let helper_dir = codex_linux_sandbox_exe()
+        .parent()
+        .expect("sandbox helper parent")
+        .to_path_buf();
+    let entry = |path: &std::path::Path, access| {
+        FileSystemSandboxEntry::new(
+            AbsolutePathBuf::try_from(path)
+                .expect("absolute fixture path")
+                .into(),
+            access,
+        )
+    };
+
+    for baseline in [FileSystemSpecialPath::Minimal, FileSystemSpecialPath::Root] {
+        let policy = FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special { value: baseline },
+                access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
+            },
+            entry(&helper_dir, FileSystemAccessMode::Read),
+            entry(&blocked, FileSystemAccessMode::Deny),
+            entry(&allowed, FileSystemAccessMode::Read),
+            entry(&allowed.join("secret.txt"), FileSystemAccessMode::Deny),
+        ]);
+        assert!(policy.can_read_local_path_with_cwd(&allowed, fixture.path()));
+        assert!(!policy.can_read_local_path_with_cwd(&blocked, fixture.path()));
+        let output = run_cmd_result_with_permission_profile(
+            &[
+                "bash",
+                "-c",
+                r#"set -eu
+test "$(cat "$1/note.txt")" = public
+if cat "$2/private.txt" >/dev/null 2>&1; then exit 10; fi
+if cat "$1/secret.txt" >/dev/null 2>&1; then exit 11; fi
+if ls "$2" >/dev/null 2>&1; then exit 12; fi
+if printf changed > "$1/note.txt" 2>/dev/null; then exit 13; fi
+if touch "$1/new.txt" 2>/dev/null; then exit 14; fi
+printf ok
+"#,
+                "fixture",
+                allowed.to_str().expect("fixture path"),
+                blocked.to_str().expect("fixture path"),
+            ],
+            PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Enabled),
+            LONG_TIMEOUT_MS,
+            /*use_legacy_landlock*/ false,
+        )
+        .await
+        .expect("read-only descendant should execute under bubblewrap");
+        assert_eq!(output.exit_code, 0, "stderr: {}", output.stderr.text);
+        assert_eq!(output.stdout.text, "ok");
+        assert_eq!(
+            std::fs::read_to_string(allowed.join("note.txt")).unwrap(),
+            "public"
+        );
+        assert!(!allowed.join("new.txt").exists());
+    }
 }
 
 #[tokio::test]

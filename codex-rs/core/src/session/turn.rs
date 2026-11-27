@@ -90,6 +90,7 @@ use crate::tools::router::record_registration_metrics;
 use crate::tools::spec_plan::ToolWireTarget;
 use crate::tools::spec_plan::build_tool_router;
 use crate::tools::spec_plan::build_tool_router_for_wire;
+use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::util::error_or_panic;
 use codex_analytics::AppInvocation;
@@ -2380,14 +2381,13 @@ async fn run_auto_compact_with_route(
             emit_compact_metric(&sess.services.session_telemetry, "local", false);
             return run_inline_auto_compact_task(
                 Arc::clone(sess),
-                Arc::clone(turn_context),
+                step_context,
                 replacement_step_context,
                 world_state,
                 reason,
                 phase,
             )
-            .await
-            .map(|_| true);
+            .await;
         }
         if !should_use_remote_compact_task(turn_context.provider.as_ref())
             || turn_context.provider.capabilities().remote_compaction
@@ -2593,10 +2593,15 @@ async fn run_sampling_request(
     let router = match wire_target {
         ToolWireTarget::Primary => Arc::clone(&step_context.tool_router),
         ToolWireTarget::LocalOffload => {
-            let prepared_recommendations =
-                prepare_tool_recommendations(sess.as_ref(), turn_context.as_ref())
-                    .or_cancel(&cancellation_token)
-                    .await?;
+            let prepared_recommendations = if tool_suggest_enabled(turn_context.as_ref()) {
+                Some(
+                    PreparedToolRecommendations::load(sess.as_ref(), turn_context.as_ref())
+                        .or_cancel(&cancellation_token)
+                        .await?,
+                )
+            } else {
+                None
+            };
             Box::pin(built_tools_for_wire(
                 sess.as_ref(),
                 turn_context.as_ref(),
@@ -2614,6 +2619,8 @@ async fn run_sampling_request(
     };
     let step_context = Arc::new(StepContext {
         turn: Arc::clone(&step_context.turn),
+        turn_cancellation: step_context.turn_cancellation.clone(),
+        sampled_through_sequence: step_context.sampled_through_sequence,
         extension_data: Arc::clone(&step_context.extension_data),
         dynamic_tools: Arc::clone(&step_context.dynamic_tools),
         preempt: step_context.preempt.clone(),
@@ -3753,7 +3760,8 @@ async fn try_run_sampling_request(
     let mut resampling = crate::guardian::ResponseResampling::new(&sess);
     let prompt = Arc::new(prompt);
     let interrupt_at_boundary = SamplingInterrupt::enabled(&turn_context);
-    let mut stream_request = async |prompt: &Arc<Prompt>| {
+    let mut stream_request = async |client_session: &mut ModelClientSession,
+                                    prompt: &Arc<Prompt>| {
         let send = client_session
             .open_model_response(
                 prompt,
@@ -3784,7 +3792,7 @@ async fn try_run_sampling_request(
             )
             .await
     };
-    let mut stream = match stream_request(&prompt)
+    let mut stream = match stream_request(client_session, &prompt)
         .or_cancel(&cancellation_token)
         .await?
     {
@@ -4411,7 +4419,7 @@ async fn try_run_sampling_request(
                     pending_assessment = None;
                     includes_reasoning = step_context.settings.model_info.use_responses_lite;
                     stream = match resampling
-                        .retry(stream_request(&prompt), &cancellation_token)
+                        .retry(stream_request(client_session, &prompt), &cancellation_token)
                         .await
                     {
                         Ok(stream) => stream,

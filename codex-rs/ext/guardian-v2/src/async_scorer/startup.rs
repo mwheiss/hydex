@@ -115,7 +115,9 @@ pub(super) fn valid_implicit_decisions_key(key: &str) -> bool {
     !key.is_empty() && key.trim() == key && !codex_login::auth::is_fedramp_api_key(key)
 }
 
-pub(super) async fn sampler_config(input: &ThreadStartInput<'_, Config>) -> CodexResult<LunaSamplerConfig> {
+pub(super) async fn sampler_config(
+    input: &ThreadStartInput<'_, Config>,
+) -> CodexResult<LunaSamplerConfig> {
     if input.config.model_offload.full_local_enabled() {
         let mut local_config = input.config.clone();
         if local_config.model.is_none() {

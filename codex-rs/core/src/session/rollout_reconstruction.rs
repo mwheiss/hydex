@@ -460,6 +460,8 @@ fn materialize_rollout_items(
     let mut history = ContextManager::for_session(
         turn_context.root_capabilities_restricted,
         &turn_context.config.features,
+        turn_context.config.guardian_context_budgeting(),
+        Session::new_item_id_generator(),
     );
     history.replace_annotated(initial_history);
     history.restore_review_context(
@@ -495,13 +497,7 @@ fn materialize_rollout_items(
                         /*reviewer_compaction_hash*/ None,
                     );
                 } else {
-                    let user_messages =
-                        compact::collect_annotated_user_messages(history.annotated_items());
-                    let rebuilt = compact::build_compacted_history(
-                        Vec::new(),
-                        &user_messages,
-                        &compacted.message,
-                    );
+                    let rebuilt = compact::build_compacted_history(&history, &compacted.message);
                     let retained_context = history.retained_context().clone();
                     history.replace_annotated(rebuilt);
                     history.restore_retained_context(Some(&retained_context));

@@ -81,6 +81,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
+use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::add_originator_header;
 use codex_otel::SessionTelemetry;
 use codex_otel::WEBSOCKET_CONTINUATION_COUNT_METRIC;
@@ -165,10 +166,10 @@ use codex_model_provider::AgentIdentitySessionFallback;
 use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::ProviderUnauthorizedRecovery;
 use codex_model_provider::ResolvedProviderRequest as CurrentClientSetup;
-use codex_model_provider::create_model_provider;
 use codex_model_provider::ResponsesConnectionKey;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::WorkspaceRoutingContext;
+use codex_model_provider::create_model_provider;
 #[cfg(test)]
 use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
@@ -2687,7 +2688,9 @@ impl ResponsesHttpExecutor<'_> {
         let local_stream_max_bytes =
             local_context.map(|context| local_output_stream_max_bytes(context.context_window));
         let provider = self.client.provider_for_route(route)?;
-        let model_override = self.client.model_override_for_request(route, Some(responses_metadata));
+        let model_override = self
+            .client
+            .model_override_for_request(route, Some(responses_metadata));
         self.client.mark_offload_used_if_local_route(route);
         let auth_manager = if route.is_local_offload() {
             None
@@ -2700,10 +2703,7 @@ impl ResponsesHttpExecutor<'_> {
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self
-                .client
-                .current_client_setup_for_route(route)
-                .await?;
+            let client_setup = self.client.current_client_setup_for_route(route).await?;
             if expected_auth_owner.as_ref().is_some_and(|owner| {
                 (!route.is_local_offload() && Some(owner) != client_setup.auth_owner.as_ref())
                     || !owner.is_current()
@@ -2823,12 +2823,12 @@ impl ResponsesHttpExecutor<'_> {
                 Vec::new()
             } else {
                 crate::model_request::prepare(
-                &self.client.request_contributors,
-                &thread_id,
-                &model_info.slug,
-                kind,
-                &mut request.client_metadata,
-            )
+                    &self.client.request_contributors,
+                    &thread_id,
+                    &model_info.slug,
+                    kind,
+                    &mut request.client_metadata,
+                )
             };
             let local_tool_names = if route.is_local_offload() {
                 Some(transform_request_for_local_offload(
@@ -2875,10 +2875,12 @@ impl ResponsesHttpExecutor<'_> {
                         client: Arc::clone(&self.client.state),
                         interceptors,
                         continuation: None,
-                        local_mapping: local_stream_max_bytes.map(|output_byte_limit| LocalResponseMapping {
-                            provider: Arc::clone(provider),
-                            tool_names: local_tool_names,
-                            output_byte_limit,
+                        local_mapping: local_stream_max_bytes.map(|output_byte_limit| {
+                            LocalResponseMapping {
+                                provider: Arc::clone(provider),
+                                tool_names: local_tool_names,
+                                output_byte_limit,
+                            }
                         }),
                     });
                 }
@@ -3690,7 +3692,9 @@ where
             last_response_tx.is_some() || inference_trace_attempt.needs_output_items();
         let mut items_added: Vec<ResponseItem> = Vec::new();
         let mut active_item_id: Option<ResponseItemId> = None;
-        let local_output_byte_limit = local_mapping.as_ref().map(|mapping| mapping.output_byte_limit);
+        let local_output_byte_limit = local_mapping
+            .as_ref()
+            .map(|mapping| mapping.output_byte_limit);
         let local_tool_names = local_mapping.and_then(|mapping| mapping.tool_names);
         let mut local_delta_output_bytes = 0usize;
         let mut local_completed_output_bytes = 0usize;

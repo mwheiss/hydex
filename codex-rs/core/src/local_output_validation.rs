@@ -339,7 +339,7 @@ async fn collect_validator_output(
     };
     let mut stream = client_session
         .stream(
-            &prompt,
+            &std::sync::Arc::new(prompt),
             model_info,
             session_telemetry,
             reasoning_effort,

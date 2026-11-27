@@ -1772,7 +1772,6 @@ async fn retro_local_reconstruction_uses_surviving_remote_checkpoint_after_rollb
 
     let reconstructed = reconstruct_retro_local_history_from_rollout(
         &turn_context,
-        Session::new_item_id_generator(),
         &rollout_items,
         &old_remote_history,
     )
@@ -1811,7 +1810,6 @@ async fn retro_local_reconstruction_rejects_checkpoint_that_does_not_match_activ
 
     let err = reconstruct_retro_local_history_from_rollout(
         &turn_context,
-        Session::new_item_id_generator(),
         &rollout_items,
         &active_history,
     )

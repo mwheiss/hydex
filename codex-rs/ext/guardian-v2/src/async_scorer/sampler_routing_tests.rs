@@ -137,6 +137,11 @@ async fn full_local_classifier_requires_its_provider_and_respects_runtime_overri
     }
     config.model_offload.runtime_override =
         Some(codex_protocol::config_types::ModelOffloadRuntimeOverride::ForceOff);
+    // Core seeds the owning provider context before starting the primary sampler.
+    thread.insert(codex_model_provider::ProviderAuthContext {
+        credentials: Arc::clone(&auth),
+        runtime_auth: None,
+    });
     let input = codex_extension_api::ThreadStartInput {
         config: &config,
         session_source: &codex_protocol::protocol::SessionSource::Exec,
@@ -147,11 +152,13 @@ async fn full_local_classifier_requires_its_provider_and_respects_runtime_overri
         session_store: &session,
         thread_store: &thread,
     };
+    let classifier = crate::async_scorer::startup::sampler_config(&input).await?;
+    assert!(classifier.local_model.is_none());
     assert!(
-        crate::async_scorer::startup::sampler_config(&input)
-            .await?
-            .local_model
-            .is_none()
+        classifier
+            .provider
+            .auth_manager()
+            .is_some_and(|manager| Arc::ptr_eq(&manager, &auth))
     );
     Ok(())
 }

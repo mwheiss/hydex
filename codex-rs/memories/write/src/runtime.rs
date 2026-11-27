@@ -101,7 +101,7 @@ async fn stream_memory_generation(
     prompt.temperature = temperature;
     let mut stream = client_session
         .stream(
-            &prompt,
+            &Arc::new(prompt),
             &context.model_info,
             &context.session_telemetry,
             context.reasoning_effort.clone(),

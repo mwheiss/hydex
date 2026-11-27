@@ -4923,8 +4923,14 @@ impl Session {
         items: Vec<ResponseItemEnvelope>,
         metadata: CompactedHistoryMetadata,
     ) {
-        self.replace_compacted_history_inner(items, None, None, Default::default(), metadata.into())
-            .await;
+        self.replace_compacted_history_inner(
+            items,
+            None,
+            None,
+            Default::default(),
+            metadata.into(),
+        )
+        .await;
     }
 
     async fn replace_compacted_history_inner<'a>(

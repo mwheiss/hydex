@@ -166,7 +166,7 @@ pub(crate) async fn recover_remote_compaction_payload(
         );
     let mut stream = client_session
         .stream(
-            &prompt,
+            &std::sync::Arc::new(prompt),
             recovery_turn_context.model_info().as_ref(),
             &recovery_turn_context.session_telemetry,
             Some(

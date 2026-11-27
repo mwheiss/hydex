@@ -148,11 +148,18 @@ impl WrappedSandboxCommand {
     }
 
     /// Borrow the matched shell's flag, script, and environment for snapshot replay.
+    /// With Bash, suppress the second startup when replay will restore filtered state.
     pub fn shell_snapshot_replay_mut(
         &mut self,
         expected: &[String],
+        skip_bash_rc: bool,
     ) -> Option<(&mut String, &mut String, &mut HashMap<String, String>)> {
-        let index = self.shell_script_index(expected)?;
+        let mut index = self.shell_script_index(expected)?;
+        if skip_bash_rc {
+            self.request.command.insert(index - 1, "--norc".to_string());
+            self.inner_arg_count += 1;
+            index += 1;
+        }
         let [flag, script] = self.request.command[index - 1..].first_chunk_mut()?;
         Some((flag, script, &mut self.request.env))
     }

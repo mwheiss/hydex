@@ -43,16 +43,17 @@ fn response_stream(events: Vec<CodexResult<ResponseEvent>>) -> crate::ResponseSt
     let (tx_event, rx_event) = mpsc::channel(events.len().max(1));
     for event in events {
         tx_event
-            .try_send(event)
+            .try_send(event.into())
             .expect("response stream test channel should have capacity");
     }
     drop(tx_event);
-    crate::ResponseStream {
+    crate::ResponseStream(crate::client_common::SamplingStream {
         routing_affinity: Default::default(),
         rx_event,
         interrupt: None,
         consumer_dropped: CancellationToken::new(),
-    }
+        settlement_started: Default::default(),
+    })
 }
 
 fn completed_event() -> ResponseEvent {
@@ -60,6 +61,7 @@ fn completed_event() -> ResponseEvent {
         response_id: "response-id".to_string(),
         token_usage: None,
         usage_metadata: None,
+        reasoning_removals: None,
         end_turn: Some(true),
     }
 }
@@ -437,6 +439,8 @@ fn assistant_state_projection_reaches_local_wire_as_assistant_history() {
     )
     .expect("projected history");
     let mut request = ResponsesApiRequest {
+        request_country: Default::default(),
+        prompt_cache_options: None,
         model: "local-model".to_string(),
         input: projected,
         tools: None,

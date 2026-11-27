@@ -11,9 +11,8 @@ use codex_config::config_toml::ModelOffloadCompactionLocalHandoffRole;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::protocol::CodexErrorInfo;
-use codex_user_input::ResolvedUserInput;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::user_input::UserInput;
+use codex_user_input::ResolvedUserInput;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Default)]
@@ -143,8 +142,7 @@ impl SessionTask for CompactTask {
                     ModelOffloadCompactionLocalHandoffRole::UserSummary
                 };
                 let input = vec![ResolvedUserInput::text(
-                    crate::compact::local_compaction_prompt(&ctx, local_handoff_role)
-                        .to_string(),
+                    crate::compact::local_compaction_prompt(&ctx, local_handoff_role).to_string(),
                 )];
                 crate::compact::run_compact_task(session.clone(), step_context, world_state, input)
                     .await

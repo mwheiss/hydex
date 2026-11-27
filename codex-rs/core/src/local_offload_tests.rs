@@ -18,6 +18,8 @@ fn function(name: &str) -> ResponsesApiTool {
 
 fn request_with_input(input: Vec<ResponseItem>) -> ResponsesApiRequest {
     ResponsesApiRequest {
+        request_country: Default::default(),
+        prompt_cache_options: None,
         model: "local-model".to_string(),
         input,
         tools: None,

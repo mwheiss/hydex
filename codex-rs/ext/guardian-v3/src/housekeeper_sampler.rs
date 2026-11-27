@@ -208,6 +208,7 @@ impl HousekeeperSampler {
         }
         ResponsesApiRequest {
             request_country: Default::default(),
+            temperature: None,
             model: self.model.slug.clone(),
             input,
             tools: None,

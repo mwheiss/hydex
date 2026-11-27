@@ -211,12 +211,15 @@ fn test_model_client_with_local_offload_config_memory_mode_and_validation(
     let local_provider =
         create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
     ModelClient::new(
-        Some(AuthManager::from_auth_for_testing(
-            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-        )),
+        create_model_provider(
+            primary_provider,
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        ),
         AgentIdentityAuthPolicy::ChatGptAuth,
         ThreadId::new(),
-        primary_provider,
+        crate::session::session::Session::new_item_id_generator(),
         session_source,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
@@ -260,10 +263,10 @@ fn test_model_client_with_local_offload_and_api_primary(
     let local_provider =
         create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
     ModelClient::new(
-        /*auth_manager*/ None,
+        create_model_provider(primary_provider, /*auth_manager*/ None),
         AgentIdentityAuthPolicy::JwtOnly,
         ThreadId::new(),
-        primary_provider,
+        crate::session::session::Session::new_item_id_generator(),
         session_source,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
@@ -317,10 +320,13 @@ async fn local_provider_advertised_context_overrides_configured_fallback() {
     let local_provider =
         create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
     let client = ModelClient::new(
-        /*auth_manager*/ None,
+        create_model_provider(
+            create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
+            /*auth_manager*/ None,
+        ),
         AgentIdentityAuthPolicy::JwtOnly,
         ThreadId::new(),
-        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
+        crate::session::session::Session::new_item_id_generator(),
         SessionSource::Exec,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
@@ -380,6 +386,8 @@ async fn local_provider_advertised_context_overrides_configured_fallback() {
 #[test]
 fn local_request_guard_uses_effective_context_window() {
     let request = ResponsesApiRequest {
+        request_country: Default::default(),
+        prompt_cache_options: None,
         model: "local-model".to_string(),
         input: vec![
             ContextualUserFragment::into(BaseInstructionsFragment(
@@ -547,7 +555,7 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header(
                 .as_deref(),
         );
         assert!(local_setup.auth.is_none());
-        assert!(local_setup.auth_owner_generation.is_none());
+        assert!(local_setup.auth_owner.is_none());
         assert!(local_setup.auth_revision.is_none());
         assert!(local_setup.agent_identity_telemetry.is_none());
         assert!(
@@ -556,11 +564,12 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header(
                 .headers
                 .contains_key(codex_model_provider::ACCOUNT_ROUTING_HEADER)
         );
-        assert!(
-            super::sideband_websocket_auth_headers(local_setup.api_auth.as_ref())
-                .expect("local sideband authentication headers should resolve")
-                .is_empty()
-        );
+        let mut local_auth_headers = http::HeaderMap::new();
+        local_setup
+            .api_auth
+            .add_auth_headers(&mut local_auth_headers)
+            .unwrap();
+        assert!(local_auth_headers.is_empty());
         if routing_override.is_some() {
             assert_eq!(
                 setup.api_provider.base_url,
@@ -2255,7 +2264,7 @@ async fn local_response_stream_enforces_aggregate_output_limit() {
         Ok(ResponseEvent::OutputTextDelta("abcd".to_string())),
         Ok(ResponseEvent::OutputTextDelta("e".to_string())),
     ]);
-    let mut stream = ResponseStream(super::map_response_events(
+    let mut stream = super::ResponseStream(super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
@@ -2292,7 +2301,7 @@ async fn local_response_stream_counts_completed_only_output() {
     let item = output_message("1", "completed-only output");
     let item_bytes = super::serialized_response_item_bytes(&item).expect("serialize response item");
     let api_stream = futures::stream::iter([Ok(ResponseEvent::OutputItemDone(item))]);
-    let mut stream = ResponseStream(super::map_response_events(
+    let mut stream = super::ResponseStream(super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
@@ -2332,10 +2341,11 @@ async fn local_response_stream_does_not_double_count_deltas_and_completed_items(
             response_id: "response-id".to_string(),
             token_usage: None,
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: Some(true),
         }),
     ]);
-    let mut stream = ResponseStream(super::map_response_events(
+    let mut stream = super::ResponseStream(super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
@@ -2372,10 +2382,11 @@ async fn response_stream_without_local_limit_preserves_primary_behavior() {
             response_id: "response-id".to_string(),
             token_usage: None,
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: Some(true),
         }),
     ]);
-    let mut stream = ResponseStream(super::map_response_events(
+    let mut stream = super::ResponseStream(super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
@@ -3520,12 +3531,15 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
     let (attestation_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
     let client = ModelClient::new(
-        Some(AuthManager::from_auth_for_testing(
-            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-        )),
+        create_model_provider(
+            primary_provider,
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        ),
         AgentIdentityAuthPolicy::ChatGptAuth,
         ThreadId::new(),
-        primary_provider,
+        crate::session::session::Session::new_item_id_generator(),
         SessionSource::Exec,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
@@ -3570,10 +3584,10 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
 
     let route = client.route_for_responses_request(&responses_metadata);
     assert!(route.is_local_offload());
-    let client_setup = client
-        .current_client_setup_for_route(route)
-        .await
-        .expect("local client setup resolves");
+    let provider = client
+        .provider_for_route(route)
+        .expect("provider configured");
+    let model_override = client.model_override_for_request(route, Some(&responses_metadata));
     let prompt = Prompt {
         input: vec![ResponseItem::FunctionCall {
             encrypted_content: None,
@@ -3615,8 +3629,8 @@ async fn local_offload_responses_request_omits_codex_control_plane_metadata() {
     model_info.supports_reasoning_effort_updates = true;
     let request = client
         .build_responses_request_for_provider(
-            client_setup.model_provider.info(),
-            client_setup.model_override.as_deref(),
+            provider.info(),
+            model_override.as_deref(),
             &prompt,
             &model_info,
             /*effort*/ None,
@@ -4060,14 +4074,14 @@ async fn request_model_for_metadata(
     responses_metadata: &CodexResponsesMetadata,
 ) -> String {
     let route = client.route_for_responses_request(responses_metadata);
-    let client_setup = client
-        .current_client_setup_for_request(route, Some(responses_metadata))
-        .await
-        .expect("client setup resolves");
+    let provider = client
+        .provider_for_route(route)
+        .expect("provider configured");
+    let model_override = client.model_override_for_request(route, Some(responses_metadata));
     client
         .build_responses_request_for_provider(
-            client_setup.model_provider.info(),
-            client_setup.model_override.as_deref(),
+            provider.info(),
+            model_override.as_deref(),
             &Prompt::default(),
             &test_model_info(),
             /*effort*/ None,
@@ -4158,15 +4172,15 @@ async fn local_memory_consolidation_turn_uses_memory_temperature() {
         );
         let session = client.new_session();
         let route = session.route_for_responses_request(&responses_metadata);
-        let client_setup = client
-            .current_client_setup_for_request(route, Some(&responses_metadata))
-            .await
-            .expect("client setup resolves");
+        let provider = client
+            .provider_for_route(route)
+            .expect("provider configured");
+        let model_override = client.model_override_for_request(route, Some(&responses_metadata));
 
         let request = client
             .build_responses_request_for_provider(
-                client_setup.model_provider.info(),
-                client_setup.model_override.as_deref(),
+                provider.info(),
+                model_override.as_deref(),
                 &Prompt::default(),
                 &test_model_info(),
                 /*effort*/ None,
@@ -4336,10 +4350,10 @@ async fn prompt_temperature_override_takes_precedence_over_helper_temperature() 
     );
     let session = client.new_session();
     let route = client.route_for_responses_request(&responses_metadata);
-    let client_setup = client
-        .current_client_setup_for_request(route, Some(&responses_metadata))
-        .await
-        .expect("client setup resolves");
+    let provider = client
+        .provider_for_route(route)
+        .expect("provider configured");
+    let model_override = client.model_override_for_request(route, Some(&responses_metadata));
     let prompt = Prompt {
         temperature: Some(0.02),
         ..Default::default()
@@ -4347,8 +4361,8 @@ async fn prompt_temperature_override_takes_precedence_over_helper_temperature() 
 
     let request = client
         .build_responses_request_for_provider(
-            client_setup.model_provider.info(),
-            client_setup.model_override.as_deref(),
+            provider.info(),
+            model_override.as_deref(),
             &prompt,
             &test_model_info(),
             /*effort*/ None,

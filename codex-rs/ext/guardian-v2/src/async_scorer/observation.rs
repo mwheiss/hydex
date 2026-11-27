@@ -55,9 +55,6 @@ impl GuardianV2Extension {
             return;
         }
         let classification_started_at = Instant::now();
-        let Some(sampler) = input.thread_store.get::<LunaSampler>() else {
-            return;
-        };
         let Some(guardian_config) = input.thread_store.get::<GuardianV2Config>() else {
             return;
         };
@@ -263,7 +260,9 @@ impl GuardianV2Extension {
         // Select from the current setting, including when Full changed after thread startup.
         // Replacing the backend invalidates retained evidence and in-flight ownership.
         // Keep its bounded admission pool while the route is unchanged.
-        let (sampler, reservation) = if full_local != sampler.is_full_local() {
+        let (conversation, reservation) = if full_local != conversation.sampler().is_full_local() {
+            drop(reservation);
+            score_progress.invalidate(tool_call_index);
             let routed = if full_local {
                 super::startup::full_local_sampler_config(
                     &config,
@@ -273,39 +272,42 @@ impl GuardianV2Extension {
                     metrics.clone(),
                 )
             } else {
-                super::startup::sampler_config(
-                    &codex_extension_api::ThreadStartInput {
-                        config: &config,
-                        session_source: &snapshot.session_source,
-                        persistent_thread_state_available: false,
-                        environments: &[],
-                        mcp_resource_client: None,
-                        extension_metrics: metrics.clone(),
-                        session_store: input.session_store,
-                        thread_store: input.thread_store,
-                    },
-                )
+                super::startup::sampler_config(&codex_extension_api::ThreadStartInput {
+                    config: &config,
+                    session_source: &snapshot.session_source,
+                    persistent_thread_state_available: false,
+                    environments: &[],
+                    mcp_resource_client: None,
+                    extension_metrics: metrics.clone(),
+                    session_store: input.session_store,
+                    thread_store: input.thread_store,
+                })
                 .await
             };
             match routed {
                 Ok(routed) => {
-                    let sampler = Arc::new(LunaSampler::new(routed));
-                    let conversation = Arc::new(ConversationBackend::new(Arc::clone(&sampler)));
-                    input.thread_store.insert_arc(Arc::clone(&sampler));
-                    input.thread_store.insert_arc(Arc::clone(&conversation));
-                    let (_, reserved) = conversation.reserve(|| tool_call_index);
+                    let Some(routed_backend) = conversation.switch_sampler(
+                        input.thread_store,
+                        input.turn_store,
+                        Arc::new(LunaSampler::new(routed)),
+                    ) else {
+                        score_progress.fail_closed(sampled_at, tool_call_index);
+                        return;
+                    };
+                    let (_, reserved) = routed_backend.reserve(|| tool_call_index);
                     match reserved {
-                        Ok(reserved) => (sampler, reserved),
+                        Ok(reserved) => (routed_backend, reserved),
                         Err(_) => {
-                            score_progress.invalidate(tool_call_index);
-                            score_progress.fail_closed(sampled_at);
+                            routed_backend
+                                .progress
+                                .fail_closed(sampled_at, tool_call_index);
                             return;
                         }
                     }
                 }
                 Err(error) => {
                     score_progress.invalidate(tool_call_index);
-                    score_progress.fail_closed(sampled_at);
+                    score_progress.fail_closed(sampled_at, tool_call_index);
                     self.event_sink.emit_warning(ExtensionWarning {
                         thread_id,
                         turn_id: Some(turn_id),
@@ -315,8 +317,10 @@ impl GuardianV2Extension {
                 }
             }
         } else {
-            (sampler, reservation)
+            (conversation, reservation)
         };
+        let score_progress = Arc::clone(&conversation.progress);
+        let sampler = Arc::clone(conversation.sampler());
         let model_defaults = parent_model
             .as_ref()
             .and_then(|model| model.model_messages.as_ref())

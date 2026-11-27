@@ -281,6 +281,7 @@ fn compact_items(items: &[ResponseItemEnvelope], summary: &str) -> Vec<ResponseI
         summary,
         COMPACT_USER_MESSAGE_MAX_TOKENS,
         &FileAudioDurations::default(),
+        ModelOffloadCompactionLocalHandoffRole::UserSummary,
     )
 }
 
@@ -786,10 +787,10 @@ fn build_compacted_history_preserves_user_message_passthrough_metadata(attribute
 
 #[test]
 fn build_compacted_history_assistant_state_appends_assistant_summary() {
-    let original = user_message("first user message");
+    let mut input = ContextManager::new(crate::session::session::Session::new_item_id_generator());
+    input.replace_annotated(annotated(vec![user_message("first user message")]));
     let history = build_compacted_history_with_handoff_role(
-        Vec::new(),
-        &[compacted_user_message("first user message", &original)],
+        &input,
         "summary text",
         ModelOffloadCompactionLocalHandoffRole::AssistantState,
     );
@@ -817,12 +818,9 @@ fn build_compacted_history_assistant_state_appends_assistant_summary() {
 
 #[test]
 fn build_compacted_history_user_summary_appends_user_summary_by_default() {
-    let original = user_message("first user message");
-    let history = build_compacted_history(
-        Vec::new(),
-        &[compacted_user_message("first user message", &original)],
-        "summary text",
-    );
+    let mut input = ContextManager::new(crate::session::session::Session::new_item_id_generator());
+    input.replace_annotated(annotated(vec![user_message("first user message")]));
+    let history = build_compacted_history(&input, "summary text");
 
     let expected = annotated(vec![
         user_message("first user message"),
@@ -900,10 +898,10 @@ fn assistant_state_local_compaction_payload_is_raw_assistant_state() {
         "summary text",
         ModelOffloadCompactionLocalHandoffRole::AssistantState,
     );
-    let original = user_message("first user message");
+    let mut input = ContextManager::new(crate::session::session::Session::new_item_id_generator());
+    input.replace_annotated(annotated(vec![user_message("first user message")]));
     let history = build_compacted_history_with_handoff_role(
-        Vec::new(),
-        &[compacted_user_message("first user message", &original)],
+        &input,
         &summary_text,
         ModelOffloadCompactionLocalHandoffRole::AssistantState,
     );
@@ -938,10 +936,10 @@ fn user_summary_local_compaction_payload_keeps_legacy_summary_prefix() {
         "summary text",
         ModelOffloadCompactionLocalHandoffRole::UserSummary,
     );
-    let original = user_message("first user message");
+    let mut input = ContextManager::new(crate::session::session::Session::new_item_id_generator());
+    input.replace_annotated(annotated(vec![user_message("first user message")]));
     let history = build_compacted_history_with_handoff_role(
-        Vec::new(),
-        &[compacted_user_message("first user message", &original)],
+        &input,
         &summary_text,
         ModelOffloadCompactionLocalHandoffRole::UserSummary,
     );

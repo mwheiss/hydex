@@ -70,12 +70,11 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             let sampler_config = match super::startup::sampler_config(&input).await {
                 Ok(config) => config,
                 Err(error) => {
+                    ConversationBackend::stop(input.thread_store);
+                    input.thread_store.remove::<LunaSampler>();
                     input
                         .thread_store
-                        .get_or_init(|| {
-                            GuardianV2ScoreProgress::new(input.extension_metrics.clone())
-                        })
-                        .fail_closed(std::time::SystemTime::now());
+                        .remove::<super::decisions::DecisionsSampler>();
                     input.thread_store.insert(GuardianV2Enabled);
                     self.event_sink.emit_warning(ExtensionWarning {
                         thread_id,

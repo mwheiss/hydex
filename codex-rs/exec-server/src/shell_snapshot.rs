@@ -280,11 +280,14 @@ impl ShellSnapshotCache {
         if purpose == CapturePurpose::Prewarm {
             return Ok(None);
         }
-        let Some((flag, script, env)) = prepared.shell_snapshot_replay_mut(&params.argv) else {
+        if !prepared.supports_shell_snapshot(&params.argv) {
             return Ok(None);
-        };
+        }
         let Ok(snapshot) = snapshot else {
-            if let Some(proxy) = proxy {
+            if let Some(proxy) = proxy
+                && let Some((_, script, env)) =
+                    prepared.shell_snapshot_replay_mut(&params.argv, /*skip_bash_rc*/ false)
+            {
                 credentials::restore_fallback(script, env, proxy);
             }
             telemetry.shell_snapshot_command(wait, availability, "fallback");
@@ -310,7 +313,10 @@ impl ShellSnapshotCache {
                         "cannot prepare shell snapshot transport; using normal startup"
                     );
                     telemetry.shell_snapshot_command(wait, availability, "fallback");
-                    if let Some(proxy) = proxy {
+                    if let Some(proxy) = proxy
+                        && let Some((_, script, env)) = prepared
+                            .shell_snapshot_replay_mut(&params.argv, /*skip_bash_rc*/ false)
+                    {
                         credentials::restore_fallback(script, env, proxy);
                     }
                     return Ok(None);
@@ -318,6 +324,14 @@ impl ShellSnapshotCache {
             }
         } else {
             None
+        };
+
+        // Bash can treat socket-backed stdin as a remote shell and read .bashrc
+        // even with -pc. Suppress that startup before restoring filtered state.
+        let Some((flag, script, env)) =
+            prepared.shell_snapshot_replay_mut(&params.argv, shell_type == ShellType::Bash)
+        else {
+            return Ok(None);
         };
 
         let request_overrides = params
@@ -393,14 +407,6 @@ impl ShellSnapshotCache {
                 "{startup}if ! {restore} >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{script}"
             )
         };
-        if shell_type == ShellType::Bash {
-            // Bash treats socket-backed stdin as a remote shell and reads .bashrc even
-            // with -pc. Suppress that second startup before restoring filtered state.
-            prepared
-                .command
-                .insert(shell_start + 1, "--norc".to_string());
-        }
-
         telemetry.shell_snapshot_command(wait, availability, "used");
         Ok(reader)
     }

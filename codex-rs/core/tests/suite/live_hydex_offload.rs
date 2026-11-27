@@ -169,12 +169,15 @@ async fn live_local_offload_responses_turn_completes() {
     let primary_provider =
         ModelProviderInfo::create_openai_provider(Some("https://primary.invalid/v1".to_string()));
     let client = ModelClient::new(
-        Some(AuthManager::from_auth_for_testing(
-            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-        )),
+        codex_model_provider::create_model_provider(
+            primary_provider,
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        ),
         AgentIdentityAuthPolicy::ChatGptAuth,
         thread_id,
-        primary_provider,
+        codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
         SessionSource::Exec,
         "hydex_live_offload".to_string(),
         config.model_verbosity,
@@ -209,7 +212,7 @@ async fn live_local_offload_responses_turn_completes() {
     let mut stream = client
         .new_session()
         .stream(
-            &prompt,
+            &Arc::new(prompt),
             &model_info,
             &session_telemetry,
             effort,

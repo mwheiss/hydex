@@ -174,7 +174,9 @@ pub(crate) async fn run_inline_auto_compact_task(
 ) -> CodexResult<bool> {
     let local_handoff_role = compaction_handoff_role(
         &step_context.turn,
-        sess.services.model_client.effective_model_offload_compaction_policy()
+        sess.services
+            .model_client
+            .effective_model_offload_compaction_policy()
             == ModelOffloadCompactionPolicy::Local,
     );
     let prompt = local_compaction_prompt(&step_context.turn, local_handoff_role).to_owned();
@@ -491,7 +493,9 @@ async fn run_compact_task_inner_impl(
                     sess.set_total_tokens_full(turn_context.as_ref()).await;
                     return Err(e);
                 }
-                Err(e) if crate::responses_retry::is_terminal_sampling_outcome(&e) => return Err(e),
+                Err(e) if crate::responses_retry::is_terminal_sampling_outcome(&e) => {
+                    return Err(e);
+                }
                 Err(e) if retries < max_retries => {
                     retries += 1;
                     let Some(delay) = e.retry_delay(retries) else {
@@ -1132,7 +1136,7 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Arc<Prompt>,
     phase: CompactionPhase,
-    _defer_output: bool,
+    defer_output: bool,
 ) -> CodexResult<CompactionResponse> {
     let turn_context = step_context.turn.as_ref();
     let mut includes_reasoning = turn_context.model_info().use_responses_lite;

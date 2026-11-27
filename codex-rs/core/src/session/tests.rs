@@ -2382,11 +2382,12 @@ async fn reconstruct_history_matches_live_compactions() {
 
     assert_eq!(expected, raw_envelopes(&reconstructed.history));
     assert_eq!(2, reconstructed.window_number);
-    assert_eq!(
+    assert!(
         reconstructed
             .window_id
-            .map(|window_id| window_id.get_version_num()),
-        Some(7)
+            .as_ref()
+            .and_then(ContextWindowId::validated)
+            .is_some()
     );
 }
 
@@ -2424,9 +2425,9 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
             internal_chat_message_metadata_passthrough: None,
         }),
     ];
-    let first_window_id = Uuid::now_v7();
-    let previous_window_id = Uuid::now_v7();
-    let window_id = Uuid::now_v7();
+    let first_window_id = ContextWindowId::new_uuid_v7();
+    let previous_window_id = ContextWindowId::new_uuid_v7();
+    let window_id = ContextWindowId::new_uuid_v7();
     let rollout_items = vec![RolloutItem::Compacted(Box::new(CompactedItem {
         message: String::new(),
         replacement_history: Some(replacement_history.clone()),
@@ -2434,9 +2435,9 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(42),
-        first_window_id: Some(first_window_id.to_string()),
-        previous_window_id: Some(previous_window_id.to_string()),
-        window_id: Some(window_id.to_string()),
+        first_window_id: Some(first_window_id.clone()),
+        previous_window_id: Some(previous_window_id.clone()),
+        window_id: Some(window_id.clone()),
         compaction_response_id: None,
         latest_token_usage_record: None,
         remote_compaction_model: None,
@@ -11686,10 +11687,10 @@ async fn first_offloaded_turn_persists_offload_marker_for_resume() {
     let local_provider =
         create_oss_provider_with_base_url("http://127.0.0.1:11434/v1", WireApi::Responses);
     session.services.model_client = ModelClient::new(
-        Some(session.services.auth_manager.clone()),
+        Arc::clone(&turn_context.provider),
         AgentIdentityAuthPolicy::JwtOnly,
         session.thread_id,
-        turn_context.provider.info().clone(),
+        Session::new_item_id_generator(),
         turn_context.session_source.clone(),
         "test_originator".to_string(),
         turn_context.config.model_verbosity,

@@ -192,6 +192,38 @@ impl ConversationBackend {
         }
     }
 
+    pub(super) fn sampler(&self) -> &Arc<LunaSampler> {
+        &self.sampler
+    }
+
+    /// Replace the sampler generation when the effective local routing changes.
+    /// Keep the policy revision, action sequence, and bounded admission pool.
+    pub(super) fn switch_sampler(
+        self: &Arc<Self>,
+        thread: &ExtensionData,
+        turn: &ExtensionData,
+        sampler: Arc<LunaSampler>,
+    ) -> Option<Arc<Self>> {
+        let owner = thread.get::<Mutex<Arc<Self>>>()?;
+        let mut latest = owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !latest.is_active() || !self.is_active() || latest.revision != self.revision {
+            return None;
+        }
+        if latest.sampler.is_full_local() != sampler.is_full_local() {
+            if !Arc::ptr_eq(self, &latest) {
+                return None;
+            }
+            let mut replacement = latest.for_policy(self.revision);
+            replacement.sampler = sampler;
+            *latest = Arc::new(replacement);
+        }
+        let current = Arc::clone(&latest);
+        turn.insert_arc(Arc::clone(&current));
+        Some(current)
+    }
+
     fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }

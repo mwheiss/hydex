@@ -1888,12 +1888,11 @@ impl Session {
             let mut account = crate::rollout_budget::ThreadBudgetAccount::Shared(Arc::clone(
                 &local_agent_runtime.rollout_budget,
             ));
-            if startup_error.is_none() && matches!(&agent_runtime, AgentRuntimeServices::Controller) {
-                if let Some(native) = agent_control.native_rollout_budget() {
+            if startup_error.is_none() && matches!(&agent_runtime, AgentRuntimeServices::Controller)
+                && let Some(native) = agent_control.native_rollout_budget() {
                     local_agent_runtime.rollout_budget = Arc::clone(&native);
                     account = crate::rollout_budget::ThreadBudgetAccount::Native(native);
                 }
-            }
             let budget_policy = crate::rollout_budget::ThreadBudgetPolicy::new(
                 account,
             )
@@ -1948,6 +1947,7 @@ impl Session {
                 config.http_client_factory(),
                 workspace_routing.as_ref().clone(),
                 extensions.model_request_contributors().to_vec(),
+                config.model_offload.clone(),
             )
             .with_budget_policy(budget_policy.clone())
             .with_executed_tool_calls(executed_tool_calls.clone())
